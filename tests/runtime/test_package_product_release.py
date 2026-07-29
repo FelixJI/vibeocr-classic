@@ -127,3 +127,40 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     assert "VibeOCR/component-lock.json" in members
     assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" in members
     assert "VibeOCR/backend/runtime-manifest.json" in members
+
+
+def test_product_package_accepts_equivalent_crlf_component_lock(
+    tmp_path: Path,
+) -> None:
+    protocol, backend = _releases(tmp_path)
+    component_lock = tmp_path / "component-lock.json"
+    bind_product_releases(
+        protocol_release_dir=protocol,
+        backend_release_dir=backend,
+        protocol_repository="FelixJI/vibeocr-protocol",
+        protocol_version="2.0.0",
+        backend_repository="FelixJI/vibeocr-backend",
+        backend_version="0.7.0",
+        profile="win-x64-cpu",
+        required_capabilities=("ocr.recognition.v2",),
+        output=component_lock,
+    )
+    component_lock.write_bytes(
+        component_lock.read_text(encoding="utf-8").replace("\n", "\r\n").encode()
+    )
+    product = tmp_path / "product" / "VibeOCR"
+    product.mkdir(parents=True)
+    (product / "VibeOCR.exe").write_bytes(b"app")
+
+    output = package_product_release(
+        product_root=product,
+        frontend="classic",
+        frontend_version="0.7.0",
+        source_commit="a" * 40,
+        component_lock=component_lock,
+        protocol_release_dir=protocol,
+        backend_release_dir=backend,
+        output=tmp_path / "product.zip",
+    )
+
+    assert output.is_file()

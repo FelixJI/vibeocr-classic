@@ -70,7 +70,7 @@ def package_product_release(
             required_capabilities=required_capabilities,
             output=generated,
         )
-        if generated.read_bytes() != lock_path.read_bytes():
+        if json.loads(generated.read_text(encoding="utf-8")) != lock:
             raise ValueError("committed component lock differs from verified releases")
 
     embedded_lock = product_root / "component-lock.json"

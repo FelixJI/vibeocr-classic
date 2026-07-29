@@ -1,0 +1,309 @@
+"""启动与设置页慢操作的 GUI 响应性及生命周期回归测试。"""
+
+from __future__ import annotations
+
+import subprocess
+import threading
+from unittest.mock import MagicMock
+
+from PySide6.QtWidgets import QLabel, QPushButton, QWidget
+
+from tests.qt_responsiveness import assert_qt_event_loop_responsive
+from vibeocr.backend import env_manager
+from vibeocr.classic.views.background_tasks import DependencyUpdateCheckTask
+from vibeocr.classic.views.main_window import MainWindow
+from vibeocr.classic.views.settings_page_controller import (
+    SettingsPageController,
+    _create_windows_shortcut,
+)
+
+
+def _controller(qtbot, tmp_path) -> SettingsPageController:
+    host = QWidget()
+    qtbot.addWidget(host)
+    return SettingsPageController(
+        ui=host,
+        project_root=tmp_path,
+        status_callback=lambda _message: None,
+        ocr_ready_callback=lambda: True,
+        subprocess_manager=MagicMock(),
+    )
+
+
+def test_dependency_update_check_is_responsive_and_single_flight(
+    qtbot, tmp_path, monkeypatch
+):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_detect():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(timeout=2)
+        return {}
+
+    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
+    results: list[tuple[str, object]] = []
+    task.completed.connect(lambda source, result: results.append((source, result)))
+
+    assert task.request("startup") is True
+    assert task.request("settings") is False
+    assert entered.wait(timeout=1)
+    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+    assert calls == 1
+
+    release.set()
+    qtbot.waitUntil(lambda: bool(results), timeout=1000)
+    assert results == [("startup", {})]
+
+
+def test_dependency_update_development_mode_short_circuits(qtbot, tmp_path, monkeypatch):
+    detect = MagicMock(return_value={})
+    task = DependencyUpdateCheckTask(tmp_path)
+    results: list[object] = []
+    task.completed.connect(lambda _source, result: results.append(result))
+
+    task.request("settings")
+    qtbot.waitUntil(lambda: bool(results), timeout=1000)
+
+    assert results == [{}]
+    detect.assert_not_called()
+
+
+def test_dependency_update_close_drops_late_result(qtbot, tmp_path, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    def slow_detect():
+        entered.set()
+        release.wait(timeout=2)
+        return {}
+
+    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
+    completed = MagicMock()
+    task.completed.connect(completed)
+    task.request("startup")
+    assert entered.wait(timeout=1)
+    task.close()
+    release.set()
+    qtbot.wait(50)
+    completed.assert_not_called()
+
+
+def test_settings_drain_waits_for_owned_cache_task(qtbot, tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+    controller = _controller(qtbot, tmp_path)
+
+    def slow_cache_call():
+        entered.set()
+        release.wait(timeout=2)
+        return "done"
+
+    controller._run_cache_operation(slow_cache_call, lambda _result: None, lambda _e: None)
+    assert entered.wait(timeout=1)
+    controller.request_shutdown()
+
+    assert controller.drain(20) is False
+    release.set()
+    assert controller.drain(2000) is True
+
+
+def test_settings_first_update_check_does_not_stall_startup(
+    qtbot, tmp_path, monkeypatch
+):
+    entered = threading.Event()
+    release = threading.Event()
+    def slow_detect():
+        entered.set()
+        release.wait(timeout=2)
+        return {}
+
+    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
+    assert task.request("settings") is True
+    assert entered.wait(timeout=1)
+
+    window = MagicMock()
+    window._closing = False
+    window._dependency_update_task = task
+    window._startup_update_check_complete = False
+    window._deps_update_requested = False
+    window._continue_ready_startup = MagicMock()
+    MainWindow._maybe_prompt_dependency_updates(window)
+
+    assert window._startup_update_check_complete is True
+    window._continue_ready_startup.assert_called_once_with()
+    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+
+    # 结果仍归设置页来源，不会触发 MainWindow 的 startup 提示路径。
+    sources: list[str] = []
+    task.completed.connect(lambda source, _result: sources.append(source))
+    release.set()
+    qtbot.waitUntil(lambda: bool(sources), timeout=1000)
+    assert sources == ["settings"]
+
+
+def test_startup_first_update_check_restores_settings_button(
+    qtbot, tmp_path, monkeypatch
+):
+    task = DependencyUpdateCheckTask(tmp_path)
+    controller = SettingsPageController(
+        ui=QWidget(),
+        project_root=tmp_path,
+        status_callback=lambda _message: None,
+        ocr_ready_callback=lambda: True,
+        subprocess_manager=MagicMock(),
+        dependency_update_task=task,
+    )
+    qtbot.addWidget(controller._ui)
+    button = QPushButton(controller._ui)
+    button.setObjectName("btnUpdateDeps")
+
+    controller._on_update_deps()
+    assert button.isEnabled()
+    assert controller._manual_dependency_update_waiting is False
+    assert task.is_running is False
+
+
+def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_valid(_root):
+        entered.set()
+        release.wait(timeout=2)
+        return True, {
+            "dependencies": {
+                "paddlepaddle": True,
+                "paddleocr": True,
+                "mineru": True,
+            }
+        }
+
+    monkeypatch.setattr("vibeocr.classic.views.main_window.is_cache_valid", slow_valid)
+    window = MagicMock()
+    window._project_root = tmp_path
+    window._closing = False
+    window._machine_cache_running = False
+    window._machine_cache_pending_startup = False
+    window._machine_cache_generation = 0
+    window._machine_cache_tasks = set()
+    window._machine_cache_data = None
+    window._dependency_check_complete = False
+    window._ocr_ready = False
+    window._settings_controller = None
+    window._request_machine_cache_load = MainWindow._request_machine_cache_load.__get__(
+        window
+    )
+    window._apply_provisional_machine_cache = (
+        MainWindow._apply_provisional_machine_cache.__get__(window)
+    )
+    window._continue_ready_startup = MagicMock()
+
+    MainWindow._try_load_cache(window)
+    assert entered.wait(timeout=1)
+    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+    release.set()
+    qtbot.waitUntil(lambda: not window._machine_cache_running, timeout=1000)
+
+    assert window._ocr_ready is True
+
+
+def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(
+    qtbot, tmp_path, monkeypatch
+):
+    controller = _controller(qtbot, tmp_path)
+    controller._btn_desktop = QPushButton()
+    controller._btn_startmenu = QPushButton()
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_create(*_args):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(timeout=2)
+        return True
+
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller._is_bundled", lambda: True
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller._create_windows_shortcut", slow_create
+    )
+    toast = MagicMock()
+    controller._show_settings_toast = toast
+
+    args = ("app.exe", "VibeOCR.lnk", "", str(tmp_path))
+    controller._start_shortcut_creation(*args, success_text="完成")
+    controller._start_shortcut_creation(*args, success_text="完成")
+    assert entered.wait(timeout=1)
+    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+    assert calls == 1
+    assert not controller._btn_desktop.isEnabled()
+
+    release.set()
+    qtbot.waitUntil(lambda: controller._btn_desktop.isEnabled(), timeout=1000)
+    toast.assert_called_once_with("完成")
+
+
+def test_shortcut_timeout_and_failure_return_false(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller.subprocess.run",
+        MagicMock(side_effect=subprocess.TimeoutExpired("powershell", 15)),
+    )
+    assert not _create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
+
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
+    )
+    assert not _create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
+
+
+def test_settings_cache_refresh_is_responsive_and_single_flight(
+    qtbot, tmp_path, monkeypatch
+):
+    controller = _controller(qtbot, tmp_path)
+    button = QPushButton(controller._ui)
+    button.setObjectName("btnRefreshCache")
+    label = QLabel(controller._ui)
+    label.setObjectName("labelCacheStatus")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_refresh():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(timeout=2)
+        return True, "cache-info"
+
+    monkeypatch.setattr(controller, "_refresh_machine_cache_operation", slow_refresh)
+    controller._show_settings_toast = MagicMock()
+
+    controller._on_refresh_cache_clicked()
+    controller._on_refresh_cache_clicked()
+    assert entered.wait(timeout=1)
+    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+    assert calls == 1
+    assert not button.isEnabled()
+
+    release.set()
+    qtbot.waitUntil(button.isEnabled, timeout=1000)
+    assert label.text() == "缓存已刷新"
+
+
+def test_pending_backend_overrides_background_gpu_result(monkeypatch, tmp_path):
+    monkeypatch.setattr(env_manager, "_runtime_gpu_capability_cache", None)
+    monkeypatch.setattr(
+        env_manager,
+        "is_cache_valid",
+        lambda _root: (True, {"pending_backend": "gpu"}),
+    )
+    assert env_manager.get_runtime_gpu_capability(
+        tmp_path, detected_has_gpu=False
+    ) is True

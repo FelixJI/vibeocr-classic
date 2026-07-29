@@ -1,0 +1,24 @@
+[project]
+name = "vibeocr-classic"
+version = "0.7.0"
+description = "VibeOCR PySide6 Classic desktop shell"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "vibeocr-runtime-contracts==2.0.0",
+    "vibeocr-runtime-client==2.0.0",
+    "vibeocr-backend==0.7.0",
+    "pyside6>=6.11.1",
+    "qasync>=0.28.0",
+    "numpy>=2.3.5",
+    "pymupdf>=1.28.0",
+]
+
+[project.scripts]
+vibeocr = "vibeocr.classic.main:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vibeocr"]

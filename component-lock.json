@@ -1,0 +1,22 @@
+{
+  "backend": {
+    "artifact_sha256": "b16fb2b98a3dcaaa4f496629e7c8cb27b1ed2373dcf26db0bbeb1e4f372a9709",
+    "profile": "win-x64-cpu",
+    "repository": "FelixJI/vibeocr-backend",
+    "runtime_manifest_sha256": "13caec62e2d74e71a6a46bee8dc7fd70b48d22127d1fa93d2477b1956e449f43",
+    "version": "0.7.0"
+  },
+  "protocol": {
+    "manifest_sha256": "3daf1ee8c348d696d3e6a13636078085b378c6e3cd19d5a34b57cb6ecaab819f",
+    "repository": "FelixJI/vibeocr-protocol",
+    "version": "2.0.0"
+  },
+  "required_capabilities": [
+    "export.document.v1",
+    "ocr.recognition.v2",
+    "pdf.edit.v2",
+    "qrcode.v2",
+    "runtime.settings.v2"
+  ],
+  "schema_version": 1
+}

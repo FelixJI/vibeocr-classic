@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  required:
+    name: required
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+        if: hashFiles('global.json') != ''
+      - name: Verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v2.0.0 --repo FelixJI/vibeocr-protocol --pattern "*.whl" --dir .feed
+          gh release download v0.7.0 --repo FelixJI/vibeocr-backend --pattern "vibeocr_backend-*.whl" --dir .feed
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio pytest-qt --find-links .feed ./apps/vibeocr-pyside
+          python -m pytest
+          ./scripts/build-release.ps1

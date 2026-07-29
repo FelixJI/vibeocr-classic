@@ -1,0 +1,1 @@
+"""Screenshot editor sub-package"""

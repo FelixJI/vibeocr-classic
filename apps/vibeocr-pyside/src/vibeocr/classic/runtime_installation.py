@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -90,14 +91,18 @@ class RuntimeInstallerClient:
         self.product_id = product_id
         self.profile = profile
         configured = os.environ.get("VIBEOCR_RUNTIME_INSTALLER")
+        self._materialize_bound_installer = False
         if command is not None:
             self.command = command
         elif configured:
             self.command = (configured,)
         elif getattr(sys, "frozen", False):
+            self._materialize_bound_installer = True
             self.command = (
                 str(
                     self.product_root
+                    / "data"
+                    / "cache"
                     / "runtime-installer"
                     / "vibeocr-runtime-installer.exe"
                 ),
@@ -121,12 +126,11 @@ class RuntimeInstallerClient:
             str(self.runtime_manifest),
             "--profile",
             self.profile,
-            "--product-id",
-            self.product_id,
             "--json",
         ]
         if self.layout_manifest is not None:
             args.extend(("--layout-manifest", str(self.layout_manifest)))
+            args.extend(("--product-id", self.product_id))
         return args
 
     def _invoke(
@@ -239,7 +243,26 @@ class RuntimeInstallerClient:
             ):
                 raise ValueError("runtime manifest hash mismatch")
             manifest = json.loads(self.runtime_manifest.read_text(encoding="utf-8"))
-            expected = manifest["installer"]["executable_sha256"]
+            installer = manifest["installer"]
+            expected = installer["executable_sha256"]
+            cached_hash = (
+                hashlib.sha256(executable.read_bytes()).hexdigest()
+                if executable.is_file()
+                else ""
+            )
+            if cached_hash != expected and self._materialize_bound_installer:
+                archive_path = self.runtime_manifest.parent / installer["archive"]
+                archive_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                if archive_hash != installer["sha256"]:
+                    raise ValueError("runtime installer archive hash mismatch")
+                with zipfile.ZipFile(archive_path) as archive:
+                    executable_bytes = archive.read(installer["executable_path"])
+                if hashlib.sha256(executable_bytes).hexdigest() != expected:
+                    raise ValueError("runtime installer executable hash mismatch")
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                temporary = executable.with_suffix(".tmp")
+                temporary.write_bytes(executable_bytes)
+                os.replace(temporary, executable)
             actual = hashlib.sha256(executable.read_bytes()).hexdigest()
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeInstallerClientError(

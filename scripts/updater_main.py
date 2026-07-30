@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -37,6 +38,8 @@ def _notify_failure(message: str) -> None:
     本回调由 run_replacement 在失败路径调用，确保用户能看到失败结论 + 手动下载指引。
     用 ctypes 调 user32.MessageBoxW 避免引入 PySide6（替换器须保持纯 stdlib）。
     """
+    if os.environ.get("VIBEOCR_SELF_TEST_NO_DIALOG") == "1":
+        return
     if sys.platform != "win32":
         # 非 Windows（开发/CI）退化到 stderr，总比静默好。
         print(message, file=sys.stderr)
@@ -48,6 +51,23 @@ def _notify_failure(message: str) -> None:
         ctypes.windll.user32.MessageBoxW(0, message, "VibeOCR 更新失败", 0x10)
     except Exception as e:
         logger.error(f"弹出失败提示框异常: {e}")
+
+
+def _run_health_self_test() -> int | None:
+    """供冻结 updater 制品 E2E 作为新版入口发布或拒绝健康信号。"""
+    if "--vibeocr-self-test-health" not in sys.argv:
+        return None
+    if "--vibeocr-self-test-fail" in sys.argv:
+        return 1
+    configured = os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
+    if not configured:
+        return 1
+    health_file = Path(configured)
+    if health_file.name != "startup.health":
+        return 1
+    health_file.parent.mkdir(parents=True, exist_ok=True)
+    health_file.write_text("ready\n", encoding="utf-8")
+    return 0
 
 
 def parse_args() -> tuple[Path, Path, str, tuple[str, ...], Path | None]:
@@ -79,6 +99,9 @@ def parse_args() -> tuple[Path, Path, str, tuple[str, ...], Path | None]:
 
 
 def main() -> int:
+    self_test_result = _run_health_self_test()
+    if self_test_result is not None:
+        return self_test_result
     zip_path, app_dir, launch_entry, launch_args, health_file = parse_args()
     # updater 专用日志文件（与旧版 self_update.log 历史区分，现仅 updater 一条路径）。
     setup_logging(app_dir, "updater.log")
@@ -86,9 +109,10 @@ def main() -> int:
 
     # 自动判断新旧路径：updater 自身是否在 app_dir。
     # 新路径（暂存目录运行）无需避让 updater.exe；旧路径（过渡期，自身在 app_dir）需避让。
-    # 产品入口由调用方显式传入；更新器不包含跨产品回退。
+    # 只避让当前仍在运行且位于 app_dir 的 updater 自身。Classic 在收到 ready 后
+    # 已退出，正式入口不应被提前改名；普通删除/覆盖由 busy retry 处理。
     detected = _detect_self_exe_names(app_dir)
-    self_exe_names = (*detected, launch_entry)
+    self_exe_names = detected
     logger.info(f"路径判定: detected={detected}, self_exe_names={self_exe_names}")
 
     # 就绪信号用默认的 updater.ready，与主程序端 _launch_updater 的轮询文件名对应。

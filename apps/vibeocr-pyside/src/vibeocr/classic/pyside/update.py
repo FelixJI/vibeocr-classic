@@ -36,6 +36,7 @@ from vibeocr.classic.services.update_service import (
     DOWNLOAD_REASON_CANCELLED,
     DOWNLOAD_REASON_EXCEPTION,
     DOWNLOAD_REASON_HTTP_ERROR,
+    DOWNLOAD_REASON_RECOVERY_REQUIRED,
     DOWNLOAD_REASON_SHA_MISMATCH,
     DOWNLOAD_REASON_SHA_MISSING,
     REMIND_LATER_SECONDS,
@@ -280,6 +281,7 @@ _DOWNLOAD_REASON_HINTS: dict[str, str] = {
     DOWNLOAD_REASON_SHA_MISSING: "缺少校验文件",
     DOWNLOAD_REASON_SHA_MISMATCH: "校验失败",
     DOWNLOAD_REASON_EXCEPTION: "失败",
+    DOWNLOAD_REASON_RECOVERY_REQUIRED: "需要人工恢复",
 }
 
 
@@ -293,6 +295,11 @@ def _format_failure_message(fail_reasons: list[str]) -> str:
     manual_url = GITHUB_RELEASES_BASE
     tail = f"\n\n如持续失败，可前往手动下载（覆盖安装前请先退出本程序）：\n{manual_url}"
 
+    if DOWNLOAD_REASON_RECOVERY_REQUIRED in fail_reasons:
+        return (
+            "检测到上次更新留下的人工恢复备份。为避免覆盖唯一备份，已停止下载。\n"
+            "请先按更新日志中的恢复提示处理 data/cache/update/_backup。"
+        )
     if DOWNLOAD_REASON_SHA_MISMATCH in fail_reasons:
         return (
             "更新包完整性校验失败，下载源文件可能损坏或被篡改。\n"
@@ -668,14 +675,14 @@ class UpdateService:
                 return
 
             # 3. 启动暂存的新 updater，握手确认它"活着"再退出。
-            # 握手三态：ready/timeout → 确认在工作 → 退出释放文件锁。
-            #          crashed       → 确认坏了 → 弹窗提示手动重装（不再走 self-update 兜底，
+            # 握手两态：ready → 确认接管 → 退出释放文件锁。
+            #          crashed → 未接管/超时 → 保留旧程序并提示（不走 self-update 兜底，
             #                        因 self-update 本身违反黄金法则：旧主程序代码部署新代码）。
             # onefile updater 解压 + Python 初始化在慢机/杀软扫描下可达数秒~15s
             # （_HANDSHAKE_TIMEOUT 上限）。持久消息让用户知道主程序正在等更新器接管。
             self._status("正在启动更新器，即将重启…", 0)
             result = await self._launch_updater(zip_path, staged_updater)
-            if result in ("ready", "timeout"):
+            if result == "ready":
                 self._force_quit()
 
             # 新 updater 确认崩溃 → 提示手动重装（无 self-update 兜底）。
@@ -797,7 +804,7 @@ class UpdateService:
     _HANDSHAKE_POLL_INTERVAL = 0.2
 
     async def _launch_updater(self, zip_path: Path, staged_updater: Path) -> str:
-        """启动暂存的新 updater 并握手确认它"活着"。返回握手三态。
+        """启动暂存的新 updater 并握手确认安全接管。返回握手两态。
 
         新架构：启动目标是暂存目录的新 updater（由 _extract_updater_from_zip 抽取），
         而非 app_dir 的旧 updater。新 updater 是新代码，负责部署新版本（黄金法则）。
@@ -815,6 +822,8 @@ class UpdateService:
                 str(self._app_dir),
                 "--entry",
                 "VibeOCR.exe",
+                "--health-file",
+                str(self._cache_dir / "startup.health"),
             ],
             ready_filename="updater.ready",
             label="updater.exe (staged)",
@@ -829,13 +838,8 @@ class UpdateService:
     ) -> str:
         """通用握手启动：清理旧 ready → 启动进程 → 轮询 ready 文件 + 进程存活。
 
-        返回三态（避免「超时但进程仍在跑」被误判为崩溃、误触失败处理路径与
-        仍在工作的 updater 并发替换导致文件损坏）：
-
         - ``"ready"``：就绪信号文件出现 → 替换器确认活着，调用方 sys.exit 放心。
-        - ``"crashed"``：进程已退出且无就绪信号 → 替换器确认坏了，调用方弹窗提示手动重装。
-        - ``"timeout"``：超时但进程仍在跑 → 替换器可能只是慢（慢机/杀软扫描），
-          不能判定为坏。调用方应继续等待（视为 ready，sys.exit），**绝不**弹失败提示。
+        - ``"crashed"``：进程退出或超时且无就绪信号 → 未接管，保留旧程序并提示。
 
         Args:
             exe_path: 要启动的替换器 exe（暂存目录的新 updater.exe）。
@@ -866,7 +870,7 @@ class UpdateService:
     def _poll_ready(
         self, proc: subprocess.Popen, ready_path: Path, label: str, timeout: float
     ) -> str:
-        """阻塞轮询 ready 文件 + 进程存活，返回三态（见 _handshake_launch 文档）。"""
+        """阻塞轮询 ready 文件 + 进程存活，返回两态（见 _handshake_launch 文档）。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if ready_path.exists():
@@ -879,11 +883,18 @@ class UpdateService:
                 )
                 return "crashed"
             time.sleep(self._HANDSHAKE_POLL_INTERVAL)
-        # 超时但进程仍在跑：替换器可能只是慢，不能误判为坏（否则并发启 self-update
-        # 会与这个仍在工作的 updater 抢着替换文件，导致 app_dir 损坏）。
-        # 视为「正在工作」，让主程序 sys.exit 把现场交给它。
+        # 没有真实 ready 就绝不能退出旧程序。终止仍在 pre-ready 阶段的 updater，
+        # 让旧 UI 保持可用；下一次重试会重新校验完整包。
         logger.warning(
             f"{label} 握手超时（{timeout}s 未收到就绪信号，但进程仍在运行），"
-            f"视为工作中（不触发兜底，避免并发替换）"
+            "终止 updater 并保留旧程序"
         )
-        return "timeout"
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return "crashed"

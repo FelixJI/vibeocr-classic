@@ -369,6 +369,7 @@ DOWNLOAD_REASON_HTTP_ERROR = "http_error"  # zip 非 200 等
 DOWNLOAD_REASON_SHA_MISSING = "sha_missing"  # 校验文件下不到（404/非 200）
 DOWNLOAD_REASON_SHA_MISMATCH = "sha_mismatch"  # 校验文件在但哈希对不上
 DOWNLOAD_REASON_EXCEPTION = "exception"
+DOWNLOAD_REASON_RECOVERY_REQUIRED = "recovery_required"
 # 用户主动取消（点对话框「取消」按钮或标题栏 X）。与上面失败原因并列，
 # 让 download_update 的 (zip_path, fail_reasons) 返回结构在取消路径上仍统一；
 # 上层 _do_download_and_update 据此短路退出整个更新流程，不弹重试框。
@@ -571,8 +572,15 @@ async def download_update(
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    recovery_marker = cache_dir / "manual-recovery-required.json"
+    if recovery_marker.is_file():
+        logger.error("存在待人工恢复的更新备份，拒绝下载新更新: %s", recovery_marker)
+        return None, [DOWNLOAD_REASON_RECOVERY_REQUIRED]
+
     # 清理残留文件
     for old_file in cache_dir.iterdir():
+        if old_file.name == "manual-recovery-required.json":
+            continue
         if old_file.is_file():
             try:
                 old_file.unlink()

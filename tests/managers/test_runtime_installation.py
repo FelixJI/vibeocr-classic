@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,80 @@ def test_explicit_layout_environment_is_forwarded(
     )
     arguments = client._arguments("inspect")
     assert arguments[arguments.index("--layout-manifest") + 1] == str(marker.resolve())
+    assert arguments[arguments.index("--product-id") + 1] == "classic"
+
+
+def test_local_layout_does_not_forward_product_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("VIBEOCR_PORTABLE_LAYOUT", raising=False)
+    client = RuntimeInstallerClient(
+        tmp_path / "classic",
+        command=("python", "-m", "vibeocr.backend.runtime_installer"),
+    )
+
+    arguments = client._arguments("inspect")
+
+    assert "--layout-manifest" not in arguments
+    assert "--product-id" not in arguments
+
+
+def test_frozen_installer_is_materialized_from_bound_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    installer_archive = backend / "installer.zip"
+    executable_bytes = b"installer executable"
+    with zipfile.ZipFile(installer_archive, "w") as archive:
+        archive.writestr("runtime-installer/installer.exe", executable_bytes)
+    manifest = backend / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "backend_version": "0.7.0",
+                "installer": {
+                    "archive": installer_archive.name,
+                    "sha256": hashlib.sha256(
+                        installer_archive.read_bytes()
+                    ).hexdigest(),
+                    "executable_path": "runtime-installer/installer.exe",
+                    "executable_sha256": hashlib.sha256(
+                        executable_bytes
+                    ).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "component-lock.json"
+    lock.write_text(
+        json.dumps(
+            {
+                "backend": {
+                    "profile": "win-x64-cpu",
+                    "runtime_manifest_sha256": hashlib.sha256(
+                        manifest.read_bytes()
+                    ).hexdigest(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    client = RuntimeInstallerClient(tmp_path)
+    client._verify_installer_executable()
+
+    executable = Path(client.command[0])
+    assert executable.read_bytes() == executable_bytes
+    assert executable.parent == tmp_path / "data" / "cache" / "runtime-installer"
+
+    executable.write_bytes(b"stale installer")
+    client._verify_installer_executable()
+    assert executable.read_bytes() == executable_bytes
 
 
 def test_frozen_t6_inspect_does_not_spawn_installer(

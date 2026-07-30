@@ -88,19 +88,6 @@ def package_product_release(
         if source.is_file():
             shutil.copyfile(source, backend_output / source.name)
 
-    runtime_manifest = json.loads(
-        (backend_output / "runtime-manifest.json").read_text(encoding="utf-8")
-    )
-    installer = runtime_manifest["installer"]
-    installer_output = product_root / "runtime-installer"
-    installer_output.mkdir()
-    with zipfile.ZipFile(backend_output / installer["archive"]) as archive:
-        executable = archive.read(installer["executable_path"])
-    executable_path = installer_output / "vibeocr-runtime-installer.exe"
-    executable_path.write_bytes(executable)
-    if _sha256(executable_path) != installer["executable_sha256"]:
-        raise ValueError("extracted Runtime Installer hash mismatch")
-
     manifest_path = product_root / "product-release-manifest.json"
     files = sorted(
         path

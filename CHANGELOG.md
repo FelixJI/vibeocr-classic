@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.1 - 2026-07-30
+
+### Fixed
+
+- Reduce the Classic portable archive by collecting only the Qt modules used by
+  the product and pruning PySide6 development, debug, QML, and unused locale
+  payloads while retaining the software OpenGL fallback for GPU-less systems.
+- Prepare the bound offline Runtime automatically on first launch instead of
+  exiting when Runtime inspection reports a missing installation.
+- Make patch releases tag-driven and enforce a Classic archive size budget so
+  packaging regressions cannot silently return.
+
 ## [0.6.3] - 2026-07-28
 
 ### Fixed
@@ -1735,4 +1747,3 @@
 * 方案 A 打包误删 Qt6Qml/Quick 导致 QtWebChannel 加载失败
 * 发版 uv.lock 版本号滞后漂移
 * 打包进程递归卡死 / 体积臃肿 / 安装入口缺失 / 路径解析错误
-

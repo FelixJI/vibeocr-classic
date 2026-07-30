@@ -100,7 +100,7 @@ def _startup_lock_names() -> tuple[str, str | None]:
 
 
 def check_production_dependencies() -> bool:
-    """通过产品绑定的 Installer 清单检查 Runtime 完整性。"""
+    """通过产品绑定的 Installer 检查并按需准备 Runtime。"""
     smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
     if (
         getattr(sys, "frozen", False)
@@ -111,16 +111,17 @@ def check_production_dependencies() -> bool:
         # Artifact verifier 会在解压目录内从绑定 wheel 建一个隔离 import 根。
         # 仅冻结态+t6 双门禁生效，生产启动始终必须通过 Runtime Installer inspect。
         return True
+    client = RuntimeInstallerClient(get_install_root())
     try:
-        inspection = RuntimeInstallerClient(get_install_root()).inspect()
+        inspection = client.inspect()
+        if not inspection.ready:
+            print(
+                "[VibeOCR] Runtime 未就绪，正在从产品内离线资产准备: "
+                f"{inspection.profile} / {inspection.integrity}"
+            )
+            client.ensure()
     except RuntimeInstallerClientError as exc:
-        print(f"[VibeOCR] Runtime Installer 检查失败: {exc}")
-        return False
-    if not inspection.ready:
-        print(
-            "[VibeOCR] Runtime 未就绪: "
-            f"{inspection.profile} / {inspection.integrity}"
-        )
+        print(f"[VibeOCR] Runtime Installer 准备失败: {exc}")
         return False
     return True
 

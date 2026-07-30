@@ -124,9 +124,11 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     assert outputs[0].read_bytes() == outputs[1].read_bytes()
     with zipfile.ZipFile(outputs[0]) as archive:
         members = set(archive.namelist())
+        version = json.loads(archive.read("VibeOCR/version.json"))
     assert "VibeOCR/component-lock.json" in members
     assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" in members
     assert "VibeOCR/backend/runtime-manifest.json" in members
+    assert version == {"version": "0.7.0"}
 
 
 def test_product_package_accepts_equivalent_crlf_component_lock(

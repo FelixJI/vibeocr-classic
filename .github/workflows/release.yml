@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['v0.7.0']
+    tags: ['v*']
 
 permissions:
   contents: read
@@ -27,13 +27,17 @@ jobs:
         if: hashFiles('global.json') != ''
       - name: Verify immutable tag
         shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if ('${{ github.ref_name }}' -ne 'v0.7.0') { exit 1 }
+          $version = python -c "import pathlib,tomllib; print(tomllib.loads(pathlib.Path('apps/vibeocr-pyside/pyproject.toml').read_text(encoding='utf-8'))['project']['version'])"
+          if ($env:RELEASE_TAG -ne "v$version") { exit 1 }
       - name: Build release assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/build-release.ps1
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: ./scripts/build-release.ps1 -Version $env:RELEASE_TAG
       - uses: actions/attest@v4
         with:
           subject-checksums: artifacts/SHA256SUMS
@@ -44,4 +48,5 @@ jobs:
       - name: Publish immutable release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create ${{ github.ref_name }} artifacts/* --verify-tag --generate-notes
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create $env:RELEASE_TAG artifacts/* --verify-tag --generate-notes

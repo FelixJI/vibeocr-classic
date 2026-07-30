@@ -75,6 +75,11 @@ def package_product_release(
 
     embedded_lock = product_root / "component-lock.json"
     shutil.copyfile(lock_path, embedded_lock)
+    (product_root / "version.json").write_text(
+        _canonical_json({"version": frontend_version}),
+        encoding="utf-8",
+        newline="\n",
+    )
     backend_output = product_root / "backend"
     if backend_output.exists():
         raise ValueError("product layout already contains a backend directory")
@@ -132,7 +137,9 @@ def package_product_release(
         compresslevel=9,
     ) as archive:
         for path in archive_files:
-            relative = (Path(product_root.name) / path.relative_to(product_root)).as_posix()
+            relative = (
+                Path(product_root.name) / path.relative_to(product_root)
+            ).as_posix()
             info = zipfile.ZipInfo(relative, date_time=FIXED_ZIP_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o644 << 16

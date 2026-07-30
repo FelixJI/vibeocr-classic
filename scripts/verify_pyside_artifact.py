@@ -13,6 +13,18 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+MAX_CLASSIC_ARCHIVE_BYTES = 300_000_000
+
+
+def _verify_archive_size(
+    artifact: Path, *, max_bytes: int = MAX_CLASSIC_ARCHIVE_BYTES
+) -> None:
+    actual = artifact.stat().st_size
+    if actual > max_bytes:
+        raise RuntimeError(
+            f"Classic archive exceeds size budget: {actual} > {max_bytes} bytes"
+        )
+
 
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
     """把产品内绑定 wheel 解到隔离 import 根，供 Supervisor smoke 使用。"""
@@ -20,9 +32,7 @@ def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
         (root / "backend" / "runtime-manifest.json").read_text(encoding="utf-8")
     )
     backend_wheel = root / "backend" / str(runtime_manifest["backend_wheel"])
-    protocol_wheels = sorted(
-        (root / "backend").glob("vibeocr_runtime_contracts-*.whl")
-    )
+    protocol_wheels = sorted((root / "backend").glob("vibeocr_runtime_contracts-*.whl"))
     if len(protocol_wheels) != 1:
         raise RuntimeError("frozen smoke requires exactly one contracts wheel")
     smoke_root = root / ".smoke-runtime"
@@ -133,10 +143,72 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
         shutil.rmtree(smoke_root, ignore_errors=True)
 
 
+def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
+    """Launch the frozen entry and require a real QWebEngineView HTML load."""
+    exe = root / "VibeOCR.exe"
+    result_file = root / ".webengine-smoke-result.json"
+    stdout_log = root / ".webengine-smoke.stdout.log"
+    stderr_log = root / ".webengine-smoke.stderr.log"
+    result_file.unlink(missing_ok=True)
+    stdout_log.unlink(missing_ok=True)
+    stderr_log.unlink(missing_ok=True)
+    env = os.environ.copy()
+    env["VIBEOCR_SELF_TEST_WEBENGINE"] = "1"
+    env["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["QT_OPENGL"] = "software"
+    env["QT_QUICK_BACKEND"] = "software"
+    env["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu --disable-gpu-compositing"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    for variable in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
+        env.pop(variable, None)
+    try:
+        with (
+            stdout_log.open("wb") as stdout_handle,
+            stderr_log.open("wb") as stderr_handle,
+        ):
+            process_result = subprocess.run(
+                [str(exe)],
+                cwd=root,
+                env=env,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                timeout=timeout_seconds,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        if process_result.returncode != 0:
+            stderr = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(
+                "frozen WebEngine smoke exited with "
+                f"{process_result.returncode}: {stderr}"
+            )
+        if not result_file.is_file():
+            raise RuntimeError("frozen WebEngine smoke produced no result")
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        if result.get("load_finished") is not True:
+            raise RuntimeError("frozen WebEngine smoke did not finish an HTML load")
+        if result.get("webchannel_round_trip") is not True:
+            raise RuntimeError(
+                "frozen WebEngine smoke did not finish a WebChannel round trip"
+            )
+    except subprocess.TimeoutExpired as error:
+        stderr = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"frozen WebEngine smoke timed out after {timeout_seconds:.0f}s: {stderr}"
+        ) from error
+    finally:
+        result_file.unlink(missing_ok=True)
+        stdout_log.unlink(missing_ok=True)
+        stderr_log.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("artifact", type=Path)
     args = parser.parse_args()
+    _verify_archive_size(args.artifact)
     with tempfile.TemporaryDirectory(prefix="vibeocr-pyside-verify-") as temp:
         with zipfile.ZipFile(args.artifact) as archive:
             archive.extractall(temp)
@@ -158,11 +230,12 @@ def main() -> int:
         prohibited = [
             path.name
             for path in root.iterdir()
-            if path.name.casefold()
-            in {"vibeocr.winui.exe", "vibeocr.bootstrapper.exe"}
+            if path.name.casefold() in {"vibeocr.winui.exe", "vibeocr.bootstrapper.exe"}
         ]
         if prohibited:
-            raise RuntimeError(f"Next executable present in Classic artifact: {prohibited}")
+            raise RuntimeError(
+                f"Next executable present in Classic artifact: {prohibited}"
+            )
         if (root / "updater.exe").stat().st_size == 0:
             raise RuntimeError("Classic updater is empty")
         manifest = json.loads(
@@ -221,13 +294,13 @@ def main() -> int:
 
         installer = runtime_manifest.get("installer", {})
         installer_exe = root / "runtime-installer" / "vibeocr-runtime-installer.exe"
-        if (
-            hashlib.sha256(installer_exe.read_bytes()).hexdigest()
-            != installer.get("executable_sha256")
+        if hashlib.sha256(installer_exe.read_bytes()).hexdigest() != installer.get(
+            "executable_sha256"
         ):
             raise RuntimeError("extracted Runtime Installer hash mismatch")
         if os.name == "nt":
             _verify_frozen_startup(root)
+            _verify_frozen_webengine(root)
     return 0
 
 

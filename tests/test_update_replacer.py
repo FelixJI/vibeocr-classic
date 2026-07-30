@@ -97,6 +97,7 @@ def test_pre_ready_failure_does_not_invoke_blocking_failure_dialog(
     callbacks: list[str] = []
     relaunched: list[tuple[Path, str]] = []
     monkeypatch.setattr(update_replacer, "verify_sha256", lambda _path: False)
+    monkeypatch.setattr(update_replacer.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         update_replacer,
         "launch_app",
@@ -166,6 +167,26 @@ def test_incomplete_rollback_keeps_snapshot_and_recovery_marker(
 
     assert not update_replacer._restore_backup_snapshot(app_dir)
     assert backup.is_dir()
+    assert (backup.parent / "manual-recovery-required.json").is_file()
+
+
+def test_snapshot_enumeration_failure_already_has_recovery_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir, _new_files = _layout(tmp_path)
+    backup = app_dir / "data" / "cache" / "update" / "_backup"
+    backup.mkdir(parents=True)
+    original_iterdir = Path.iterdir
+
+    def fail_backup_iterdir(path: Path):
+        if path == backup:
+            raise OSError("directory unreadable")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_backup_iterdir)
+
+    assert not update_replacer._restore_backup_snapshot(app_dir)
     assert (backup.parent / "manual-recovery-required.json").is_file()
 
 

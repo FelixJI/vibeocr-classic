@@ -51,6 +51,22 @@ _RECOVERY_MARKER = "manual-recovery-required.json"
 
 logger = logging.getLogger("updater")
 
+
+def _write_recovery_marker(backup_dir: Path, reason: str) -> None:
+    recovery_marker = backup_dir.parent / _RECOVERY_MARKER
+    try:
+        recovery_marker.write_text(
+            json.dumps(
+                {"reason": reason, "written_at": datetime.now().isoformat()},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError as error:
+        logger.error("无法写入人工恢复标记（备份仍保留）: %s", error)
+
+
 # 单阶段耗时超过此阈值（秒）时，日志额外标 [SLOW]，便于事后在 updater.log /
 # self_update.log 里一眼定位瓶颈（典型来源：杀独占扫描新 exe、HDD 随机 IO、
 # 网络盘 app_dir）。阈值取经验值——握手超时是 15s，单阶段接近或超过即值得警觉。
@@ -549,19 +565,6 @@ def _restore_backup(
     """从备份恢复 app_dir 中被删除/覆盖的条目。"""
     recovery_marker = backup_dir.parent / _RECOVERY_MARKER
 
-    def mark_recovery_required(reason: str) -> None:
-        try:
-            recovery_marker.write_text(
-                json.dumps(
-                    {"reason": reason, "written_at": datetime.now().isoformat()},
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
-            )
-        except OSError as error:
-            logger.error("无法写入人工恢复标记（备份仍保留）: %s", error)
-
     def file_sha256(path: Path) -> str:
         digest = hashlib.sha256()
         with path.open("rb") as stream:
@@ -571,7 +574,7 @@ def _restore_backup(
 
     # 先写“回滚进行中”。只有清理、复制和逐文件哈希全部成功后才删除；任何未预期
     # 的 iterdir/read/hash 异常都会留下标记，使后续启动/下载不得清掉唯一备份。
-    mark_recovery_required("rollback in progress")
+    _write_recovery_marker(backup_dir, "rollback in progress")
 
     # 先清掉复制阶段可能已写入的残缺文件（非保留、非备份目录）
     cleanup_complete = True
@@ -590,7 +593,7 @@ def _restore_backup(
             cleanup_complete = False
 
     if not cleanup_complete:
-        mark_recovery_required("failed to remove the partial new product")
+        _write_recovery_marker(backup_dir, "failed to remove the partial new product")
         logger.error("回滚前无法清空新版残留，保留备份目录: %s", backup_dir)
         return False
 
@@ -634,7 +637,9 @@ def _restore_backup(
         recovery_marker.unlink(missing_ok=True)
         shutil.rmtree(backup_dir, ignore_errors=True)
     else:
-        mark_recovery_required("restored product does not match the backup snapshot")
+        _write_recovery_marker(
+            backup_dir, "restored product does not match the backup snapshot"
+        )
         logger.error("回滚未完整完成，保留备份目录供人工恢复: %s", backup_dir)
     return restored
 
@@ -644,6 +649,7 @@ def _restore_backup_snapshot(app_dir: Path) -> bool:
     if not backup_dir.is_dir():
         logger.error("更新备份目录不存在，无法回滚: %s", backup_dir)
         return False
+    _write_recovery_marker(backup_dir, "loading rollback snapshot")
     try:
         backed_up = [
             (app_dir / item.name, item)
@@ -1226,6 +1232,9 @@ def run_replacement(
                 # 主动拉起原正式入口：旧实例仍在则单实例协议只会唤醒它；若已被旧端
                 # 误退出，则恢复用户可用的旧版本。此时尚未改动 app_dir。
                 try:
+                    # 旧版 _force_quit 在退出前有 0.1s 收尾窗口；先等其释放单实例锁，
+                    # 避免新入口只唤醒一个即将退出的旧进程后自身退出。
+                    time.sleep(0.5)
                     launch_app(app_dir, launch_entry)
                 except Exception as relaunch_error:
                     logger.error("pre-ready 失败后恢复旧程序失败: %s", relaunch_error)

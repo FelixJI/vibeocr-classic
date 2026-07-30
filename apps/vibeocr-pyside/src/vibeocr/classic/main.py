@@ -173,10 +173,13 @@ def _cleanup_update_artifacts(app_dir: Path) -> None:
         if tmp_dir.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        # _backup/ 备份目录（防御：成功路径由 replace_app_files 内联删、失败路径由
-        # _safe_cleanup_artifacts 删；此处兜底，防 launch_app 异常等极端路径残留）
+        # 非更新启动时清理历史备份。由 updater 启动的新版进程必须保留本轮备份，
+        # 直到窗口发布健康信号、updater 提交事务。
         backup_dir = cache_dir / "_backup"
-        if backup_dir.exists():
+        if (
+            backup_dir.exists()
+            and not os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
+        ):
             shutil.rmtree(backup_dir, ignore_errors=True)
 
         # zip + sha256 + 暂存 updater + ready（保留 progress.json）
@@ -202,6 +205,25 @@ def _cleanup_update_artifacts(app_dir: Path) -> None:
                 pass
     except Exception as e:
         print(f"[VibeOCR] 清理更新残留失败（不影响启动）: {e}")
+
+
+def _publish_update_health(app_dir: Path) -> None:
+    """向替换器确认新版已通过 Runtime 检查并显示主窗口。"""
+    configured = os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
+    if not configured:
+        return
+    try:
+        health_file = Path(configured).resolve()
+        update_cache = (app_dir / "data" / "cache" / "update").resolve()
+        if (
+            not health_file.is_relative_to(update_cache)
+            or health_file.name != "startup.health"
+        ):
+            raise ValueError("更新健康信号路径越出产品更新缓存")
+        health_file.parent.mkdir(parents=True, exist_ok=True)
+        health_file.write_text("ready\n", encoding="utf-8")
+    except Exception as error:
+        print(f"[VibeOCR] 发布更新健康信号失败: {error}")
 
 
 def _cleanup_leftover_old_exes() -> None:
@@ -592,6 +614,7 @@ def launch_application() -> int:
     window = MainWindow()
     window.set_app_settings(app_settings)
     window.show()
+    _publish_update_health(project_root)
     record_startup(StartupEvent.FIRST_WINDOW)  # T3：首窗可见
 
     # Perf-gate smoke mode: process one paint turn, persist T3, then terminate

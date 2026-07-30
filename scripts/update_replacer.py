@@ -227,14 +227,9 @@ def signal_ready(app_dir: Path, ready_filename: str) -> None:
         app_dir: 应用安装目录，ready 文件落在 ``app_dir/data/cache/update/``。
         ready_filename: 就绪文件名（``updater.ready``），主程序端据此轮询握手。
     """
-    try:
-        ready_path = app_dir / "data" / "cache" / "update" / ready_filename
-        ready_path.parent.mkdir(parents=True, exist_ok=True)
-        ready_path.write_text(datetime.now().isoformat(), encoding="utf-8")
-    except Exception as e:
-        # 写 ready 失败不致命：最坏情况是主程序端误判握手失败、走兜底路径，
-        # 兜底路径同样能完成替换。仅记录。
-        logger.warning(f"写就绪信号失败（主程序端可能误判握手失败）: {e}")
+    ready_path = app_dir / "data" / "cache" / "update" / ready_filename
+    ready_path.parent.mkdir(parents=True, exist_ok=True)
+    ready_path.write_text(datetime.now().isoformat(), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +279,43 @@ def verify_sha256(zip_path: Path) -> bool:
         logger.error(f"  actual:   {actual}")
         return False
     return True
+
+
+def verify_update_payload(zip_path: Path, launch_entry: str) -> bool:
+    """校验产品清单、正式入口和 ZIP 文件闭包，再允许旧程序退出。"""
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            names = set(archive.namelist())
+            manifest_names = [
+                name
+                for name in names
+                if name.count("/") == 1
+                and name.endswith("/product-release-manifest.json")
+            ]
+            if len(manifest_names) != 1:
+                logger.error("更新包必须包含一个顶层产品清单")
+                return False
+            root = manifest_names[0].split("/", 1)[0]
+            manifest = json.loads(archive.read(manifest_names[0]))
+            if manifest.get("frontend") != "classic":
+                logger.error("更新包产品类型不是 Classic")
+                return False
+            records = manifest.get("files")
+            if not isinstance(records, dict) or launch_entry not in records:
+                logger.error("更新包产品清单缺少正式入口: %s", launch_entry)
+                return False
+            for relative, record in records.items():
+                member = f"{root}/{relative}"
+                if member not in names or not isinstance(record, dict):
+                    logger.error("更新包缺少清单文件: %s", relative)
+                    return False
+                if archive.getinfo(member).file_size != record.get("size"):
+                    logger.error("更新包清单文件大小不匹配: %s", relative)
+                    return False
+        return True
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+        logger.error("更新包产品清单校验失败: %s", error)
+        return False
 
 
 def extract_zip(zip_path: Path, app_dir: Path) -> Path:
@@ -394,6 +426,8 @@ def replace_app_files(
     new_files_dir: Path,
     app_dir: Path,
     self_exe_names: tuple[str, ...] = ("updater.exe",),
+    *,
+    retain_backup: bool = False,
 ) -> bool:
     """用新文件替换 app_dir 中的非保留内容。
 
@@ -408,11 +442,6 @@ def replace_app_files(
             新路径为空；调用方另行加入自身产品入口。
     """
     logger.info("替换应用文件...")
-
-    # 运行中的 exe 必须先改名，否则下面 rmtree 删它必然失败
-    with _StageTimer("改名避让运行中 exe"):
-        for self_name in self_exe_names:
-            rename_locked_self_exe(app_dir, self_name)
 
     # 待替换的旧条目（保留目录除外）
     old_items = [item for item in app_dir.iterdir() if item.name not in _PRESERVE_DIRS]
@@ -436,6 +465,12 @@ def replace_app_files(
             logger.error(f"备份旧文件失败，中止更新: {e}")
             shutil.rmtree(backup_dir, ignore_errors=True)
             return False
+
+    # 只有完整备份落盘后才允许改名运行中的 exe。这样即使后续复制失败，
+    # 回滚映射仍以正式文件名为键，不会把 VibeOCR.exe 只恢复成 .old。
+    with _StageTimer("改名避让运行中 exe"):
+        for self_name in self_exe_names:
+            rename_locked_self_exe(app_dir, self_name)
 
     # 2) 删除旧条目
     #    注意：删除失败（含被占用）不致命——复制阶段会再尝试覆盖。但「文件被占用」
@@ -494,16 +529,18 @@ def replace_app_files(
             _restore_backup(app_dir, backed_up, backup_dir)
             return False
 
-    # 4) 复制成功，清理备份
-    shutil.rmtree(backup_dir, ignore_errors=True)
+    # 4) 普通调用到这里即可提交；更新主流程会保留备份直到新版发布健康信号。
+    if not retain_backup:
+        shutil.rmtree(backup_dir, ignore_errors=True)
 
     return True
 
 
 def _restore_backup(
     app_dir: Path, backed_up: list[tuple[Path, Path]], backup_dir: Path
-) -> None:
+) -> bool:
     """从备份恢复 app_dir 中被删除/覆盖的条目。"""
+    restored = True
     # 先清掉复制阶段可能已写入的残缺文件（非保留、非备份目录）
     for item in app_dir.iterdir():
         if item.name in _PRESERVE_DIRS:
@@ -517,7 +554,7 @@ def _restore_backup(
             else:
                 item.unlink(missing_ok=True)
         except Exception:
-            pass
+            restored = False
 
     for original, bak in backed_up:
         try:
@@ -529,8 +566,25 @@ def _restore_backup(
                 _busy_copy2(bak, original)
         except Exception as e:
             logger.warning(f"回滚 {original} 失败: {e}")
+            restored = False
 
-    shutil.rmtree(backup_dir, ignore_errors=True)
+    if restored:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+    else:
+        logger.error("回滚未完整完成，保留备份目录供人工恢复: %s", backup_dir)
+    return restored
+
+
+def _restore_backup_snapshot(app_dir: Path) -> bool:
+    backup_dir = app_dir / "data" / "cache" / "update" / "_backup"
+    if not backup_dir.is_dir():
+        logger.error("更新备份目录不存在，无法回滚: %s", backup_dir)
+        return False
+    backed_up = [
+        (app_dir / item.name, item)
+        for item in sorted(backup_dir.iterdir(), key=lambda path: path.name)
+    ]
+    return _restore_backup(app_dir, backed_up, backup_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -831,16 +885,16 @@ def _sync_dependencies(
 
 
 def _safe_cleanup_artifacts(zip_path: Path, tmp_dir: Path | None) -> None:
-    """失败路径兜底清理：删 zip / sha256 / 解压临时目录 / 备份目录。
+    """失败路径兜底清理：删 zip / sha256 / 解压临时目录，保留必要备份。
 
     成功路径由 ``cleanup`` 负责（且 ``replace_app_files`` 已删 _backup）；
-    失败路径下 ``cleanup`` 不会被调用，若不清理会有三处残留堆积：
+    失败路径下 ``cleanup`` 不会被调用，若不清理会有两处残留堆积：
     1. 解压目录 ``data/cache/update/tmp``（数百 MB）——``download_update`` 重下时
        只删 update 目录里的「文件」，不清子目录，残留会越积越多；
-    2. 备份目录 ``data/cache/update/_backup``（回滚后会留空目录或残留文件）；
-    3. 已下载的 zip / sha256（下次下载会覆盖，但留着占用空间）。
+    2. 已下载的 zip / sha256（下次下载会覆盖，但留着占用空间）。
 
-    所有删除都用 ignore_errors / 容错，确保清理本身不会抛异常打断通知流程。
+    ``_backup`` 由完整回滚自行删除；回滚不完整时保留，避免清理器销毁最后一份
+    可人工恢复的旧安装。
     """
     # zip + sha256
     zip_path.unlink(missing_ok=True)
@@ -858,10 +912,6 @@ def _safe_cleanup_artifacts(zip_path: Path, tmp_dir: Path | None) -> None:
         tmp_root = update_dir / "tmp"
     if tmp_root.exists():
         shutil.rmtree(tmp_root, ignore_errors=True)
-    # 备份目录（失败时仍存在，回滚只复制不删 _backup）
-    backup_dir = update_dir / "_backup"
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def cleanup(zip_path: Path, tmp_dir: Path | None) -> None:
@@ -921,10 +971,17 @@ def launch_app(
         health_file.parent.mkdir(parents=True, exist_ok=True)
         health_file.unlink(missing_ok=True)
     logger.info("启动产品正式入口: %s", command)
-    subprocess.Popen(
+    environment = None
+    if health_file is not None:
+        environment = os.environ.copy()
+        environment["VIBEOCR_UPDATE_HEALTH_FILE"] = str(health_file)
+    process = subprocess.Popen(
         command,
         creationflags=0x8 if os.name == "nt" else 0,
         cwd=str(app_dir),
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     if health_file is None:
         return
@@ -933,7 +990,16 @@ def launch_app(
         if health_file.is_file():
             logger.info("产品启动健康信号已确认: %s", health_file)
             return
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"产品在发布启动健康信号前退出，退出码: {process.returncode}"
+            )
         time.sleep(0.1)
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        pass
     raise TimeoutError(f"产品未在 30 秒内发布健康信号: {health_file}")
 
 
@@ -981,6 +1047,7 @@ def run_replacement(
     # 解压目录引用：无论哪个阶段失败，都要清理掉，避免数百 MB 的临时文件长期堆积
     # （download_update 只清 update 目录里的「文件」，不清子目录，残留 tmp/ 会越积越多）。
     new_files_dir: Path | None = None
+    replacement_applied = False
     try:
         if not launch_entry or Path(launch_entry).name != launch_entry:
             raise ValueError("必须提供单个文件名形式的产品启动入口")
@@ -990,6 +1057,9 @@ def run_replacement(
             sha_ok = verify_sha256(zip_path)
         if not sha_ok:
             fail_reason = "更新包完整性（SHA256）校验失败，文件可能损坏或被篡改。"
+            return 1
+        if not verify_update_payload(zip_path, launch_entry):
+            fail_reason = "更新包产品清单不完整或与 Classic 不匹配。"
             return 1
 
         # SHA 校验通过后才允许旧主程序退出。ready 是“安全接管”信号，不再只是
@@ -1008,7 +1078,12 @@ def run_replacement(
             new_files_dir = extract_zip(zip_path, app_dir)
 
         with _StageTimer("替换应用文件（备份-删除-复制-依赖同步）"):
-            replace_ok = replace_app_files(new_files_dir, app_dir, self_exe_names)
+            replace_ok = replace_app_files(
+                new_files_dir,
+                app_dir,
+                self_exe_names,
+                retain_backup=True,
+            )
         if not replace_ok:
             # replace_app_files 已记录详细日志并尝试回滚；这里给用户一个明确结论。
             fail_reason = (
@@ -1016,6 +1091,7 @@ def run_replacement(
                 "已尝试回滚到更新前状态。"
             )
             return 1
+        replacement_applied = True
 
         # 清理（tmp/zip/sha256/暂存 updater）移交新主程序后台线程完成
         # （见 main.py _cleanup_update_artifacts）。updater 关键路径到此结束——
@@ -1027,6 +1103,11 @@ def run_replacement(
                 entry_args=launch_args,
                 health_file=launch_health_file,
             )
+        shutil.rmtree(
+            app_dir / "data" / "cache" / "update" / "_backup",
+            ignore_errors=True,
+        )
+        replacement_applied = False
 
         logger.info("更新完成!")
         # 落盘进度记录（success=True）。必须在 os._exit 之前——os._exit 跳过 finally，
@@ -1042,7 +1123,15 @@ def run_replacement(
     except Exception:
         # 兜底：任何未捕获异常都写进日志文件，避免「静默崩溃、无现场」。
         logger.error("更新过程中发生未捕获异常:\n%s", traceback.format_exc())
-        fail_reason = "更新过程中发生异常，请查看日志或手动下载最新版。"
+        if replacement_applied:
+            restored = _restore_backup_snapshot(app_dir)
+            fail_reason = (
+                "新版启动失败，已回滚到更新前版本。"
+                if restored
+                else "新版启动失败且自动回滚不完整，请使用保留的备份或手动重装。"
+            )
+        else:
+            fail_reason = "更新过程中发生异常，请查看日志或手动下载最新版。"
         return 1
     finally:
         # 落盘进度记录（success=False）：失败现场同样值得留存，便于排查「卡在哪一步」。
@@ -1051,7 +1140,7 @@ def run_replacement(
         # 故此处先 flush 再清理，progress.json 能留存。
         if fail_reason:
             _flush_progress(app_dir, success=False, version=_read_version(app_dir))
-        # 失败时务必清理临时产物（zip / sha256 / 解压目录 / 备份目录），避免长期堆积。
+        # 失败时清理临时产物；不删除不完整回滚留下的 _backup。
         # 成功路径不做 cleanup（清理由新主程序后台线程负责，见 main.py
         # _cleanup_update_artifacts），仅失败路径在此清理现场。
         if fail_reason:

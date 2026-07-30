@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-MAX_CLASSIC_ARCHIVE_BYTES = 300_000_000
+MAX_CLASSIC_ARCHIVE_BYTES = 260_000_000
 
 
 def _verify_archive_size(
@@ -24,6 +24,38 @@ def _verify_archive_size(
         raise RuntimeError(
             f"Classic archive exceeds size budget: {actual} > {max_bytes} bytes"
         )
+
+
+def _verify_bound_python_archive(root: Path, runtime_manifest: dict[str, object]) -> None:
+    python = runtime_manifest.get("python")
+    if not isinstance(python, dict):
+        raise RuntimeError("runtime manifest has no bound Python archive")
+    archive = root / "backend" / str(python.get("archive", ""))
+    if not archive.is_file():
+        raise RuntimeError("bound Python archive is missing")
+    actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if actual != python.get("sha256"):
+        raise RuntimeError("bound Python archive hash mismatch")
+
+
+def _verify_bound_installer_archive(
+    root: Path, runtime_manifest: dict[str, object]
+) -> None:
+    installer = runtime_manifest.get("installer")
+    if not isinstance(installer, dict):
+        raise RuntimeError("runtime manifest has no bound Runtime Installer")
+    archive_path = root / "backend" / str(installer.get("archive", ""))
+    if not archive_path.is_file():
+        raise RuntimeError("bound Runtime Installer archive is missing")
+    if hashlib.sha256(archive_path.read_bytes()).hexdigest() != installer.get("sha256"):
+        raise RuntimeError("bound Runtime Installer archive hash mismatch")
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            executable = archive.read(str(installer.get("executable_path", "")))
+    except (KeyError, zipfile.BadZipFile) as error:
+        raise RuntimeError("bound Runtime Installer executable is missing") from error
+    if hashlib.sha256(executable).hexdigest() != installer.get("executable_sha256"):
+        raise RuntimeError("bound Runtime Installer executable hash mismatch")
 
 
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
@@ -204,6 +236,53 @@ def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
         stderr_log.unlink(missing_ok=True)
 
 
+def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
+    """真实启动冻结入口并要求 QtPdf 在无 PyMuPDF 时可构造。"""
+    exe = root / "VibeOCR.exe"
+    result_file = root / ".pdf-smoke-result.json"
+    stdout_log = root / ".pdf-smoke.stdout.log"
+    stderr_log = root / ".pdf-smoke.stderr.log"
+    for path in (result_file, stdout_log, stderr_log):
+        path.unlink(missing_ok=True)
+    environment = os.environ.copy()
+    environment["VIBEOCR_SELF_TEST_PDF"] = "1"
+    environment["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
+    environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        with (
+            stdout_log.open("w", encoding="utf-8") as stdout_handle,
+            stderr_log.open("w", encoding="utf-8") as stderr_handle,
+        ):
+            process_result = subprocess.run(
+                [str(exe)],
+                cwd=root,
+                env=environment,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                timeout=timeout_seconds,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        if process_result.returncode != 0:
+            stderr = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"frozen QtPdf smoke exited with {process_result.returncode}: {stderr}"
+            )
+        if not result_file.is_file():
+            raise RuntimeError("frozen QtPdf smoke produced no result")
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        if result.get("qt_pdf_created") is not True:
+            raise RuntimeError("frozen QtPdf smoke did not create QPdfDocument")
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"frozen QtPdf smoke timed out after {timeout_seconds:.0f}s"
+        ) from error
+    finally:
+        result_file.unlink(missing_ok=True)
+        stdout_log.unlink(missing_ok=True)
+        stderr_log.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("artifact", type=Path)
@@ -220,7 +299,6 @@ def main() -> int:
             root / "component-lock.json",
             root / "product-release-manifest.json",
             root / "backend" / "runtime-manifest.json",
-            root / "runtime-installer" / "vibeocr-runtime-installer.exe",
         ]
         missing = [
             str(path.relative_to(root)) for path in required if not path.is_file()
@@ -279,6 +357,8 @@ def main() -> int:
         if runtime_manifest_hash != backend.get("runtime_manifest_sha256"):
             raise RuntimeError("bound runtime manifest hash mismatch")
         runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+        _verify_bound_python_archive(root, runtime_manifest)
+        _verify_bound_installer_archive(root, runtime_manifest)
         wheel = root / "backend" / str(runtime_manifest.get("backend_wheel", ""))
         if not wheel.is_file():
             raise RuntimeError("bound backend wheel is missing")
@@ -292,14 +372,9 @@ def main() -> int:
         if "vibeocr/backend/supervisor/main.py" not in members:
             raise RuntimeError("backend wheel has no Supervisor entry")
 
-        installer = runtime_manifest.get("installer", {})
-        installer_exe = root / "runtime-installer" / "vibeocr-runtime-installer.exe"
-        if hashlib.sha256(installer_exe.read_bytes()).hexdigest() != installer.get(
-            "executable_sha256"
-        ):
-            raise RuntimeError("extracted Runtime Installer hash mismatch")
         if os.name == "nt":
             _verify_frozen_startup(root)
+            _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)
     return 0
 

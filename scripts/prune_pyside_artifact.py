@@ -21,6 +21,18 @@ DEVELOPMENT_DIRECTORIES = (
     "typesystems",
 )
 
+UNUSED_PLUGIN_DIRECTORIES = (
+    "plugins/qmltooling",
+)
+
+UNUSED_QT_BINARY_PREFIXES = (
+    "Qt63DQuick",
+    "Qt6Labs",
+    "Qt6Quick3D",
+    "Qt6QuickControls2",
+    "Qt6QuickDialogs2",
+)
+
 UNUSED_QT_BINARIES = (
     "Qt63DAnimation.dll",
     "Qt63DCore.dll",
@@ -56,6 +68,7 @@ UNUSED_QT_BINARIES = (
     "Qt6RemoteObjects.dll",
     "Qt6Scxml.dll",
     "Qt6Sensors.dll",
+    "Qt6SensorsQuick.dll",
     "Qt6SerialPort.dll",
     "Qt6ShaderTools.dll",
     "Qt6SpatialAudio.dll",
@@ -109,6 +122,19 @@ def prune_pyside_artifact(product_root: Path) -> PruneResult:
         shutil.rmtree(directory)
         files_removed += file_count
         bytes_removed += byte_count
+
+    for name in UNUSED_PLUGIN_DIRECTORIES:
+        directory = pyside / name
+        if not directory.is_dir():
+            continue
+        file_count, byte_count = _tree_stats(directory)
+        shutil.rmtree(directory)
+        files_removed += file_count
+        bytes_removed += byte_count
+
+    for path in tuple(pyside.glob("*.dll")):
+        if path.name.startswith(UNUSED_QT_BINARY_PREFIXES):
+            remove_file(path)
 
     for name in UNUSED_QT_BINARIES:
         remove_file(pyside / name)

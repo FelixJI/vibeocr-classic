@@ -63,7 +63,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Classic wheel build failed' }
 python -m pip install --force-reinstall --no-deps `
   (Get-ChildItem $build -Filter "vibeocr_classic-$Version-*.whl" | Select-Object -First 1).FullName
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel install failed' }
-python -m pip install pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1 pymupdf==1.28.0
+python -m pip install pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1
 if ($LASTEXITCODE -ne 0) { throw 'Classic runtime dependency install failed' }
 $dist = Join-Path $build 'dist'
 $pyinstallerArgs = @(
@@ -99,6 +99,7 @@ $hiddenQtModules = @(
 )
 $excludedModules = @(
     'torch', 'torchvision', 'paddle', 'cv2', 'scipy', 'sklearn', 'pandas',
+    'pymupdf', 'fitz', 'lxml',
     'transformers', 'onnxruntime', 'tokenizers', 'safetensors', 'hf_xet',
     'PySide6.Qt3DAnimation', 'PySide6.Qt3DCore', 'PySide6.Qt3DExtras',
     'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DRender',

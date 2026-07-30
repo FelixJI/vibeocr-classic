@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.2 - 2026-07-30
+
+### Fixed
+
+- Reduce the portable archive further by removing the duplicate top-level
+  Runtime Installer, dead PyMuPDF/lxml payload, and unused Qt Quick 3D tooling.
+- Materialize the signed Runtime Installer from its bound archive on demand,
+  verify the bundled CPython archive, and avoid the invalid local
+  `--product-id`/layout combination during first-run inspection.
+- Make updates transactional: validate the product manifest before takeover,
+  preserve the original entry on backup/copy failures, retain the backup until
+  the new UI publishes a health signal, and roll back when startup fails.
+
 ## 0.7.1 - 2026-07-30
 
 ### Fixed

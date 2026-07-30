@@ -815,6 +815,8 @@ class UpdateService:
                 str(self._app_dir),
                 "--entry",
                 "VibeOCR.exe",
+                "--health-file",
+                str(self._cache_dir / "startup.health"),
             ],
             ready_filename="updater.ready",
             label="updater.exe (staged)",

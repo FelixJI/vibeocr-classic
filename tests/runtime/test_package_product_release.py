@@ -126,7 +126,9 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
         members = set(archive.namelist())
         version = json.loads(archive.read("VibeOCR/version.json"))
     assert "VibeOCR/component-lock.json" in members
-    assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" in members
+    assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" not in members
+    assert "VibeOCR/backend/installer.zip" in members
+    assert "VibeOCR/backend/python.tar.gz" in members
     assert "VibeOCR/backend/runtime-manifest.json" in members
     assert version == {"version": "0.7.0"}
 

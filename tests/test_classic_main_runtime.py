@@ -36,3 +36,20 @@ def test_dependency_check_fails_when_runtime_ensure_fails(
     monkeypatch.setattr(main, "RuntimeInstallerClient", lambda _root: client)
 
     assert main.check_production_dependencies() is False
+
+
+def test_update_health_signal_is_confined_to_update_cache(
+    monkeypatch, tmp_path
+) -> None:
+    health_file = tmp_path / "data" / "cache" / "update" / "startup.health"
+    monkeypatch.setenv("VIBEOCR_UPDATE_HEALTH_FILE", str(health_file))
+
+    main._publish_update_health(tmp_path)
+
+    assert health_file.read_text(encoding="utf-8") == "ready\n"
+
+    outside = tmp_path.parent / "startup.health"
+    outside.unlink(missing_ok=True)
+    monkeypatch.setenv("VIBEOCR_UPDATE_HEALTH_FILE", str(outside))
+    main._publish_update_health(tmp_path)
+    assert not outside.exists()

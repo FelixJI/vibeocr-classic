@@ -86,9 +86,10 @@ def main() -> int:
 
     # 自动判断新旧路径：updater 自身是否在 app_dir。
     # 新路径（暂存目录运行）无需避让 updater.exe；旧路径（过渡期，自身在 app_dir）需避让。
-    # 产品入口由调用方显式传入；更新器不包含跨产品回退。
+    # 只避让当前仍在运行且位于 app_dir 的 updater 自身。Classic 在收到 ready 后
+    # 已退出，正式入口不应被提前改名；普通删除/覆盖由 busy retry 处理。
     detected = _detect_self_exe_names(app_dir)
-    self_exe_names = (*detected, launch_entry)
+    self_exe_names = detected
     logger.info(f"路径判定: detected={detected}, self_exe_names={self_exe_names}")
 
     # 就绪信号用默认的 updater.ready，与主程序端 _launch_updater 的轮询文件名对应。

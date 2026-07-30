@@ -176,9 +176,11 @@ def _cleanup_update_artifacts(app_dir: Path) -> None:
         # 非更新启动时清理历史备份。由 updater 启动的新版进程必须保留本轮备份，
         # 直到窗口发布健康信号、updater 提交事务。
         backup_dir = cache_dir / "_backup"
+        recovery_marker = cache_dir / "manual-recovery-required.json"
         if (
             backup_dir.exists()
             and not os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
+            and not recovery_marker.is_file()
         ):
             shutil.rmtree(backup_dir, ignore_errors=True)
 
@@ -614,7 +616,6 @@ def launch_application() -> int:
     window = MainWindow()
     window.set_app_settings(app_settings)
     window.show()
-    _publish_update_health(project_root)
     record_startup(StartupEvent.FIRST_WINDOW)  # T3：首窗可见
 
     # Perf-gate smoke mode: process one paint turn, persist T3, then terminate
@@ -634,6 +635,9 @@ def launch_application() -> int:
     # 从「首次截图显示结果时」前移到「启动空闲片段」，避免首次结果前的多次闪烁。
     from PySide6.QtCore import QTimer
 
+    # 至少经过一次 Qt 事件循环和首帧绘制窗口后再提交更新事务。若主窗口在首次
+    # paint/事件分发阶段崩溃，updater 收不到健康信号并会回滚。
+    QTimer.singleShot(250, lambda: _publish_update_health(project_root))
     QTimer.singleShot(0, window.prewarm_result_webengine)
 
     # 第二实例通知提到前台时，恢复并激活主窗口。

@@ -7,6 +7,8 @@ from scripts.verify_pyside_artifact import (
     MAX_CLASSIC_ARCHIVE_BYTES,
     _verify_archive_size,
     _verify_bound_python_archive,
+    _verify_product_file_closure,
+    _verify_reduced_layout,
 )
 
 
@@ -166,3 +168,31 @@ def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:
         assert "Python archive is missing" in str(error)
     else:
         raise AssertionError("missing bound Python archive was accepted")
+
+
+def test_product_manifest_requires_exact_reduced_file_closure(tmp_path: Path) -> None:
+    (tmp_path / "VibeOCR.exe").write_bytes(b"app")
+    records = {
+        "VibeOCR.exe": {
+            "sha256": "unused here",
+            "size": 3,
+        }
+    }
+    _verify_product_file_closure(tmp_path, records)
+    _verify_reduced_layout(tmp_path)
+
+    extra = tmp_path / "runtime-installer" / "installer.exe"
+    extra.parent.mkdir()
+    extra.write_bytes(b"duplicate")
+    try:
+        _verify_product_file_closure(tmp_path, records)
+    except RuntimeError as error:
+        assert "file closure" in str(error)
+    else:
+        raise AssertionError("unbound extra file was accepted")
+    try:
+        _verify_reduced_layout(tmp_path)
+    except RuntimeError as error:
+        assert "prohibited" in str(error)
+    else:
+        raise AssertionError("duplicate top-level Runtime Installer was accepted")

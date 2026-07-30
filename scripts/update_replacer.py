@@ -47,6 +47,7 @@ _PRESERVE_DIRS = {
     "runtimes",
     "state",
 }
+_RECOVERY_MARKER = "manual-recovery-required.json"
 
 logger = logging.getLogger("updater")
 
@@ -442,6 +443,12 @@ def replace_app_files(
             新路径为空；调用方另行加入自身产品入口。
     """
     logger.info("替换应用文件...")
+    recovery_marker = (
+        app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
+    )
+    if recovery_marker.is_file():
+        logger.error("存在待人工恢复的更新备份，拒绝覆盖: %s", recovery_marker)
+        return False
 
     # 待替换的旧条目（保留目录除外）
     old_items = [item for item in app_dir.iterdir() if item.name not in _PRESERVE_DIRS]
@@ -540,22 +547,50 @@ def _restore_backup(
     app_dir: Path, backed_up: list[tuple[Path, Path]], backup_dir: Path
 ) -> bool:
     """从备份恢复 app_dir 中被删除/覆盖的条目。"""
-    restored = True
+    recovery_marker = backup_dir.parent / _RECOVERY_MARKER
+
+    def mark_recovery_required(reason: str) -> None:
+        try:
+            recovery_marker.write_text(
+                json.dumps(
+                    {"reason": reason, "written_at": datetime.now().isoformat()},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError as error:
+            logger.error("无法写入人工恢复标记（备份仍保留）: %s", error)
+
+    def file_sha256(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     # 先清掉复制阶段可能已写入的残缺文件（非保留、非备份目录）
+    cleanup_complete = True
     for item in app_dir.iterdir():
         if item.name in _PRESERVE_DIRS:
             continue
+        if item.name.endswith(".exe.old"):
+            # 非运行态可直接清掉；若仍被当前 updater 的 PE 映射锁定，保留它不影响
+            # 正式入口恢复，后续由启动清理/MoveFileEx 处理。
+            _busy_remove(item, is_dir=False)
+            continue
         # 跳过备份目录自身（在 data/ 下，属于保留目录，这里保险起见再判一次）
-        try:
-            if backup_dir in item.parents or item == backup_dir:
-                continue
-            if item.is_dir():
-                shutil.rmtree(item, ignore_errors=True)
-            else:
-                item.unlink(missing_ok=True)
-        except Exception:
-            restored = False
+        if backup_dir in item.parents or item == backup_dir:
+            continue
+        if not _busy_remove(item, is_dir=item.is_dir()):
+            cleanup_complete = False
 
+    if not cleanup_complete:
+        mark_recovery_required("failed to remove the partial new product")
+        logger.error("回滚前无法清空新版残留，保留备份目录: %s", backup_dir)
+        return False
+
+    restored = True
     for original, bak in backed_up:
         try:
             if bak.is_dir():
@@ -569,8 +604,33 @@ def _restore_backup(
             restored = False
 
     if restored:
+        for original, bak in backed_up:
+            if bak.is_dir():
+                backup_files = {
+                    path.relative_to(bak).as_posix(): file_sha256(path)
+                    for path in bak.rglob("*")
+                    if path.is_file()
+                }
+                restored_files = {
+                    path.relative_to(original).as_posix(): file_sha256(path)
+                    for path in original.rglob("*")
+                    if path.is_file()
+                }
+                if restored_files != backup_files:
+                    restored = False
+                    break
+            elif (
+                not original.is_file()
+                or file_sha256(original) != file_sha256(bak)
+            ):
+                restored = False
+                break
+
+    if restored:
+        recovery_marker.unlink(missing_ok=True)
         shutil.rmtree(backup_dir, ignore_errors=True)
     else:
+        mark_recovery_required("restored product does not match the backup snapshot")
         logger.error("回滚未完整完成，保留备份目录供人工恢复: %s", backup_dir)
     return restored
 
@@ -1048,9 +1108,16 @@ def run_replacement(
     # （download_update 只清 update 目录里的「文件」，不清子目录，残留 tmp/ 会越积越多）。
     new_files_dir: Path | None = None
     replacement_applied = False
+    ready_published = False
     try:
         if not launch_entry or Path(launch_entry).name != launch_entry:
             raise ValueError("必须提供单个文件名形式的产品启动入口")
+        recovery_marker = (
+            app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
+        )
+        if recovery_marker.is_file():
+            fail_reason = "检测到待人工恢复的更新备份，已拒绝覆盖。"
+            return 1
         # verify_zip(testzip) 已移交旧主程序端（递送时确保 zip 可读，可安全抽取 updater）。
         # 此处仅做 verify_sha256（更强，且由新代码校验自己要部署的包——黄金法则）。
         with _StageTimer("校验 SHA256"):
@@ -1066,6 +1133,7 @@ def run_replacement(
         # “进程启动”信号；校验失败时旧程序保持运行，避免无谓闪退。
         with _StageTimer("写就绪信号"):
             signal_ready(app_dir, ready_filename)
+        ready_published = True
 
         # Classic 收到 ready 后会先让出一个事件循环 turn，再硬退出。给文件映射和
         # DLL 句柄一个释放窗口，减少替换阶段 WinError 5/32；后续 busy retry 仍是
@@ -1149,7 +1217,7 @@ def run_replacement(
             # replace_app_files 会尽力回滚文件，但应用保持关闭，等待用户处理失败提示。
             # 通知用户：替换器无 GUI 主体，windowed 运行下 stdout 不可见，唯一可见反馈
             # 是调用方注入的弹窗。历史 bug「更新失败无任何提示」即源于此缺失。
-            if on_failure is not None:
+            if on_failure is not None and ready_published:
                 try:
                     on_failure(fail_reason)
                 except Exception as notify_err:

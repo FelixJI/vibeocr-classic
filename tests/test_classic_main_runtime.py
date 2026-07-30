@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -53,3 +54,8 @@ def test_update_health_signal_is_confined_to_update_cache(
     monkeypatch.setenv("VIBEOCR_UPDATE_HEALTH_FILE", str(outside))
     main._publish_update_health(tmp_path)
     assert not outside.exists()
+
+
+def test_update_health_is_scheduled_after_event_loop_turn() -> None:
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    assert "QTimer.singleShot(250, lambda: _publish_update_health(project_root))" in source

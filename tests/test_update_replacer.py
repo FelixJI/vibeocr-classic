@@ -81,6 +81,28 @@ def test_ready_signal_failure_is_fatal(
         update_replacer.signal_ready(tmp_path, "updater.ready")
 
 
+def test_pre_ready_failure_does_not_invoke_blocking_failure_dialog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir, _new_files = _layout(tmp_path)
+    update_zip = tmp_path / "update.zip"
+    update_zip.write_bytes(b"invalid")
+    callbacks: list[str] = []
+    monkeypatch.setattr(update_replacer, "verify_sha256", lambda _path: False)
+
+    result = update_replacer.run_replacement(
+        update_zip,
+        app_dir,
+        launch_entry="VibeOCR.exe",
+        on_failure=callbacks.append,
+    )
+
+    assert result == 1
+    assert callbacks == []
+    assert (app_dir / "VibeOCR.exe").read_bytes() == b"old executable"
+
+
 def test_launch_failure_rolls_back_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -117,6 +139,21 @@ def test_launch_failure_rolls_back_replacement(
         '{"version":"0.7.1"}'
     )
     assert (app_dir / "data" / "user.txt").read_text(encoding="utf-8") == "preserved"
+
+
+def test_incomplete_rollback_keeps_snapshot_and_recovery_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir, _new_files = _layout(tmp_path)
+    backup = app_dir / "data" / "cache" / "update" / "_backup"
+    backup.mkdir(parents=True)
+    (backup / "VibeOCR.exe").write_bytes(b"old executable")
+    monkeypatch.setattr(update_replacer, "_busy_remove", lambda *_args, **_kwargs: False)
+
+    assert not update_replacer._restore_backup_snapshot(app_dir)
+    assert backup.is_dir()
+    assert (backup.parent / "manual-recovery-required.json").is_file()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows updater executable semantics")

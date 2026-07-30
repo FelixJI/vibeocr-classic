@@ -26,6 +26,42 @@ def _verify_archive_size(
         )
 
 
+def _verify_product_file_closure(
+    root: Path, records: dict[str, object]
+) -> None:
+    actual = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and path != root / "product-release-manifest.json"
+    }
+    expected = {str(relative) for relative in records}
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise RuntimeError(
+            f"product file closure mismatch: missing={missing}, extra={extra}"
+        )
+
+
+def _verify_reduced_layout(root: Path) -> None:
+    prohibited = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix().casefold()
+        if (
+            relative.startswith("runtime-installer/")
+            or "/pymupdf" in f"/{relative}"
+            or "/fitz" in f"/{relative}"
+            or "/lxml" in f"/{relative}"
+            or "quick3d" in relative
+            or "/qmltooling/" in f"/{relative}/"
+        ):
+            prohibited.append(relative)
+    if prohibited:
+        raise RuntimeError(f"prohibited reduced-layout files present: {prohibited}")
+
+
 def _verify_bound_python_archive(root: Path, runtime_manifest: dict[str, object]) -> None:
     python = runtime_manifest.get("python")
     if not isinstance(python, dict):
@@ -40,7 +76,7 @@ def _verify_bound_python_archive(root: Path, runtime_manifest: dict[str, object]
 
 def _verify_bound_installer_archive(
     root: Path, runtime_manifest: dict[str, object]
-) -> None:
+) -> bytes:
     installer = runtime_manifest.get("installer")
     if not isinstance(installer, dict):
         raise RuntimeError("runtime manifest has no bound Runtime Installer")
@@ -56,6 +92,152 @@ def _verify_bound_installer_archive(
         raise RuntimeError("bound Runtime Installer executable is missing") from error
     if hashlib.sha256(executable).hexdigest() != installer.get("executable_sha256"):
         raise RuntimeError("bound Runtime Installer executable hash mismatch")
+    return executable
+
+
+def _verify_bound_installer_inspect(
+    root: Path,
+    runtime_manifest: dict[str, object],
+    executable: bytes,
+    profile: str,
+    timeout_seconds: float = 30.0,
+) -> None:
+    """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
+    executable_path = (
+        root
+        / "data"
+        / "cache"
+        / "runtime-installer"
+        / "vibeocr-runtime-installer.exe"
+    )
+    executable_path.parent.mkdir(parents=True, exist_ok=True)
+    executable_path.write_bytes(executable)
+    result = subprocess.run(
+        [
+            str(executable_path),
+            "inspect",
+            "--product-root",
+            str(root),
+            "--component-lock",
+            str(root / "component-lock.json"),
+            "--runtime-manifest",
+            str(root / "backend" / "runtime-manifest.json"),
+            "--profile",
+            profile,
+            "--json",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_seconds,
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    envelopes = []
+    for line in result.stdout.splitlines():
+        try:
+            value = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            envelopes.append(value)
+    envelope = envelopes[-1] if envelopes else {}
+    if result.returncode != 0 or envelope.get("status") != "missing":
+        raise RuntimeError(
+            "bound Runtime Installer inspect failed: "
+            f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+        )
+    if envelope.get("integrity") != "not-installed":
+        raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
+
+
+def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
+    """用正式 updater.exe 验证成功提交、data 保留与启动失败回滚。"""
+    updater = root / "updater.exe"
+    updater_bytes = updater.read_bytes()
+
+    def write_update_zip(path: Path) -> None:
+        version = b'{"version":"0.7.2"}'
+        records = {
+            "VibeOCR.exe": {
+                "sha256": hashlib.sha256(updater_bytes).hexdigest(),
+                "size": len(updater_bytes),
+            },
+            "version.json": {
+                "sha256": hashlib.sha256(version).hexdigest(),
+                "size": len(version),
+            },
+        }
+        manifest = json.dumps(
+            {"frontend": "classic", "files": records},
+            sort_keys=True,
+        ).encode()
+        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("VibeOCR/VibeOCR.exe", updater_bytes)
+            archive.writestr("VibeOCR/version.json", version)
+            archive.writestr("VibeOCR/product-release-manifest.json", manifest)
+        Path(f"{path}.sha256").write_text(
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+            encoding="utf-8",
+        )
+
+    for should_fail in (False, True):
+        case = root / (".updater-fail-smoke" if should_fail else ".updater-ok-smoke")
+        app_dir = case / "app"
+        app_dir.mkdir(parents=True)
+        old_executable = b"old executable"
+        (app_dir / "VibeOCR.exe").write_bytes(old_executable)
+        (app_dir / "version.json").write_text(
+            '{"version":"0.7.1"}', encoding="utf-8"
+        )
+        data = app_dir / "data"
+        data.mkdir()
+        (data / "user.txt").write_text("preserved", encoding="utf-8")
+        update_zip = case / "update.zip"
+        write_update_zip(update_zip)
+        health_file = data / "cache" / "update" / "startup.health"
+        command = [
+            str(updater),
+            "--update",
+            str(update_zip),
+            "--app-dir",
+            str(app_dir),
+            "--entry",
+            "VibeOCR.exe",
+            "--entry-arg=--vibeocr-self-test-health",
+            "--health-file",
+            str(health_file),
+        ]
+        if should_fail:
+            command.append("--entry-arg=--vibeocr-self-test-fail")
+        environment = os.environ.copy()
+        environment["VIBEOCR_SELF_TEST_NO_DIALOG"] = "1"
+        result = subprocess.run(
+            command,
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        expected_code = 1 if should_fail else 0
+        if result.returncode != expected_code:
+            raise RuntimeError(
+                "frozen updater smoke failed: "
+                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
+            )
+        expected_executable = old_executable if should_fail else updater_bytes
+        if (app_dir / "VibeOCR.exe").read_bytes() != expected_executable:
+            raise RuntimeError("frozen updater smoke left the wrong product entry")
+        if (data / "user.txt").read_text(encoding="utf-8") != "preserved":
+            raise RuntimeError("frozen updater smoke did not preserve user data")
+        if (data / "cache" / "update" / "_backup").exists():
+            raise RuntimeError("frozen updater smoke left a committed backup")
+        shutil.rmtree(case, ignore_errors=True)
 
 
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
@@ -324,6 +506,8 @@ def main() -> int:
         records = manifest.get("files")
         if not isinstance(records, dict) or not records:
             raise RuntimeError("product release manifest has no file closure")
+        _verify_product_file_closure(root, records)
+        _verify_reduced_layout(root)
         for relative, record in records.items():
             bound = root / str(relative)
             if not bound.is_file():
@@ -358,7 +542,7 @@ def main() -> int:
             raise RuntimeError("bound runtime manifest hash mismatch")
         runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
         _verify_bound_python_archive(root, runtime_manifest)
-        _verify_bound_installer_archive(root, runtime_manifest)
+        installer_executable = _verify_bound_installer_archive(root, runtime_manifest)
         wheel = root / "backend" / str(runtime_manifest.get("backend_wheel", ""))
         if not wheel.is_file():
             raise RuntimeError("bound backend wheel is missing")
@@ -373,6 +557,13 @@ def main() -> int:
             raise RuntimeError("backend wheel has no Supervisor entry")
 
         if os.name == "nt":
+            _verify_bound_installer_inspect(
+                root,
+                runtime_manifest,
+                installer_executable,
+                str(backend.get("profile", "")),
+            )
+            _verify_frozen_updater(root)
             _verify_frozen_startup(root)
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)

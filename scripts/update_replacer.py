@@ -569,6 +569,10 @@ def _restore_backup(
                 digest.update(chunk)
         return digest.hexdigest()
 
+    # 先写“回滚进行中”。只有清理、复制和逐文件哈希全部成功后才删除；任何未预期
+    # 的 iterdir/read/hash 异常都会留下标记，使后续启动/下载不得清掉唯一备份。
+    mark_recovery_required("rollback in progress")
+
     # 先清掉复制阶段可能已写入的残缺文件（非保留、非备份目录）
     cleanup_complete = True
     for item in app_dir.iterdir():
@@ -640,11 +644,15 @@ def _restore_backup_snapshot(app_dir: Path) -> bool:
     if not backup_dir.is_dir():
         logger.error("更新备份目录不存在，无法回滚: %s", backup_dir)
         return False
-    backed_up = [
-        (app_dir / item.name, item)
-        for item in sorted(backup_dir.iterdir(), key=lambda path: path.name)
-    ]
-    return _restore_backup(app_dir, backed_up, backup_dir)
+    try:
+        backed_up = [
+            (app_dir / item.name, item)
+            for item in sorted(backup_dir.iterdir(), key=lambda path: path.name)
+        ]
+        return _restore_backup(app_dir, backed_up, backup_dir)
+    except Exception:
+        logger.error("回滚快照验证异常，保留人工恢复标记:\n%s", traceback.format_exc())
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1221,14 @@ def run_replacement(
         # _cleanup_update_artifacts），仅失败路径在此清理现场。
         if fail_reason:
             _safe_cleanup_artifacts(zip_path, new_files_dir)
+            if not ready_published:
+                # v0.7.1 把 15s pre-ready 超时误当成接管成功并可能先退出。失败时
+                # 主动拉起原正式入口：旧实例仍在则单实例协议只会唤醒它；若已被旧端
+                # 误退出，则恢复用户可用的旧版本。此时尚未改动 app_dir。
+                try:
+                    launch_app(app_dir, launch_entry)
+                except Exception as relaunch_error:
+                    logger.error("pre-ready 失败后恢复旧程序失败: %s", relaunch_error)
             # 正式切换后失败只能进入可见的修复/手工恢复路径，绝不能重新拉起旧 UI。
             # replace_app_files 会尽力回滚文件，但应用保持关闭，等待用户处理失败提示。
             # 通知用户：替换器无 GUI 主体，windowed 运行下 stdout 不可见，唯一可见反馈

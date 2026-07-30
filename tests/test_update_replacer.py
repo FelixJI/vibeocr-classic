@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -11,6 +12,11 @@ from pathlib import Path
 import pytest
 
 from scripts import update_replacer
+from vibeocr.classic.services.update_service import (
+    DOWNLOAD_REASON_RECOVERY_REQUIRED,
+    UpdateInfo,
+    download_update,
+)
 
 
 def _layout(tmp_path: Path) -> tuple[Path, Path]:
@@ -89,7 +95,13 @@ def test_pre_ready_failure_does_not_invoke_blocking_failure_dialog(
     update_zip = tmp_path / "update.zip"
     update_zip.write_bytes(b"invalid")
     callbacks: list[str] = []
+    relaunched: list[tuple[Path, str]] = []
     monkeypatch.setattr(update_replacer, "verify_sha256", lambda _path: False)
+    monkeypatch.setattr(
+        update_replacer,
+        "launch_app",
+        lambda app, entry, **_kwargs: relaunched.append((app, entry)),
+    )
 
     result = update_replacer.run_replacement(
         update_zip,
@@ -100,6 +112,7 @@ def test_pre_ready_failure_does_not_invoke_blocking_failure_dialog(
 
     assert result == 1
     assert callbacks == []
+    assert relaunched == [(app_dir, "VibeOCR.exe")]
     assert (app_dir / "VibeOCR.exe").read_bytes() == b"old executable"
 
 
@@ -154,6 +167,32 @@ def test_incomplete_rollback_keeps_snapshot_and_recovery_marker(
     assert not update_replacer._restore_backup_snapshot(app_dir)
     assert backup.is_dir()
     assert (backup.parent / "manual-recovery-required.json").is_file()
+
+
+def test_download_refuses_to_overwrite_manual_recovery_snapshot(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "data" / "cache" / "update"
+    backup = cache / "_backup"
+    backup.mkdir(parents=True)
+    (backup / "VibeOCR.exe").write_bytes(b"only recovery copy")
+    marker = cache / "manual-recovery-required.json"
+    marker.write_text("{}", encoding="utf-8")
+    info = UpdateInfo(
+        version="0.7.2",
+        download_url="https://example.invalid/update.zip",
+        sha256_url="https://example.invalid/update.zip.sha256",
+        changelog="",
+        zip_filename="update.zip",
+        sha256_filename="update.zip.sha256",
+    )
+
+    path, reasons = asyncio.run(download_update(info, cache))
+
+    assert path is None
+    assert reasons == [DOWNLOAD_REASON_RECOVERY_REQUIRED]
+    assert marker.is_file()
+    assert (backup / "VibeOCR.exe").read_bytes() == b"only recovery copy"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows updater executable semantics")

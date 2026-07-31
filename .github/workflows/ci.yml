@@ -1,8 +1,11 @@
 name: CI
 
+# CI runs only on pull requests. Every commit to main must arrive through a
+# PR, enforced by the repository branch protection rule
+# ("Require a pull request before merging" + "Do not allow bypassing the
+# above"). That removes the duplicate push(main) run after a merge while
+# keeping direct pushes from landing unverified.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:

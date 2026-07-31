@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "pull-request-title-pattern": "chore(main): release ${version}",
+  "draft": true,
+  "packages": {
+    ".": {
+      "package-name": "vibeocr-classic",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "apps/vibeocr-pyside/pyproject.toml",
+          "jsonpath": "$.project.version"
+        },
+        {
+          "type": "generic",
+          "path": "apps/vibeocr-pyside/src/vibeocr/classic/__init__.py"
+        },
+        {
+          "type": "generic",
+          "path": "version.txt"
+        }
+      ]
+    }
+  }
+}

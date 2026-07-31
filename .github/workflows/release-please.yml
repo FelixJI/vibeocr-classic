@@ -29,6 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Compute requested version
+        # .release-please-manifest.json is the single source of truth for the
+        # released version. This step only translates the chosen bump part
+        # (patch/minor/major) into an absolute target passed to release-please
+        # via `release-as`; it never derives a version from commit messages,
+        # so there is exactly one version-computation path.
         id: version
         shell: python
         env:

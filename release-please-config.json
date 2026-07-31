@@ -5,7 +5,6 @@
   "include-component-in-tag": false,
   "pull-request-title-pattern": "chore(main): release ${version}",
   "draft": true,
-  "force-tag-creation": true,
   "packages": {
     ".": {
       "package-name": "vibeocr-classic",
@@ -18,6 +17,10 @@
         {
           "type": "generic",
           "path": "apps/vibeocr-pyside/src/vibeocr/classic/__init__.py"
+        },
+        {
+          "type": "generic",
+          "path": "version.txt"
         }
       ]
     }

@@ -29,15 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           ref: ${{ inputs.release_tag }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - uses: actions/setup-dotnet@v5
-        with:
-          global-json-file: global.json
-        if: hashFiles('global.json') != ''
       - name: Verify tag and draft Release
         shell: pwsh
         env:

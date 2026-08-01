@@ -53,7 +53,7 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     ).read_text(encoding="utf-8")
 
 
-def test_release_build_is_driven_by_tag_and_project_metadata() -> None:
+def test_release_build_uses_resolved_draft_tag_and_project_metadata() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
@@ -63,12 +63,12 @@ def test_release_build_is_driven_by_tag_and_project_metadata() -> None:
     assert "frontend-version $Version" in script
     assert "VibeOCR-Classic-v$Version-win64.zip" in script
     assert "vibeocr_classic-$Version-*.whl" in script
-    assert "tags: ['v*']" in workflow
-    assert workflow.count("RELEASE_TAG: ${{ github.ref_name }}") == 3
-    assert "-Version $env:RELEASE_TAG" in workflow
-    assert "gh release create $env:RELEASE_TAG" in workflow
-    assert "gh release create ${{ github.ref_name }}" not in workflow
-    assert "'${{ github.ref_name }}'" not in workflow
+    assert 'workflows: ["Release Please"]' in workflow
+    assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
+    assert workflow.count("RELEASE_TAG: ${{ env.RELEASE_TAG }}") == 4
+    assert "-Version '${{ env.RELEASE_TAG }}'" in workflow
+    assert "gh release upload $env:RELEASE_TAG @assets --clobber" in workflow
+    assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
     assert "v0.7.0" not in workflow
 
 
@@ -153,8 +153,7 @@ def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:
         "python": {
             "archive": python_archive.name,
             "sha256": (
-                "4fc203c5d4f67d3a1d44e97072f4c542"
-                "0f3f57abad9589a098ba060075fda875"
+                "4fc203c5d4f67d3a1d44e97072f4c5420f3f57abad9589a098ba060075fda875"
             ),
         }
     }

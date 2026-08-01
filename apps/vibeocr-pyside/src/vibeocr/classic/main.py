@@ -717,7 +717,13 @@ def main() -> int:
 
     # 1. 检查生产环境依赖
     if not check_production_dependencies():
-        input("\n按回车键退出...")
+        # PyInstaller 的 windowed 构建没有控制台，sys.stdin 会是 None。
+        # 仅在标准输入可用时保留开发态的“按回车退出”提示。
+        if sys.stdin is not None:
+            try:
+                input("\n按回车键退出...")
+            except (EOFError, OSError, RuntimeError, ValueError):
+                pass
         return 1
 
     # 清理上次更新残留（后台 daemon 线程，不阻塞启动）。

@@ -380,6 +380,7 @@ class TestPreprocessOptionsWidgetPipelineLockGeneric:
 
     def test_unlock_restores_all(self, widget):
         """unlock 后所有项恢复可选。"""
+        widget.apply_gpu_gating(True)
         widget.lock_to_pipelines({OCRPipeline.OCR})
         widget.unlock_pipeline()
         assert widget.is_pipeline_locked is False
@@ -388,6 +389,7 @@ class TestPreprocessOptionsWidgetPipelineLockGeneric:
 
     def test_lock_to_document_parsing_still_works(self, widget):
         """重构后 lock_to_document_parsing 行为不变。"""
+        widget.apply_gpu_gating(True)
         widget.lock_to_document_parsing("文档")
         allowed = {OCRPipeline.DOCUMENT_PARSING, OCRPipeline.PADDLEOCR_VL}
         for i in range(widget._pipeline_combo.count()):

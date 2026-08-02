@@ -101,11 +101,12 @@ class TestPynvmlStatusPaths:
 
         import pynvml
 
-        monitor = GPUMemoryMonitor()
         with (
+            patch.object(pynvml, "nvmlInit"),
             patch.object(pynvml, "nvmlDeviceGetHandleByIndex", return_value="handle"),
             patch.object(pynvml, "nvmlDeviceGetMemoryInfo", return_value=mem),
         ):
+            monitor = GPUMemoryMonitor()
             status = monitor.get_status()
         assert status.available is True
         assert status.total == 8 * 1024  # 8GB → 8192MB

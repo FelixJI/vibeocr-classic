@@ -69,6 +69,7 @@ def test_release_build_uses_resolved_draft_tag_and_project_metadata() -> None:
     assert "-Version '${{ env.RELEASE_TAG }}'" in workflow
     assert "gh release upload $env:RELEASE_TAG @assets --clobber" in workflow
     assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
+    assert "gh release create" not in workflow
     assert "v0.7.0" not in workflow
 
 

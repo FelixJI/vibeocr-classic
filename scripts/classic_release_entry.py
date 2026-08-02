@@ -2,11 +2,110 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sys
+import traceback
+from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
+from typing import TextIO
 
-from vibeocr.classic.main import main
+
+_BOOTSTRAP_LOG_MAX_BYTES = 1024 * 1024
+
+
+class _TeeTextIO:
+    """Mirror bootstrap output to its original stream and a durable log."""
+
+    def __init__(self, primary: TextIO | None, log: TextIO) -> None:
+        self._primary = primary
+        self._log = log
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, value: str) -> int:
+        if self._primary is not None:
+            try:
+                self._primary.write(value)
+                self._primary.flush()
+            except (OSError, ValueError):
+                pass
+        self._log.write(value)
+        self._log.flush()
+        return len(value)
+
+    def flush(self) -> None:
+        if self._primary is not None:
+            try:
+                self._primary.flush()
+            except (OSError, ValueError):
+                pass
+        self._log.flush()
+
+
+def _bootstrap_log_path() -> Path:
+    configured = os.environ.get("VIBEOCR_BOOTSTRAP_LOG")
+    if configured:
+        return Path(configured)
+    if getattr(sys, "frozen", False):
+        install_root = Path(sys.executable).resolve().parent
+    else:
+        install_root = Path(__file__).resolve().parents[1]
+    return install_root / "data" / "logs" / "vibeocr-bootstrap.log"
+
+
+def _open_bootstrap_log() -> TextIO | None:
+    path = _bootstrap_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size >= _BOOTSTRAP_LOG_MAX_BYTES:
+            rotated = path.with_name(f"{path.stem}.1{path.suffix}")
+            rotated.unlink(missing_ok=True)
+            path.replace(rotated)
+        return path.open("a", encoding="utf-8", buffering=1)
+    except OSError:
+        return None
+
+
+def _run_with_bootstrap(entrypoint: Callable[[], int]) -> int:
+    """Run the real entry behind a stdlib-only, pre-import diagnostic boundary."""
+    log = _open_bootstrap_log()
+    if log is None:
+        return entrypoint()
+    with log:
+        stdout = _TeeTextIO(sys.stdout, log)
+        stderr = _TeeTextIO(sys.stderr, log)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            print(
+                f"[{datetime.now().astimezone().isoformat()}] "
+                f"bootstrap started: pid={os.getpid()}"
+            )
+            try:
+                result = entrypoint()
+            except BaseException:
+                print("bootstrap failed before application ready:", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                raise
+            if result != 0:
+                print(
+                    f"application exited before ready: code={result}", file=sys.stderr
+                )
+            return result
+
+
+def _run_application() -> int:
+    # Keep this import inside the bootstrap boundary: dependency/import failures are
+    # one of the most important failures for a windowed executable to persist.
+    from vibeocr.classic.main import main
+
+    return main()
 
 
 def _run_pdf_smoke() -> int:
@@ -90,4 +189,4 @@ if __name__ == "__main__":
         # the offscreen Windows test platform. The load result has already been
         # durably written, so bypass interpreter/Qt finalizers in this test-only path.
         os._exit(_run_webengine_smoke())
-    raise SystemExit(main())
+    raise SystemExit(_run_with_bootstrap(_run_application))

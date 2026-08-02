@@ -5,6 +5,8 @@ import json
 import zipfile
 from typing import TYPE_CHECKING
 
+import pytest
+
 from scripts.bind_component_releases import bind_product_releases
 from scripts.package_product_release import package_product_release
 
@@ -77,6 +79,7 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
+    (backend / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
     checksums = backend / "SHA256SUMS"
     checksums.write_text(
         "".join(
@@ -125,12 +128,51 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     with zipfile.ZipFile(outputs[0]) as archive:
         members = set(archive.namelist())
         version = json.loads(archive.read("VibeOCR/version.json"))
+        manifest = json.loads(archive.read("VibeOCR/product-release-manifest.json"))
     assert "VibeOCR/component-lock.json" in members
     assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" not in members
     assert "VibeOCR/backend/installer.zip" in members
     assert "VibeOCR/backend/python.tar.gz" in members
     assert "VibeOCR/backend/runtime-manifest.json" in members
+    assert "VibeOCR/backend/SHA256SUMS" not in members
+    assert "VibeOCR/backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
+    assert manifest["shared_root"] == "data"
+    assert manifest["products"] == {
+        "classic": {"component_lock": "component-lock.json", "root": "."}
+    }
+
+
+def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> None:
+    protocol, backend = _releases(tmp_path)
+    component_lock = tmp_path / "component-lock.json"
+    bind_product_releases(
+        protocol_release_dir=protocol,
+        backend_release_dir=backend,
+        protocol_repository="FelixJI/vibeocr-protocol",
+        protocol_version="2.0.0",
+        backend_repository="FelixJI/vibeocr-backend",
+        backend_version="0.7.0",
+        profile="win-x64-cpu",
+        required_capabilities=("ocr.recognition.v2",),
+        output=component_lock,
+    )
+    product = tmp_path / "product" / "VibeOCR"
+    product.mkdir(parents=True)
+    (product / "VibeOCR.exe").write_bytes(b"app")
+    (product / "debug-notes.txt").write_text("not a product file", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected product root items"):
+        package_product_release(
+            product_root=product,
+            frontend="classic",
+            frontend_version="0.7.0",
+            source_commit="a" * 40,
+            component_lock=component_lock,
+            protocol_release_dir=protocol,
+            backend_release_dir=backend,
+            output=tmp_path / "product.zip",
+        )
 
 
 def test_product_package_accepts_equivalent_crlf_component_lock(

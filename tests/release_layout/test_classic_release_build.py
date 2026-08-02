@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+
+import pytest
 
 from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_pyside_artifact import (
@@ -9,6 +12,7 @@ from scripts.verify_pyside_artifact import (
     _verify_bound_python_archive,
     _verify_product_file_closure,
     _verify_reduced_layout,
+    _verify_runtime_layout,
 )
 
 
@@ -33,6 +37,10 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     assert "'pymupdf'" in script
     assert "'fitz'" in script
     assert "'lxml'" in script
+    assert "'--icon'" in script
+    assert "resources/app_icon.ico" in script
+    assert '"$root/CHANGELOG.md;."' in script
+    assert "Copy-Item -LiteralPath (Join-Path $root 'CHANGELOG.md')" not in script
     assert "pymupdf==1.28.0" not in script
     assert '"pymupdf' not in project
     entry_script = (ROOT / "scripts" / "classic_release_entry.py").read_text(
@@ -67,10 +75,36 @@ def test_release_build_uses_resolved_draft_tag_and_project_metadata() -> None:
     assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
     assert workflow.count("RELEASE_TAG: ${{ env.RELEASE_TAG }}") == 4
     assert "-Version '${{ env.RELEASE_TAG }}'" in workflow
-    assert "gh release upload $env:RELEASE_TAG @assets --clobber" in workflow
+    assert "gh release upload $env:RELEASE_TAG @publicAssets --clobber" in workflow
     assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
     assert "gh release create" not in workflow
     assert "v0.7.0" not in workflow
+
+
+def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    policy = ROOT / "component-policy.json"
+    project = tomllib.loads(
+        (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert policy.is_file()
+    assert not (ROOT / "component-lock.json").exists()
+    assert "resolve_component_releases.py" in script
+    assert "resolve_component_releases.py" in workflow
+    assert "resolved-components.txt" in workflow
+    assert "python -m pip install @resolvedWheels" in workflow
+    assert "if ($LASTEXITCODE -ne 0) { throw 'Classic tests failed' }" in workflow
+    assert "v0.7.0" not in script
+    assert "v0.7.0" not in workflow
+    assert "vibeocr-backend" in project["project"]["dependencies"]
+    assert not any(
+        dependency.startswith("vibeocr-backend") and dependency != "vibeocr-backend"
+        for dependency in project["project"]["dependencies"]
+    )
 
 
 def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None:
@@ -143,6 +177,39 @@ def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
         raise AssertionError("oversized Classic archive was accepted")
 
     assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
+
+
+def test_runtime_layout_requires_backend_short_id_under_data(tmp_path: Path) -> None:
+    good = {
+        "runtime_id": "13caec/win-x64-cpu",
+        "runtime_root": str(tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cpu"),
+    }
+    _verify_runtime_layout(good, tmp_path, "win-x64-cpu")
+
+    long_id = "13caec62e2d74e71a6a46bee8dc7fd70b48d22127d1fa93d2477b1956e449f43"
+    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+        _verify_runtime_layout(
+            {
+                "runtime_id": f"{long_id}/win-x64-cpu",
+                "runtime_root": str(
+                    tmp_path / "data" / "runtimes" / long_id / "win-x64-cpu"
+                ),
+            },
+            tmp_path,
+            "win-x64-cpu",
+        )
+
+    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+        _verify_runtime_layout(
+            {
+                "runtime_id": "13caec/win-x64-cuda",
+                "runtime_root": str(
+                    tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cuda"
+                ),
+            },
+            tmp_path,
+            "win-x64-cpu",
+        )
 
 
 def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:

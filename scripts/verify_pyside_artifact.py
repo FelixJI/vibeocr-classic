@@ -26,9 +26,7 @@ def _verify_archive_size(
         )
 
 
-def _verify_product_file_closure(
-    root: Path, records: dict[str, object]
-) -> None:
+def _verify_product_file_closure(root: Path, records: dict[str, object]) -> None:
     actual = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -62,7 +60,9 @@ def _verify_reduced_layout(root: Path) -> None:
         raise RuntimeError(f"prohibited reduced-layout files present: {prohibited}")
 
 
-def _verify_bound_python_archive(root: Path, runtime_manifest: dict[str, object]) -> None:
+def _verify_bound_python_archive(
+    root: Path, runtime_manifest: dict[str, object]
+) -> None:
     python = runtime_manifest.get("python")
     if not isinstance(python, dict):
         raise RuntimeError("runtime manifest has no bound Python archive")
@@ -104,11 +104,7 @@ def _verify_bound_installer_inspect(
 ) -> None:
     """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
     executable_path = (
-        root
-        / "data"
-        / "cache"
-        / "runtime-installer"
-        / "vibeocr-runtime-installer.exe"
+        root / "data" / "cache" / "runtime-installer" / "vibeocr-runtime-installer.exe"
     )
     executable_path.parent.mkdir(parents=True, exist_ok=True)
     executable_path.write_bytes(executable)
@@ -124,6 +120,10 @@ def _verify_bound_installer_inspect(
             str(root / "backend" / "runtime-manifest.json"),
             "--profile",
             profile,
+            "--layout-manifest",
+            str(root / "product-release-manifest.json"),
+            "--product-id",
+            "classic",
             "--json",
         ],
         cwd=root,
@@ -151,6 +151,33 @@ def _verify_bound_installer_inspect(
         )
     if envelope.get("integrity") != "not-installed":
         raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
+    _verify_runtime_layout(envelope, root, profile)
+
+
+def _verify_runtime_layout(
+    envelope: dict[str, object],
+    root: Path,
+    profile: str,
+) -> None:
+    """Require Backend's ``<short digest>/<profile>`` runtime layout."""
+    runtime_id = envelope.get("runtime_id")
+    if not isinstance(runtime_id, str):
+        raise RuntimeError("bound Runtime Installer returned no runtime_id")
+    runtime_parts = runtime_id.split("/")
+    digest = runtime_parts[0] if runtime_parts else ""
+    if (
+        len(runtime_parts) != 2
+        or runtime_parts[1] != profile
+        or len(digest) != 6
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise RuntimeError("bound Runtime Installer returned an invalid runtime_id")
+    runtime_root = envelope.get("runtime_root")
+    if not isinstance(runtime_root, str):
+        raise RuntimeError("bound Runtime Installer returned no runtime_root")
+    expected = (root / "data" / "runtimes" / digest / profile).resolve()
+    if Path(runtime_root).resolve() != expected:
+        raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
 
 
 def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
@@ -189,9 +216,7 @@ def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
         app_dir.mkdir(parents=True)
         old_executable = b"old executable"
         (app_dir / "VibeOCR.exe").write_bytes(old_executable)
-        (app_dir / "version.json").write_text(
-            '{"version":"0.7.1"}', encoding="utf-8"
-        )
+        (app_dir / "version.json").write_text('{"version":"0.7.1"}', encoding="utf-8")
         data = app_dir / "data"
         data.mkdir()
         (data / "user.txt").write_text("preserved", encoding="utf-8")

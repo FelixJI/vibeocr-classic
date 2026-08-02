@@ -1,0 +1,334 @@
+"""Resolve the latest stable Backend compatible with the Classic policy."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import tempfile
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+if __package__:
+    from .bind_component_releases import bind_product_releases
+else:
+    from bind_component_releases import bind_product_releases
+
+_STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+_RANGE_PART = re.compile(r"^(>=|<=|==|>|<)(\d+)\.(\d+)\.(\d+)$")
+
+
+class InvalidReleaseError(ValueError):
+    """A published release cannot satisfy the component policy."""
+
+
+@dataclass(frozen=True)
+class ComponentPolicy:
+    protocol_repository: str
+    protocol_version: str
+    backend_repository: str
+    profile: str
+    required_capabilities: frozenset[str]
+
+    @classmethod
+    def load(cls, path: Path) -> ComponentPolicy:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(value, dict)
+            or type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1
+        ):
+            raise ValueError("component policy schema_version must be 1")
+        protocol = value.get("protocol")
+        backend = value.get("backend")
+        capabilities = value.get("required_capabilities")
+        if not isinstance(protocol, dict) or not isinstance(backend, dict):
+            raise ValueError("component policy repositories are missing")
+        if backend.get("channel") != "stable":
+            raise ValueError("only the stable Backend channel is supported")
+        if not isinstance(capabilities, list) or not all(
+            isinstance(item, str) and item for item in capabilities
+        ):
+            raise ValueError("component policy capabilities must be strings")
+        _parse_version(str(protocol["version"]))
+        return cls(
+            protocol_repository=str(protocol["repository"]),
+            protocol_version=str(protocol["version"]),
+            backend_repository=str(backend["repository"]),
+            profile=str(backend["profile"]),
+            required_capabilities=frozenset(capabilities),
+        )
+
+
+@dataclass(frozen=True)
+class ReleaseInfo:
+    tag: str
+    is_draft: bool
+    is_prerelease: bool
+
+    @property
+    def version(self) -> tuple[int, int, int] | None:
+        match = _STABLE_TAG.fullmatch(self.tag)
+        if match is None:
+            return None
+        return tuple(int(part) for part in match.groups())
+
+
+@dataclass(frozen=True)
+class ResolvedBackend:
+    release: ReleaseInfo
+    manifest: dict[str, object]
+
+
+def _parse_version(value: str) -> tuple[int, int, int]:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value)
+    if match is None:
+        raise ValueError(f"stable SemVer required: {value}")
+    return tuple(int(part) for part in match.groups())
+
+
+def _matches_range(version: str, expression: str) -> bool:
+    candidate = _parse_version(version)
+    for raw_part in expression.split(","):
+        match = _RANGE_PART.fullmatch(raw_part.strip())
+        if match is None:
+            raise ValueError(f"unsupported Protocol range: {expression}")
+        operator = match.group(1)
+        bound = tuple(int(part) for part in match.groups()[1:])
+        comparisons = {
+            ">=": candidate >= bound,
+            "<=": candidate <= bound,
+            "==": candidate == bound,
+            ">": candidate > bound,
+            "<": candidate < bound,
+        }
+        if not comparisons[operator]:
+            return False
+    return True
+
+
+def _is_compatible(
+    policy: ComponentPolicy,
+    release: ReleaseInfo,
+    manifest: dict[str, object],
+) -> bool:
+    version = release.version
+    schema_version = manifest.get("schema_version")
+    if type(schema_version) is not int or schema_version != 1:
+        return False
+    if version is None or manifest.get("backend_version") != release.tag.removeprefix(
+        "v"
+    ):
+        return False
+    protocol_range = manifest.get("protocol")
+    capabilities = manifest.get("capabilities")
+    profiles = manifest.get("profiles")
+    if not isinstance(protocol_range, str):
+        return False
+    if not isinstance(capabilities, list) or not all(
+        isinstance(item, str) for item in capabilities
+    ):
+        return False
+    if not isinstance(profiles, dict) or policy.profile not in profiles:
+        return False
+    return _matches_range(policy.protocol_version, protocol_range) and (
+        policy.required_capabilities <= set(capabilities)
+    )
+
+
+def select_latest_compatible_backend(
+    policy: ComponentPolicy,
+    releases: Iterable[ReleaseInfo],
+    load_manifest: Callable[[ReleaseInfo], dict[str, object]],
+) -> ResolvedBackend:
+    stable = sorted(
+        (
+            release
+            for release in releases
+            if not release.is_draft
+            and not release.is_prerelease
+            and release.version is not None
+        ),
+        key=lambda release: release.version or (0, 0, 0),
+        reverse=True,
+    )
+    for release in stable:
+        try:
+            manifest = load_manifest(release)
+            if _is_compatible(policy, release, manifest):
+                return ResolvedBackend(release=release, manifest=manifest)
+        except (InvalidReleaseError, ValueError, KeyError):
+            continue
+    raise RuntimeError("no compatible stable Backend release was found")
+
+
+class GitHubReleaseSource:
+    def _run(self, *arguments: str) -> str:
+        completed = subprocess.run(
+            ["gh", *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return completed.stdout
+
+    def list_releases(self, repository: str) -> tuple[ReleaseInfo, ...]:
+        raw = self._run(
+            "release",
+            "list",
+            "--repo",
+            repository,
+            "--limit",
+            "100",
+            "--json",
+            "tagName,isDraft,isPrerelease",
+        )
+        values = json.loads(raw)
+        return tuple(
+            ReleaseInfo(
+                tag=str(value["tagName"]),
+                is_draft=bool(value["isDraft"]),
+                is_prerelease=bool(value["isPrerelease"]),
+            )
+            for value in values
+        )
+
+    def download_asset(
+        self,
+        repository: str,
+        tag: str,
+        name: str,
+        output_dir: Path,
+    ) -> Path:
+        release = json.loads(
+            self._run(
+                "release",
+                "view",
+                tag,
+                "--repo",
+                repository,
+                "--json",
+                "assets",
+            )
+        )
+        asset_names = {
+            str(asset["name"])
+            for asset in release.get("assets", [])
+            if isinstance(asset, dict) and "name" in asset
+        }
+        if name not in asset_names:
+            raise InvalidReleaseError(f"release {tag} has no {name}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._run(
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repository,
+            "--pattern",
+            name,
+            "--dir",
+            str(output_dir),
+        )
+        return output_dir / name
+
+    def download_release(self, repository: str, tag: str, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self._run(
+            "release",
+            "download",
+            tag,
+            "--repo",
+            repository,
+            "--dir",
+            str(output_dir),
+        )
+
+
+def resolve_component_releases(
+    *,
+    policy_path: Path,
+    output_root: Path,
+    source: GitHubReleaseSource | None = None,
+) -> Path:
+    policy = ComponentPolicy.load(policy_path)
+    github = source or GitHubReleaseSource()
+    output_root.mkdir(parents=True, exist_ok=True)
+    if any(output_root.iterdir()):
+        raise ValueError(f"release input directory must be empty: {output_root}")
+
+    with tempfile.TemporaryDirectory(prefix="vibeocr-release-resolution-") as temp:
+        manifests_root = Path(temp)
+
+        def load_manifest(release: ReleaseInfo) -> dict[str, object]:
+            path = github.download_asset(
+                policy.backend_repository,
+                release.tag,
+                "runtime-manifest.json",
+                manifests_root / release.tag,
+            )
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise InvalidReleaseError(
+                    f"Backend manifest is unreadable: {release.tag}"
+                ) from error
+            if not isinstance(value, dict):
+                raise ValueError(f"Backend manifest must be an object: {release.tag}")
+            return value
+
+        selected = select_latest_compatible_backend(
+            policy,
+            github.list_releases(policy.backend_repository),
+            load_manifest,
+        )
+
+    protocol_root = output_root / "protocol"
+    backend_root = output_root / "backend"
+    github.download_release(
+        policy.protocol_repository,
+        f"v{policy.protocol_version}",
+        protocol_root,
+    )
+    github.download_release(
+        policy.backend_repository,
+        selected.release.tag,
+        backend_root,
+    )
+    return bind_product_releases(
+        protocol_release_dir=protocol_root,
+        backend_release_dir=backend_root,
+        protocol_repository=policy.protocol_repository,
+        protocol_version=policy.protocol_version,
+        backend_repository=policy.backend_repository,
+        backend_version=selected.release.tag.removeprefix("v"),
+        profile=policy.profile,
+        required_capabilities=tuple(sorted(policy.required_capabilities)),
+        output=output_root / "component-lock.json",
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--policy", type=Path, required=True)
+    parser.add_argument("--output-root", type=Path, required=True)
+    args = parser.parse_args(argv)
+    lock_path = resolve_component_releases(
+        policy_path=args.policy,
+        output_root=args.output_root,
+    )
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    print(
+        f"Resolved Backend v{lock['backend']['version']} for "
+        f"Protocol v{lock['protocol']['version']}"
+    )
+    print(lock_path)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

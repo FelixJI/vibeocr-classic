@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$Version
+    [string]$Version,
+    [string]$ReleaseInput
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -18,29 +19,36 @@ if ($Version -ne $projectVersion) {
 }
 $artifacts = Join-Path $root 'artifacts'
 $build = Join-Path $root '.release-build'
-$inputs = Join-Path $root '.release-input'
-foreach ($path in @($artifacts, $build, $inputs)) {
+$defaultInputs = Join-Path $root '.release-input'
+foreach ($path in @($artifacts, $build)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
     }
     New-Item -ItemType Directory -Path $path -Force | Out-Null
 }
+$policy = Join-Path $root 'component-policy.json'
+if ($ReleaseInput) {
+    $inputs = (Resolve-Path -LiteralPath $ReleaseInput).Path
+} else {
+    $inputs = $defaultInputs
+    if (Test-Path -LiteralPath $inputs) {
+        Remove-Item -LiteralPath $inputs -Recurse -Force
+    }
+    python (Join-Path $root 'scripts/resolve_component_releases.py') `
+      --policy $policy --output-root $inputs
+    if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
+}
 $protocol = Join-Path $inputs 'protocol'
 $backend = Join-Path $inputs 'backend'
-New-Item -ItemType Directory -Path $protocol, $backend -Force | Out-Null
-$lock = Join-Path $root 'component-lock.json'
+$lock = Join-Path $inputs 'component-lock.json'
 if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {
-    throw 'component-lock.json is required'
+    throw 'resolved component-lock.json is required'
 }
 $componentLock = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
 $protocolVersion = [string]$componentLock.protocol.version
 $protocolRepository = [string]$componentLock.protocol.repository
 $backendVersion = [string]$componentLock.backend.version
 $backendRepository = [string]$componentLock.backend.repository
-gh release download "v$protocolVersion" --repo $protocolRepository --dir $protocol
-if ($LASTEXITCODE -ne 0) { throw 'Protocol release download failed' }
-gh release download "v$backendVersion" --repo $backendRepository --dir $backend
-if ($LASTEXITCODE -ne 0) { throw 'Backend release download failed' }
 foreach ($item in @(
     @{ path = $protocol; repo = $protocolRepository },
     @{ path = $backend; repo = $backendRepository }
@@ -69,6 +77,7 @@ $dist = Join-Path $build 'dist'
 $pyinstallerArgs = @(
     '--noconfirm', '--clean', '--onedir', '--windowed',
     '--name', 'VibeOCR',
+    '--icon', (Join-Path $root 'resources/app_icon.ico'),
     '--distpath', $dist,
     '--workpath', (Join-Path $build 'pyinstaller'),
     '--specpath', (Join-Path $build 'spec'),
@@ -78,7 +87,8 @@ $pyinstallerArgs = @(
     '--collect-submodules', 'vibeocr.backend',
     '--collect-data', 'vibeocr.runtime_contracts',
     '--collect-data', 'vibeocr.backend',
-    '--add-data', "$root/resources;resources"
+    '--add-data', "$root/resources;resources",
+    '--add-data', "$root/CHANGELOG.md;."
 )
 $hiddenQtModules = @(
     'PySide6.QtCore',
@@ -133,7 +143,6 @@ if ($LASTEXITCODE -ne 0) { throw 'Classic updater build failed' }
 Copy-Item -LiteralPath (Join-Path $build 'updater-dist/updater.exe') `
   -Destination $product
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
-Copy-Item -LiteralPath (Join-Path $root 'CHANGELOG.md') -Destination $product
 $zip = Join-Path $artifacts "VibeOCR-Classic-v$Version-win64.zip"
 python (Join-Path $root 'scripts/package_product_release.py') `
   --product-root $product --frontend classic --frontend-version $Version `
@@ -143,7 +152,6 @@ python (Join-Path $root 'scripts/package_product_release.py') `
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
 python (Join-Path $root 'scripts/verify_pyside_artifact.py') $zip
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
-Copy-Item -LiteralPath $lock -Destination $artifacts
 python (Join-Path $root 'scripts/build_release_checksums.py') $artifacts `
   --sidecar-for $zip
 if ($LASTEXITCODE -ne 0) { throw 'sidecar checksum build failed' }

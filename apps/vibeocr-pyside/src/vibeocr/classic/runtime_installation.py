@@ -79,12 +79,24 @@ class RuntimeInstallerClient:
             component_lock or self.product_root / "component-lock.json"
         ).resolve()
         self.runtime_manifest = Path(
-            runtime_manifest
-            or self.product_root / "backend" / "runtime-manifest.json"
+            runtime_manifest or self.product_root / "backend" / "runtime-manifest.json"
         ).resolve()
-        explicit_layout = layout_manifest or os.environ.get(
-            "VIBEOCR_PORTABLE_LAYOUT"
-        )
+        explicit_layout = layout_manifest or os.environ.get("VIBEOCR_PORTABLE_LAYOUT")
+        if explicit_layout is None:
+            product_manifest = self.product_root / "product-release-manifest.json"
+            try:
+                product_layout = json.loads(
+                    product_manifest.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                product_layout = None
+            if (
+                isinstance(product_layout, dict)
+                and product_layout.get("shared_root") == "data"
+                and isinstance(product_layout.get("products"), dict)
+                and product_id in product_layout["products"]
+            ):
+                explicit_layout = product_manifest
         self.layout_manifest = (
             Path(explicit_layout).resolve() if explicit_layout is not None else None
         )
@@ -176,11 +188,7 @@ class RuntimeInstallerClient:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                creationflags=(
-                    subprocess.CREATE_NO_WINDOW
-                    if os.name == "nt"
-                    else 0
-                ),
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
         except OSError as exc:
             raise RuntimeInstallerClientError(
@@ -196,9 +204,7 @@ class RuntimeInstallerClient:
             if time.monotonic() >= deadline:
                 process.kill()
                 process.communicate()
-                raise RuntimeInstallerClientError(
-                    f"Runtime Installer {operation} 超时"
-                )
+                raise RuntimeInstallerClientError(f"Runtime Installer {operation} 超时")
             time.sleep(0.05)
 
         stdout, stderr = process.communicate()
@@ -227,12 +233,8 @@ class RuntimeInstallerClient:
             return
         executable = Path(self.command[0])
         try:
-            component_lock = json.loads(
-                self.component_lock.read_text(encoding="utf-8")
-            )
-            expected_manifest = component_lock["backend"][
-                "runtime_manifest_sha256"
-            ]
+            component_lock = json.loads(self.component_lock.read_text(encoding="utf-8"))
+            expected_manifest = component_lock["backend"]["runtime_manifest_sha256"]
             manifest_bytes = self.runtime_manifest.read_bytes()
             actual_manifest = hashlib.sha256(manifest_bytes).hexdigest()
             if (

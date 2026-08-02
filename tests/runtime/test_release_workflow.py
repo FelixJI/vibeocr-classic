@@ -9,6 +9,8 @@ def test_release_workflow_publishes_only_after_verified_uploads() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
     build = workflow.index("- name: Build release assets")
+    resolve = workflow.index("- name: Resolve compatible components")
+    test_resolved = workflow.index("- name: Test resolved components")
     verify_local = workflow.index("- name: Verify release candidate assets")
     upload_artifact = workflow.index("uses: actions/upload-artifact@v4")
     upload_release = workflow.index("- name: Attach assets to draft Release")
@@ -16,7 +18,9 @@ def test_release_workflow_publishes_only_after_verified_uploads() -> None:
     publish = workflow.index("- name: Publish verified Release")
 
     assert (
-        build
+        resolve
+        < test_resolved
+        < build
         < verify_local
         < upload_artifact
         < upload_release
@@ -27,9 +31,23 @@ def test_release_workflow_publishes_only_after_verified_uploads() -> None:
     assert "github.event_name == 'workflow_run'" in workflow
     assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
     assert "already has assets; skipping build" not in workflow
-    assert "component-lock.json" in workflow
+    assert "--require component-lock.json" not in workflow
     assert "VibeOCR-Classic-v*-win64.zip" in workflow
     assert "VibeOCR-Classic-v*-win64.zip.sha256" in workflow
+    assert "resolved-components.txt" in workflow
+    assert "python -m pip install @resolvedWheels" in workflow
+    assert "if ($LASTEXITCODE -ne 0) { throw 'Classic tests failed' }" in workflow
+    assert "-ReleaseInput (Resolve-Path .release-input).Path" in workflow
+    attach_step = workflow[
+        workflow.index("- name: Attach assets to draft Release") : workflow.index(
+            "- name: Verify uploaded Release assets"
+        )
+    ]
+    assert "$publicAssets = @(" in attach_step
+    assert "component-lock.json" not in attach_step
+    assert "SBOM.spdx.json" in attach_step
+    assert "SHA256SUMS" in attach_step
+    assert "gh release delete-asset $env:RELEASE_TAG $asset --yes" in attach_step
 
 
 def test_release_workflow_checks_out_draft_target_before_tag_exists() -> None:

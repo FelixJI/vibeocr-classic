@@ -17,6 +17,37 @@ else:
 
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 PROHIBITED_ROOTS = {".git", "apps", "contracts", "packages", "supervisor", "tests"}
+EXPECTED_PRODUCT_ROOTS = {
+    "_internal",
+    "LICENSE",
+    "updater.exe",
+    "VibeOCR.exe",
+}
+
+
+def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
+    names = {
+        "runtime-manifest.json",
+        str(manifest["backend_wheel"]),
+        str(manifest["protocol_manifest"]),
+        str(manifest["protocol_wheel"]),
+    }
+    for field in ("python", "installer"):
+        record = manifest[field]
+        if not isinstance(record, dict):
+            raise ValueError(f"Backend runtime manifest {field} must be an object")
+        names.add(str(record["archive"]))
+    profiles = manifest.get("profiles")
+    if not isinstance(profiles, dict):
+        raise ValueError("Backend runtime manifest profiles must be an object")
+    for record in profiles.values():
+        if not isinstance(record, dict):
+            raise ValueError("Backend runtime profile must be an object")
+        names.add(str(record["lock"]))
+        runtime_pack = record.get("runtime_pack")
+        if runtime_pack:
+            names.add(str(runtime_pack))
+    return names
 
 
 def _sha256(path: Path) -> str:
@@ -52,6 +83,13 @@ def package_product_release(
     )
     if prohibited:
         raise ValueError(f"prohibited source roots in product layout: {prohibited}")
+    unexpected = sorted(
+        child.name
+        for child in product_root.iterdir()
+        if child.name not in EXPECTED_PRODUCT_ROOTS
+    )
+    if unexpected:
+        raise ValueError(f"unexpected product root items: {unexpected}")
     lock_path = component_lock.resolve(strict=True)
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     protocol = lock["protocol"]
@@ -84,9 +122,14 @@ def package_product_release(
     if backend_output.exists():
         raise ValueError("product layout already contains a backend directory")
     backend_output.mkdir()
-    for source in sorted(backend_release_dir.resolve(strict=True).iterdir()):
-        if source.is_file():
-            shutil.copyfile(source, backend_output / source.name)
+    runtime_manifest = json.loads(
+        (backend_release_dir / "runtime-manifest.json").read_text(encoding="utf-8")
+    )
+    for name in sorted(_runtime_asset_names(runtime_manifest)):
+        source = backend_release_dir.resolve(strict=True) / name
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        shutil.copyfile(source, backend_output / name)
 
     manifest_path = product_root / "product-release-manifest.json"
     files = sorted(
@@ -102,6 +145,13 @@ def package_product_release(
                 "frontend_version": frontend_version,
                 "source_commit": source_commit,
                 "component_lock_sha256": _sha256(embedded_lock),
+                "shared_root": "data",
+                "products": {
+                    frontend: {
+                        "root": ".",
+                        "component_lock": "component-lock.json",
+                    }
+                },
                 "files": {
                     path.relative_to(product_root).as_posix(): {
                         "sha256": _sha256(path),

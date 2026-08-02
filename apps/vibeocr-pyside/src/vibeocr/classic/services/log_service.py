@@ -166,15 +166,14 @@ def setup_logging(level: int | str = logging.INFO) -> QtLogHandler:
     root_logger.addHandler(console_handler)
 
     # 文件 handler：DEBUG 及以上（全量记录，便于排查）
-    # 日志目录跟随 project_root（打包态在 exe 同级，开发态在仓库根），
-    # 与 env_manager.get_project_root 保持一致，避免硬编码层级偏差。
+    # 主程序和 updater 统一写入 data/logs，避免在便携包根目录散落运行期文件。
     # 落盘为人可读文本（HumanReadableFormatter）——历史排查时直接打开阅读，
     # 不再有 JSON 解析开销与可读性损失。worker 转发链路仍用 stderr JSONL，
     # 由 forward_worker_output_line 解析后转成普通 LogRecord，经此 formatter 输出。
-    from vibeocr.backend.env_manager import get_project_root
+    from vibeocr.classic.app_paths import get_install_root
 
-    log_dir = get_project_root() / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = get_install_root() / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     _cleanup_old_logs(log_dir)
 
     file_handler = RotatingFileHandler(

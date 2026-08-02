@@ -159,18 +159,23 @@ def _verify_runtime_layout(
     root: Path,
     profile: str,
 ) -> None:
-    """Require the Windows-safe Runtime ID and data-contained product layout."""
+    """Require Backend's ``<short digest>/<profile>`` runtime layout."""
     runtime_id = envelope.get("runtime_id")
+    if not isinstance(runtime_id, str):
+        raise RuntimeError("bound Runtime Installer returned no runtime_id")
+    runtime_parts = runtime_id.split("/")
+    digest = runtime_parts[0] if runtime_parts else ""
     if (
-        not isinstance(runtime_id, str)
-        or len(runtime_id) != 6
-        or any(character not in "0123456789abcdef" for character in runtime_id)
+        len(runtime_parts) != 2
+        or runtime_parts[1] != profile
+        or len(digest) != 6
+        or any(character not in "0123456789abcdef" for character in digest)
     ):
-        raise RuntimeError("bound Runtime Installer did not return a short runtime_id")
+        raise RuntimeError("bound Runtime Installer returned an invalid runtime_id")
     runtime_root = envelope.get("runtime_root")
     if not isinstance(runtime_root, str):
         raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    expected = (root / "data" / "runtimes" / runtime_id / profile).resolve()
+    expected = (root / "data" / "runtimes" / digest / profile).resolve()
     if Path(runtime_root).resolve() != expected:
         raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
 

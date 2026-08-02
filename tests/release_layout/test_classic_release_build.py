@@ -179,20 +179,32 @@ def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
     assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
 
 
-def test_runtime_layout_requires_short_id_under_data(tmp_path: Path) -> None:
+def test_runtime_layout_requires_backend_short_id_under_data(tmp_path: Path) -> None:
     good = {
-        "runtime_id": "13caec",
+        "runtime_id": "13caec/win-x64-cpu",
         "runtime_root": str(tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cpu"),
     }
     _verify_runtime_layout(good, tmp_path, "win-x64-cpu")
 
     long_id = "13caec62e2d74e71a6a46bee8dc7fd70b48d22127d1fa93d2477b1956e449f43"
-    with pytest.raises(RuntimeError, match="short runtime_id"):
+    with pytest.raises(RuntimeError, match="invalid runtime_id"):
         _verify_runtime_layout(
             {
-                "runtime_id": long_id,
+                "runtime_id": f"{long_id}/win-x64-cpu",
                 "runtime_root": str(
                     tmp_path / "data" / "runtimes" / long_id / "win-x64-cpu"
+                ),
+            },
+            tmp_path,
+            "win-x64-cpu",
+        )
+
+    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+        _verify_runtime_layout(
+            {
+                "runtime_id": "13caec/win-x64-cuda",
+                "runtime_root": str(
+                    tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cuda"
                 ),
             },
             tmp_path,

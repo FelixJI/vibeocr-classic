@@ -6,7 +6,7 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "vibeocr-runtime-contracts==2.0.0",
     "vibeocr-runtime-client==2.0.0",
-    "vibeocr-backend==0.7.0",
+    "vibeocr-backend",
     "pyside6>=6.11.1",
     "qasync>=0.28.0",
     "numpy>=2.3.5",

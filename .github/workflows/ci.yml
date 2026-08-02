@@ -24,9 +24,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v2.0.0 --repo FelixJI/vibeocr-protocol --pattern "*.whl" --dir .feed
-          gh release download v0.7.0 --repo FelixJI/vibeocr-backend --pattern "vibeocr_backend-*.whl" --dir .feed
+          python scripts/resolve_component_releases.py --policy component-policy.json --output-root .release-input
+          if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
+          Get-ChildItem .release-input/protocol, .release-input/backend -Filter '*.whl' | ForEach-Object {
+            $repository = if ($_.Directory.Name -eq 'protocol') { 'FelixJI/vibeocr-protocol' } else { 'FelixJI/vibeocr-backend' }
+            gh attestation verify $_.FullName --repo $repository
+            if ($LASTEXITCODE -ne 0) { throw "attestation failed: $($_.Name)" }
+          }
+          $componentLock = Get-Content .release-input/component-lock.json -Raw | ConvertFrom-Json
+          $constraints = '.release-input/resolved-components.txt'
+          @(
+            "vibeocr-backend==$($componentLock.backend.version)"
+            "vibeocr-runtime-contracts==$($componentLock.protocol.version)"
+            "vibeocr-runtime-client==$($componentLock.protocol.version)"
+          ) | Set-Content $constraints -Encoding utf8
+          $resolvedWheels = @(
+            Get-ChildItem .release-input/protocol -Filter '*.whl'
+            Get-ChildItem .release-input/backend -Filter 'vibeocr_backend-*.whl'
+          ) | ForEach-Object FullName
           python -m pip install --upgrade pip
-          python -m pip install pytest pytest-asyncio pytest-qt --find-links .feed ./apps/vibeocr-pyside
+          if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
+          python -m pip install @resolvedWheels
+          if ($LASTEXITCODE -ne 0) { throw 'resolved wheel install failed' }
+          python -m pip install -c $constraints pytest pytest-asyncio pytest-qt ./apps/vibeocr-pyside
+          if ($LASTEXITCODE -ne 0) { throw 'Classic test dependency install failed' }
           python -m pytest
-          ./scripts/build-release.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Classic tests failed' }
+          ./scripts/build-release.ps1 -ReleaseInput (Resolve-Path .release-input).Path

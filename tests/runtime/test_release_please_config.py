@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 
@@ -27,6 +28,26 @@ def test_release_please_uses_the_shared_changelog_filter() -> None:
     )
 
     assert config["changelog-sections"] == EXPECTED_CHANGELOG_SECTIONS
+
+
+def test_release_please_keeps_repository_metadata_version_in_sync() -> None:
+    config = json.loads(
+        (ROOT / "release-please-config.json").read_text(encoding="utf-8")
+    )
+    metadata = json.loads((ROOT / "repository.json").read_text(encoding="utf-8"))
+    project = tomllib.loads(
+        (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    extra_files = config["packages"]["."]["extra-files"]
+    assert {
+        "type": "json",
+        "path": "repository.json",
+        "jsonpath": "$.version",
+    } in extra_files
+    assert metadata["version"] == project["project"]["version"]
 
 
 def test_manual_release_passes_requested_version_to_manifest_cli() -> None:

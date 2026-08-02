@@ -34,6 +34,11 @@
           "path": "apps/vibeocr-pyside/src/vibeocr/classic/__init__.py"
         },
         {
+          "type": "json",
+          "path": "repository.json",
+          "jsonpath": "$.version"
+        },
+        {
           "type": "generic",
           "path": "version.txt"
         }

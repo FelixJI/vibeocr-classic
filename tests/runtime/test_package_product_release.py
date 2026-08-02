@@ -79,6 +79,7 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
         ),
         encoding="utf-8",
     )
+    (backend / "SBOM.spdx.json").write_text("{}", encoding="utf-8")
     checksums = backend / "SHA256SUMS"
     checksums.write_text(
         "".join(
@@ -133,6 +134,8 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     assert "VibeOCR/backend/installer.zip" in members
     assert "VibeOCR/backend/python.tar.gz" in members
     assert "VibeOCR/backend/runtime-manifest.json" in members
+    assert "VibeOCR/backend/SHA256SUMS" not in members
+    assert "VibeOCR/backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
     assert manifest["shared_root"] == "data"
     assert manifest["products"] == {

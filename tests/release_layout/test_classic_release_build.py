@@ -65,9 +65,10 @@ def test_release_build_uses_resolved_draft_tag_and_project_metadata() -> None:
     assert "vibeocr_classic-$Version-*.whl" in script
     assert 'workflows: ["Release Please"]' in workflow
     assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
-    assert workflow.count("RELEASE_TAG: ${{ env.RELEASE_TAG }}") == 2
+    assert workflow.count("RELEASE_TAG: ${{ env.RELEASE_TAG }}") == 4
     assert "-Version '${{ env.RELEASE_TAG }}'" in workflow
     assert "gh release upload $env:RELEASE_TAG @assets --clobber" in workflow
+    assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
     assert "gh release create" not in workflow
     assert "v0.7.0" not in workflow
 

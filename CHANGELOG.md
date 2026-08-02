@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.5](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.4...v0.7.5) (2026-08-02)
+
+
+### Bug Fixes
+
+* **release:** 修复草稿产物构建目标解析 ([#11](https://github.com/FelixJI/vibeocr-classic/issues/11)) ([874f974](https://github.com/FelixJI/vibeocr-classic/commit/874f9743558f81d79c3761eed61cd665db9e67d4))
+
 ## [0.7.4](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.3...v0.7.4) (2026-08-02)
 
 

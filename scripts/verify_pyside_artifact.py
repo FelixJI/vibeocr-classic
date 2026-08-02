@@ -120,7 +120,7 @@ def _verify_bound_installer_inspect(
     root: Path,
     runtime_manifest: dict[str, object],
     executable: bytes,
-    profile: str,
+    accelerator: str,
     timeout_seconds: float = 30.0,
 ) -> None:
     """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
@@ -129,24 +129,18 @@ def _verify_bound_installer_inspect(
     )
     executable_path.parent.mkdir(parents=True, exist_ok=True)
     executable_path.write_bytes(executable)
+    request = {
+        "protocol_version": 2,
+        "operation": "inspect",
+        "product_root": str(root),
+        "component_lock": str(root / "component-lock.json"),
+        "runtime_manifest": str(root / "backend" / "runtime-manifest.json"),
+        "accelerator": accelerator,
+        "layout_manifest": str(root / "product-release-manifest.json"),
+        "product_id": "classic",
+    }
     result = subprocess.run(
-        [
-            str(executable_path),
-            "inspect",
-            "--product-root",
-            str(root),
-            "--component-lock",
-            str(root / "component-lock.json"),
-            "--runtime-manifest",
-            str(root / "backend" / "runtime-manifest.json"),
-            "--profile",
-            profile,
-            "--layout-manifest",
-            str(root / "product-release-manifest.json"),
-            "--product-id",
-            "classic",
-            "--json",
-        ],
+        [str(executable_path), "--request-json", json.dumps(request)],
         cwd=root,
         capture_output=True,
         text=True,
@@ -165,29 +159,36 @@ def _verify_bound_installer_inspect(
         if isinstance(value, dict):
             envelopes.append(value)
     envelope = envelopes[-1] if envelopes else {}
-    if result.returncode != 0 or envelope.get("status") != "missing":
+    state = envelope.get("state")
+    if (
+        result.returncode != 0
+        or envelope.get("protocol_version") != 2
+        or envelope.get("ok") is not True
+        or envelope.get("operation") != "inspect"
+        or not isinstance(state, dict)
+        or state.get("status") != "missing"
+    ):
         raise RuntimeError(
             "bound Runtime Installer inspect failed: "
             f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
         )
-    if envelope.get("integrity") != "not-installed":
+    if state.get("integrity") != "not-installed":
         raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
-    _verify_runtime_layout(envelope, root, profile)
+    _verify_runtime_layout(state, root, accelerator)
 
 
 def _verify_runtime_layout(
     envelope: dict[str, object],
     root: Path,
-    profile: str,
+    accelerator: str,
 ) -> None:
-    """Require Backend's fixed ``<profile>`` runtime layout."""
-    runtime_id = envelope.get("runtime_id")
-    if runtime_id != profile:
-        raise RuntimeError("bound Runtime Installer returned an invalid runtime_id")
+    """Require Backend's single fixed Runtime layout."""
+    if envelope.get("accelerator") != accelerator:
+        raise RuntimeError("bound Runtime Installer returned an invalid accelerator")
     runtime_root = envelope.get("runtime_root")
     if not isinstance(runtime_root, str):
         raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    expected = (root / "data" / "runtimes" / profile).resolve()
+    expected = (root / "data" / "runtime").resolve()
     if Path(runtime_root).resolve() != expected:
         raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
 
@@ -602,7 +603,7 @@ def main() -> int:
                 root,
                 runtime_manifest,
                 installer_executable,
-                str(backend.get("profile", "")),
+                str(backend.get("accelerator", "")),
             )
             _verify_frozen_updater(root)
             _verify_frozen_startup(root)

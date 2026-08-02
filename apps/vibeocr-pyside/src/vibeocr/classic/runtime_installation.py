@@ -34,9 +34,8 @@ class RuntimeInstallerCancelled(RuntimeInstallerClientError):
 @dataclass(frozen=True, slots=True)
 class RuntimeInspection:
     status: str
-    runtime_id: str
-    profile: str
     runtime_root: str
+    accelerator: str
     manifest_sha256: str
     backend_version: str
     integrity: str
@@ -48,8 +47,6 @@ class RuntimeInspection:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeLaunch:
-    runtime_id: str
-    profile: str
     python_executable: str
     supervisor_module: str
     working_directory: str
@@ -71,7 +68,7 @@ class RuntimeInstallerClient:
         runtime_manifest: str | Path | None = None,
         layout_manifest: str | Path | None = None,
         product_id: str = "classic",
-        profile: str = "auto",
+        accelerator: str | None = None,
         command: tuple[str, ...] | None = None,
     ) -> None:
         self.product_root = Path(product_root).resolve()
@@ -101,7 +98,7 @@ class RuntimeInstallerClient:
             Path(explicit_layout).resolve() if explicit_layout is not None else None
         )
         self.product_id = product_id
-        self.profile = profile
+        self.accelerator = accelerator
         configured = os.environ.get("VIBEOCR_RUNTIME_INSTALLER")
         self._materialize_bound_installer = False
         if command is not None:
@@ -127,23 +124,18 @@ class RuntimeInstallerClient:
             )
 
     def _arguments(self, operation: str) -> list[str]:
-        args = [
-            *self.command,
-            operation,
-            "--product-root",
-            str(self.product_root),
-            "--component-lock",
-            str(self.component_lock),
-            "--runtime-manifest",
-            str(self.runtime_manifest),
-            "--profile",
-            self.profile,
-            "--json",
-        ]
+        request = {
+            "protocol_version": 2,
+            "operation": operation,
+            "product_root": str(self.product_root),
+            "component_lock": str(self.component_lock),
+            "runtime_manifest": str(self.runtime_manifest),
+            "accelerator": self.accelerator,
+        }
         if self.layout_manifest is not None:
-            args.extend(("--layout-manifest", str(self.layout_manifest)))
-            args.extend(("--product-id", self.product_id))
-        return args
+            request["layout_manifest"] = str(self.layout_manifest)
+            request["product_id"] = self.product_id
+        return [*self.command, "--request-json", json.dumps(request)]
 
     def _invoke(
         self,
@@ -171,13 +163,18 @@ class RuntimeInstallerClient:
             manifest_bytes = self.runtime_manifest.read_bytes()
             manifest = json.loads(manifest_bytes)
             return {
-                "status": "ready",
-                "runtime_id": "artifact-smoke",
-                "profile": str(lock["backend"]["profile"]),
-                "runtime_root": str(self.product_root / ".smoke-runtime"),
-                "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-                "backend_version": str(manifest["backend_version"]),
-                "integrity": "verified",
+                "protocol_version": 2,
+                "ok": True,
+                "operation": "inspect",
+                "state": {
+                    "status": "ready",
+                    "accelerator": str(lock["backend"]["accelerator"]),
+                    "runtime_root": str(self.product_root / ".smoke-runtime"),
+                    "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                    "backend_version": str(manifest["backend_version"]),
+                    "integrity": "verified",
+                },
+                "launch": None,
             }
         try:
             process = subprocess.Popen(
@@ -222,10 +219,18 @@ class RuntimeInstallerClient:
             if isinstance(value, dict):
                 envelopes.append(value)
         envelope = envelopes[-1] if envelopes else None
-        if process.returncode != 0 or envelope is None or "error" in envelope:
+        if (
+            process.returncode != 0
+            or envelope is None
+            or envelope.get("protocol_version") != 2
+            or envelope.get("operation") != operation
+            or envelope.get("ok") is not True
+        ):
             detail = ""
             if envelope is not None:
-                detail = str(envelope.get("message") or envelope.get("error") or "")
+                error = envelope.get("error")
+                if isinstance(error, dict):
+                    detail = str(error.get("message") or error.get("code") or "")
             if not detail:
                 detail = stderr.strip() or stdout.strip() or "未知错误"
             raise RuntimeInstallerClientError(detail)
@@ -279,13 +284,13 @@ class RuntimeInstallerClient:
             )
 
     def inspect(self) -> RuntimeInspection:
-        value = self._invoke("inspect", timeout=60)
+        envelope = self._invoke("inspect", timeout=60)
         try:
+            value = envelope["state"]
             return RuntimeInspection(
                 status=str(value["status"]),
-                runtime_id=str(value["runtime_id"]),
-                profile=str(value["profile"]),
                 runtime_root=str(value["runtime_root"]),
+                accelerator=str(value["accelerator"]),
                 manifest_sha256=str(value["manifest_sha256"]),
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
@@ -326,6 +331,9 @@ class RuntimeInstallerClient:
     @staticmethod
     def _launch_from(value: dict[str, Any]) -> RuntimeLaunch:
         try:
+            value = value["launch"]
+            if not isinstance(value, dict):
+                raise TypeError("missing launch")
             environment = value["environment"]
             if not isinstance(environment, dict) or not all(
                 isinstance(key, str) and isinstance(item, str)
@@ -333,8 +341,6 @@ class RuntimeInstallerClient:
             ):
                 raise TypeError("invalid environment")
             return RuntimeLaunch(
-                runtime_id=str(value["runtime_id"]),
-                profile=str(value["profile"]),
                 python_executable=str(value["python_executable"]),
                 supervisor_module=str(value["supervisor_module"]),
                 working_directory=str(value["working_directory"]),

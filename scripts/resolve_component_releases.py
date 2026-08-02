@@ -29,7 +29,7 @@ class ComponentPolicy:
     protocol_repository: str
     protocol_version: str
     backend_repository: str
-    profile: str
+    accelerator: str
     required_capabilities: frozenset[str]
 
     @classmethod
@@ -57,7 +57,7 @@ class ComponentPolicy:
             protocol_repository=str(protocol["repository"]),
             protocol_version=str(protocol["version"]),
             backend_repository=str(backend["repository"]),
-            profile=str(backend["profile"]),
+            accelerator=str(backend["accelerator"]),
             required_capabilities=frozenset(capabilities),
         )
 
@@ -125,13 +125,16 @@ def _is_compatible(
     protocol_range = manifest.get("protocol")
     capabilities = manifest.get("capabilities")
     profiles = manifest.get("profiles")
+    plan = {"cpu": "win-x64-cpu", "nvidia_cuda": "win-x64-cu126"}.get(
+        policy.accelerator
+    )
     if not isinstance(protocol_range, str):
         return False
     if not isinstance(capabilities, list) or not all(
         isinstance(item, str) for item in capabilities
     ):
         return False
-    if not isinstance(profiles, dict) or policy.profile not in profiles:
+    if plan is None or not isinstance(profiles, dict) or plan not in profiles:
         return False
     return _matches_range(policy.protocol_version, protocol_range) and (
         policy.required_capabilities <= set(capabilities)
@@ -306,7 +309,7 @@ def resolve_component_releases(
         protocol_version=policy.protocol_version,
         backend_repository=policy.backend_repository,
         backend_version=selected.release.tag.removeprefix("v"),
-        profile=policy.profile,
+        accelerator=policy.accelerator,
         required_capabilities=tuple(sorted(policy.required_capabilities)),
         output=output_root / "component-lock.json",
     )

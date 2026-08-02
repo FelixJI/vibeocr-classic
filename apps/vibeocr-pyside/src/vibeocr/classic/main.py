@@ -117,7 +117,7 @@ def check_production_dependencies() -> bool:
         if not inspection.ready:
             print(
                 "[VibeOCR] Runtime 未就绪，正在从产品内离线资产准备: "
-                f"{inspection.profile} / {inspection.integrity}"
+                f"{inspection.accelerator} / {inspection.integrity}"
             )
             client.ensure()
     except RuntimeInstallerClientError as exc:

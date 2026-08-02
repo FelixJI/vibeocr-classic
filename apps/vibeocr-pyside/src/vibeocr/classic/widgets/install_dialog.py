@@ -72,13 +72,13 @@ class InstallWorker(QThread):
                 shutdown_backend_client()
             except Exception as exc:
                 logger.warning("关闭旧 WorkerHost 失败，将继续安装: %s", exc)
-            profile = {
-                "cpu": "win-x64-cpu",
-                "gpu": "win-x64-cu126",
-            }.get(self._force_backend, "auto")
+            accelerator = {
+                "cpu": "cpu",
+                "gpu": "nvidia_cuda",
+            }.get(self._force_backend)
             client = RuntimeInstallerClient(
                 self._project_root,
-                profile=profile,
+                accelerator=accelerator,
             )
             repair = (
                 self._reinstall_python
@@ -90,7 +90,7 @@ class InstallWorker(QThread):
                     "运行时修复",
                     "逐包重装已停用，正在校验并修复完整 Runtime profile...",
                 )
-                launch = client.repair(
+                client.repair(
                     progress=lambda message: self._emit_progress(
                         "Runtime Installer", message
                     ),
@@ -101,7 +101,7 @@ class InstallWorker(QThread):
                     "运行时安装",
                     "正在确保绑定的 Runtime profile 可用...",
                 )
-                launch = client.ensure(
+                client.ensure(
                     progress=lambda message: self._emit_progress(
                         "Runtime Installer", message
                     ),
@@ -109,7 +109,7 @@ class InstallWorker(QThread):
                 )
             self.completed.emit(
                 True,
-                f"Runtime {launch.profile} 已验证（{launch.runtime_id}）",
+                f"Runtime {accelerator or '当前加速方案'} 已验证",
             )
         except RuntimeInstallerCancelled as exc:
             logger.info("安装取消: %s", exc)

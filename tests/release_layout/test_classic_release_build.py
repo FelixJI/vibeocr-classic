@@ -200,33 +200,31 @@ def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
     assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
 
 
-def test_runtime_layout_requires_static_profile_path_under_data(tmp_path: Path) -> None:
+def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -> None:
     good = {
-        "runtime_id": "win-x64-cpu",
-        "runtime_root": str(tmp_path / "data" / "runtimes" / "win-x64-cpu"),
+        "accelerator": "cpu",
+        "runtime_root": str(tmp_path / "data" / "runtime"),
     }
-    _verify_runtime_layout(good, tmp_path, "win-x64-cpu")
+    _verify_runtime_layout(good, tmp_path, "cpu")
 
-    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+    with pytest.raises(RuntimeError, match="invalid accelerator"):
         _verify_runtime_layout(
             {
-                "runtime_id": "13caec/win-x64-cpu",
-                "runtime_root": str(
-                    tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cpu"
-                ),
+                "accelerator": "nvidia_cuda",
+                "runtime_root": str(tmp_path / "data" / "runtime"),
             },
             tmp_path,
-            "win-x64-cpu",
+            "cpu",
         )
 
-    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+    with pytest.raises(RuntimeError, match="escaped"):
         _verify_runtime_layout(
             {
-                "runtime_id": "win-x64-cuda",
-                "runtime_root": str(tmp_path / "data" / "runtimes" / "win-x64-cuda"),
+                "accelerator": "cpu",
+                "runtime_root": str(tmp_path / "data" / "runtimes" / "cpu"),
             },
             tmp_path,
-            "win-x64-cpu",
+            "cpu",
         )
 
 

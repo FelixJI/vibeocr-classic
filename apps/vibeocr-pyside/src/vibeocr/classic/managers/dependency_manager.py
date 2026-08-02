@@ -45,10 +45,10 @@ class DependencyCheckTask(QRunnable):
             self.signals.finished.emit(False, [str(exc)])
             return
         if inspection.ready:
-            logging.debug("[Runtime 检查] %s 已验证", inspection.runtime_id)
+            logging.debug("[Runtime 检查] %s 已验证", inspection.accelerator)
             self.signals.finished.emit(True, [])
         else:
-            reason = f"{inspection.profile}: {inspection.integrity}"
+            reason = f"{inspection.accelerator}: {inspection.integrity}"
             logging.warning("[Runtime 检查] 未就绪: %s", reason)
             self.signals.finished.emit(False, [reason])
 

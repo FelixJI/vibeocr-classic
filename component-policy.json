@@ -1,7 +1,7 @@
 {
   "backend": {
     "channel": "stable",
-    "profile": "win-x64-cpu",
+    "accelerator": "cpu",
     "repository": "FelixJI/vibeocr-backend"
   },
   "protocol": {

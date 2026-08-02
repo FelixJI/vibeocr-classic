@@ -15,7 +15,7 @@ def _policy() -> ComponentPolicy:
         protocol_repository="FelixJI/vibeocr-protocol",
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=frozenset({"ocr.recognition.v2", "runtime.settings.v2"}),
     )
 
@@ -151,7 +151,7 @@ def test_policy_rejects_non_integer_schema_versions(tmp_path) -> None:
                     },
                     "backend": {
                         "channel": "stable",
-                        "profile": "win-x64-cpu",
+                        "accelerator": "cpu",
                         "repository": "FelixJI/vibeocr-backend",
                     },
                     "required_capabilities": ["ocr.recognition.v2"],

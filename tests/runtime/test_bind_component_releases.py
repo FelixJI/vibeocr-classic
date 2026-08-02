@@ -131,7 +131,7 @@ def test_binds_product_to_exact_backend_and_protocol(tmp_path: Path) -> None:
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
         backend_version="0.7.0",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=("ocr.recognition.v2",),
         output=tmp_path / "component-lock.json",
     )
@@ -151,7 +151,7 @@ def test_product_lock_rejects_missing_capability(tmp_path: Path) -> None:
             protocol_version="2.0.0",
             backend_repository="FelixJI/vibeocr-backend",
             backend_version="0.7.0",
-            profile="win-x64-cpu",
+            accelerator="cpu",
             required_capabilities=("qrcode.v2",),
             output=tmp_path / "component-lock.json",
         )
@@ -169,7 +169,7 @@ def test_product_lock_rejects_tampered_runtime_closure(tmp_path: Path) -> None:
             protocol_version="2.0.0",
             backend_repository="FelixJI/vibeocr-backend",
             backend_version="0.7.0",
-            profile="win-x64-cpu",
+            accelerator="cpu",
             required_capabilities=("ocr.recognition.v2",),
             output=tmp_path / "component-lock.json",
         )

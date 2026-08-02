@@ -52,12 +52,25 @@ jobs:
           INPUT_TAG: ${{ inputs.release_tag }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          # Manual dispatch: trust the provided tag.
+          function Set-ReleaseTargetCheckout {
+            param([string] $ReleaseTag)
+
+            # Draft releases do not create their Git tag until publication.
+            # Build the exact target commit while retaining tagName as the
+            # release/version identifier used by the remaining steps.
+            $target = (gh release view $ReleaseTag --json targetCommitish --jq '.targetCommitish').Trim()
+            if ([string]::IsNullOrEmpty($target)) {
+              throw "Release $ReleaseTag has no target commitish"
+            }
+            git fetch origin "$target" --force
+            git checkout --detach FETCH_HEAD
+          }
+
+          # Manual dispatch: resolve the provided draft Release target.
           if ($env:EVENT_NAME -eq 'workflow_dispatch') {
             $tag = $env:INPUT_TAG.Trim()
             if ([string]::IsNullOrEmpty($tag)) { throw "workflow_dispatch requires release_tag input" }
-            git fetch origin "$tag" --tags --force
-            git checkout "$tag"
+            Set-ReleaseTargetCheckout $tag
             "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
             "release_tag=$tag" >> $env:GITHUB_OUTPUT
             Write-Host "::notice::Manual build for $tag"
@@ -75,8 +88,7 @@ jobs:
             return
           }
           $tag = $drafts[0].tagName
-          git fetch origin "$tag" --tags --force
-          git checkout "$tag"
+          Set-ReleaseTargetCheckout $tag
           "RELEASE_TAG=$tag" >> $env:GITHUB_ENV
           "release_tag=$tag" >> $env:GITHUB_OUTPUT
           Write-Host "::notice::Auto build for draft $tag"

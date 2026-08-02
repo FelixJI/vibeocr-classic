@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -7,6 +8,13 @@ from unittest.mock import Mock
 from vibeocr.classic import main
 from vibeocr.classic.pyside.update import UpdateService
 from vibeocr.classic.runtime_installation import RuntimeInstallerClientError
+
+
+def test_dependency_failure_tolerates_missing_stdin(monkeypatch) -> None:
+    monkeypatch.setattr(main, "check_production_dependencies", lambda: False)
+    monkeypatch.setattr(sys, "stdin", None)
+
+    assert main.main() == 1
 
 
 def test_dependency_check_ensures_missing_bound_runtime(monkeypatch, tmp_path) -> None:
@@ -59,7 +67,9 @@ def test_update_health_signal_is_confined_to_update_cache(
 
 def test_update_health_is_scheduled_after_event_loop_turn() -> None:
     source = Path(main.__file__).read_text(encoding="utf-8")
-    assert "QTimer.singleShot(250, lambda: _publish_update_health(project_root))" in source
+    assert (
+        "QTimer.singleShot(250, lambda: _publish_update_health(project_root))" in source
+    )
 
 
 def test_updater_timeout_terminates_pre_ready_process(tmp_path) -> None:

@@ -69,6 +69,7 @@ $dist = Join-Path $build 'dist'
 $pyinstallerArgs = @(
     '--noconfirm', '--clean', '--onedir', '--windowed',
     '--name', 'VibeOCR',
+    '--icon', (Join-Path $root 'resources/app_icon.ico'),
     '--distpath', $dist,
     '--workpath', (Join-Path $build 'pyinstaller'),
     '--specpath', (Join-Path $build 'spec'),

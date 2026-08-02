@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_pyside_artifact import (
     MAX_CLASSIC_ARCHIVE_BYTES,
@@ -9,6 +11,7 @@ from scripts.verify_pyside_artifact import (
     _verify_bound_python_archive,
     _verify_product_file_closure,
     _verify_reduced_layout,
+    _verify_runtime_layout,
 )
 
 
@@ -33,6 +36,8 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     assert "'pymupdf'" in script
     assert "'fitz'" in script
     assert "'lxml'" in script
+    assert "'--icon'" in script
+    assert "resources/app_icon.ico" in script
     assert "pymupdf==1.28.0" not in script
     assert '"pymupdf' not in project
     entry_script = (ROOT / "scripts" / "classic_release_entry.py").read_text(
@@ -143,6 +148,27 @@ def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
         raise AssertionError("oversized Classic archive was accepted")
 
     assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
+
+
+def test_runtime_layout_requires_short_id_under_data(tmp_path: Path) -> None:
+    good = {
+        "runtime_id": "13caec",
+        "runtime_root": str(tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cpu"),
+    }
+    _verify_runtime_layout(good, tmp_path, "win-x64-cpu")
+
+    long_id = "13caec62e2d74e71a6a46bee8dc7fd70b48d22127d1fa93d2477b1956e449f43"
+    with pytest.raises(RuntimeError, match="short runtime_id"):
+        _verify_runtime_layout(
+            {
+                "runtime_id": long_id,
+                "runtime_root": str(
+                    tmp_path / "data" / "runtimes" / long_id / "win-x64-cpu"
+                ),
+            },
+            tmp_path,
+            "win-x64-cpu",
+        )
 
 
 def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:

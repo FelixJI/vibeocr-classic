@@ -24,7 +24,7 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
                 "backend_version": "0.7.0",
                 "installer": {
                     "executable_sha256": hashlib.sha256(b"installer").hexdigest()
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -37,7 +37,7 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
                     "profile": "win-x64-cpu",
                     "runtime_manifest_sha256": hashlib.sha256(
                         manifest.read_bytes()
-                    ).hexdigest()
+                    ).hexdigest(),
                 }
             }
         ),
@@ -98,6 +98,36 @@ def test_local_layout_does_not_forward_product_id(
     assert "--product-id" not in arguments
 
 
+def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> None:
+    product = tmp_path / "classic"
+    product.mkdir()
+    marker = product / "product-release-manifest.json"
+    marker.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "shared_root": "data",
+                "products": {
+                    "classic": {
+                        "root": ".",
+                        "component_lock": "component-lock.json",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = RuntimeInstallerClient(
+        product,
+        command=("python", "-m", "vibeocr.backend.runtime_installer"),
+    )
+    arguments = client._arguments("inspect")
+
+    assert arguments[arguments.index("--layout-manifest") + 1] == str(marker.resolve())
+    assert arguments[arguments.index("--product-id") + 1] == "classic"
+
+
 def test_frozen_installer_is_materialized_from_bound_archive(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -119,9 +149,7 @@ def test_frozen_installer_is_materialized_from_bound_archive(
                         installer_archive.read_bytes()
                     ).hexdigest(),
                     "executable_path": "runtime-installer/installer.exe",
-                    "executable_sha256": hashlib.sha256(
-                        executable_bytes
-                    ).hexdigest(),
+                    "executable_sha256": hashlib.sha256(executable_bytes).hexdigest(),
                 },
             }
         ),

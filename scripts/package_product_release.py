@@ -17,6 +17,13 @@ else:
 
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 PROHIBITED_ROOTS = {".git", "apps", "contracts", "packages", "supervisor", "tests"}
+EXPECTED_PRODUCT_ROOTS = {
+    "_internal",
+    "CHANGELOG.md",
+    "LICENSE",
+    "updater.exe",
+    "VibeOCR.exe",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -52,6 +59,13 @@ def package_product_release(
     )
     if prohibited:
         raise ValueError(f"prohibited source roots in product layout: {prohibited}")
+    unexpected = sorted(
+        child.name
+        for child in product_root.iterdir()
+        if child.name not in EXPECTED_PRODUCT_ROOTS
+    )
+    if unexpected:
+        raise ValueError(f"unexpected product root items: {unexpected}")
     lock_path = component_lock.resolve(strict=True)
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
     protocol = lock["protocol"]
@@ -102,6 +116,13 @@ def package_product_release(
                 "frontend_version": frontend_version,
                 "source_commit": source_commit,
                 "component_lock_sha256": _sha256(embedded_lock),
+                "shared_root": "data",
+                "products": {
+                    frontend: {
+                        "root": ".",
+                        "component_lock": "component-lock.json",
+                    }
+                },
                 "files": {
                     path.relative_to(product_root).as_posix(): {
                         "sha256": _sha256(path),

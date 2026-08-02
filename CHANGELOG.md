@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.6](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.5...v0.7.6) (2026-08-02)
+
+
+### Bug Fixes
+
+* **release:** 修复 Windows 启动并自动解析兼容后端 ([#13](https://github.com/FelixJI/vibeocr-classic/issues/13)) ([9f94937](https://github.com/FelixJI/vibeocr-classic/commit/9f94937a43fe87d38ec176e571bf7a40a1345819))
+
 ## [0.7.5](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.4...v0.7.5) (2026-08-02)
 
 

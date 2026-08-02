@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.4](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.3...v0.7.4) (2026-08-02)
+
+
+### Features
+
+* publish VibeOCR Classic 0.7.0 ([6b4e97c](https://github.com/FelixJI/vibeocr-classic/commit/6b4e97c7a99e599bb09e460f6edf642d3dd49ff6))
+
+
+### Bug Fixes
+
+* compare component locks semantically ([78bcd3d](https://github.com/FelixJI/vibeocr-classic/commit/78bcd3d8ee5bd5c702326cc1c0ec8964b321c868))
+* **release:** reduce 0.7.2 package and harden updates ([#2](https://github.com/FelixJI/vibeocr-classic/issues/2)) ([0c4af1c](https://github.com/FelixJI/vibeocr-classic/commit/0c4af1c53e8e589353cbd3d1bf1551a2d9be5131))
+* **release:** reduce Classic package size ([#1](https://github.com/FelixJI/vibeocr-classic/issues/1)) ([2ef73b7](https://github.com/FelixJI/vibeocr-classic/commit/2ef73b723809ae3e8c6c940c2763652f9c14be91))
+* **release:** 修复手动 patch 升成 minor ([#9](https://github.com/FelixJI/vibeocr-classic/issues/9)) ([f7f0783](https://github.com/FelixJI/vibeocr-classic/commit/f7f0783a0149cbcf0fab8adf3c214d0e542cd07f))
+* tolerate missing stdin in windowed startup ([#6](https://github.com/FelixJI/vibeocr-classic/issues/6)) ([7dbd038](https://github.com/FelixJI/vibeocr-classic/commit/7dbd038b7250a94cd22b707e4001af83ee96cd11))
+
 ## 0.7.2 - 2026-07-30
 
 ### Fixed

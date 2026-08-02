@@ -32,6 +32,26 @@ def test_release_workflow_publishes_only_after_verified_uploads() -> None:
     assert "VibeOCR-Classic-v*-win64.zip.sha256" in workflow
 
 
+def test_release_workflow_checks_out_draft_target_before_tag_exists() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+    resolve_step = workflow[
+        workflow.index("- name: Resolve release tag") : workflow.index(
+            "- uses: actions/setup-python@v5"
+        )
+    ]
+    auto_path = workflow[
+        workflow.index("# Auto path (workflow_run)") : workflow.index(
+            "- uses: actions/setup-python@v5"
+        )
+    ]
+
+    assert "gh release view $ReleaseTag --json targetCommitish" in resolve_step
+    assert 'git fetch origin "$target" --force' in resolve_step
+    assert "git checkout --detach FETCH_HEAD" in resolve_step
+    assert "Set-ReleaseTargetCheckout $tag" in auto_path
+    assert 'git fetch origin "$tag"' not in auto_path
+
+
 def test_cleanup_uses_rest_release_ids_and_preserves_tags() -> None:
     workflow = (ROOT / ".github/workflows/cleanup-releases.yml").read_text(
         encoding="utf-8"

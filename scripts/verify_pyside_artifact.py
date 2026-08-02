@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,26 @@ import zipfile
 from pathlib import Path
 
 MAX_CLASSIC_ARCHIVE_BYTES = 260_000_000
+
+
+def _verify_embedded_app_icon(executable: Path, icon: Path) -> None:
+    """Require every source ICO frame to be embedded in the final PE."""
+    try:
+        icon_bytes = icon.read_bytes()
+        executable_bytes = executable.read_bytes()
+        reserved, image_type, count = struct.unpack_from("<HHH", icon_bytes)
+        if reserved != 0 or image_type != 1 or count == 0:
+            raise ValueError("invalid ICO header")
+        for index in range(count):
+            entry_offset = 6 + index * 16
+            size, payload_offset = struct.unpack_from(
+                "<II", icon_bytes, entry_offset + 8
+            )
+            payload = icon_bytes[payload_offset : payload_offset + size]
+            if len(payload) != size or payload not in executable_bytes:
+                raise ValueError(f"ICO frame {index} is not embedded")
+    except (OSError, struct.error, ValueError) as error:
+        raise RuntimeError("VibeOCR.exe has no embedded custom app icon") from error
 
 
 def _verify_archive_size(
@@ -159,23 +180,14 @@ def _verify_runtime_layout(
     root: Path,
     profile: str,
 ) -> None:
-    """Require Backend's ``<short digest>/<profile>`` runtime layout."""
+    """Require Backend's fixed ``<profile>`` runtime layout."""
     runtime_id = envelope.get("runtime_id")
-    if not isinstance(runtime_id, str):
-        raise RuntimeError("bound Runtime Installer returned no runtime_id")
-    runtime_parts = runtime_id.split("/")
-    digest = runtime_parts[0] if runtime_parts else ""
-    if (
-        len(runtime_parts) != 2
-        or runtime_parts[1] != profile
-        or len(digest) != 6
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
+    if runtime_id != profile:
         raise RuntimeError("bound Runtime Installer returned an invalid runtime_id")
     runtime_root = envelope.get("runtime_root")
     if not isinstance(runtime_root, str):
         raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    expected = (root / "data" / "runtimes" / digest / profile).resolve()
+    expected = (root / "data" / "runtimes" / profile).resolve()
     if Path(runtime_root).resolve() != expected:
         raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
 
@@ -533,6 +545,10 @@ def main() -> int:
             raise RuntimeError("product release manifest has no file closure")
         _verify_product_file_closure(root, records)
         _verify_reduced_layout(root)
+        _verify_embedded_app_icon(
+            root / "VibeOCR.exe",
+            root / "_internal" / "resources" / "app_icon.ico",
+        )
         for relative, record in records.items():
             bound = root / str(relative)
             if not bound.is_file():

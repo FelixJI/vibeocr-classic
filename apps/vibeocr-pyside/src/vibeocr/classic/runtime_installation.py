@@ -196,18 +196,21 @@ class RuntimeInstallerClient:
             ) from exc
 
         deadline = time.monotonic() + timeout
-        while process.poll() is None:
+        while True:
             if cancel_event is not None and cancel_event.is_set():
                 process.kill()
                 process.communicate()
                 raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 process.kill()
                 process.communicate()
                 raise RuntimeInstallerClientError(f"Runtime Installer {operation} 超时")
-            time.sleep(0.05)
-
-        stdout, stderr = process.communicate()
+            try:
+                stdout, stderr = process.communicate(timeout=min(0.05, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
         envelopes: list[dict[str, Any]] = []
         for line in stdout.splitlines():
             try:

@@ -202,3 +202,33 @@ def test_frozen_t6_inspect_does_not_spawn_installer(
 
     assert inspection.ready
     assert inspection.profile == "win-x64-cpu"
+
+
+def test_installer_output_larger_than_pipe_buffer_does_not_deadlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = """
+import json
+import sys
+
+sys.stdout.write("x" * 1_000_000 + "\\n")
+print(json.dumps({
+    "runtime_id": "win-x64-cpu",
+    "profile": "win-x64-cpu",
+    "python_executable": "python.exe",
+    "supervisor_module": "vibeocr.backend.supervisor.main",
+    "working_directory": ".",
+    "model_root": "models",
+    "environment": {},
+}))
+"""
+    client = RuntimeInstallerClient(
+        tmp_path,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+
+    value = client._invoke("ensure", timeout=3)
+
+    assert value["runtime_id"] == "win-x64-cpu"

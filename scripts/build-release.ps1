@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [string]$ReleaseInput
+    [string]$ReleaseInput,
+    [string]$ArtifactsDir
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -17,7 +18,13 @@ if (-not $Version) {
 if ($Version -ne $projectVersion) {
     throw "Release version '$Version' does not match project version '$projectVersion'"
 }
-$artifacts = Join-Path $root 'artifacts'
+if (-not $ArtifactsDir) {
+    $ArtifactsDir = $env:AUTOMATION_ARTIFACTS_DIR
+}
+if (-not $ArtifactsDir) {
+    $ArtifactsDir = Join-Path $root 'artifacts'
+}
+$artifacts = [IO.Path]::GetFullPath($ArtifactsDir)
 $build = Join-Path $root '.release-build'
 $defaultInputs = Join-Path $root '.release-input'
 foreach ($path in @($artifacts, $build)) {
@@ -152,6 +159,7 @@ python (Join-Path $root 'scripts/package_product_release.py') `
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
 python (Join-Path $root 'scripts/verify_pyside_artifact.py') $zip
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
+Copy-Item -LiteralPath $lock -Destination (Join-Path $artifacts 'component-lock.json')
 python (Join-Path $root 'scripts/build_release_checksums.py') $artifacts `
   --sidecar-for $zip
 if ($LASTEXITCODE -ne 0) { throw 'sidecar checksum build failed' }
@@ -159,5 +167,3 @@ Remove-Item -LiteralPath (Join-Path $artifacts 'SHA256SUMS') -Force
 python (Join-Path $root 'scripts/build_spdx_sbom.py') --artifacts-dir $artifacts `
   --repository-name FelixJI/vibeocr-classic --version $Version
 if ($LASTEXITCODE -ne 0) { throw 'SBOM build failed' }
-python (Join-Path $root 'scripts/build_release_checksums.py') $artifacts
-if ($LASTEXITCODE -ne 0) { throw 'checksum build failed' }

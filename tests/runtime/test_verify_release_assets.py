@@ -82,3 +82,25 @@ def test_verify_release_assets_rejects_unsafe_index_name(tmp_path: Path) -> None
 
     with pytest.raises(ReleaseAssetError, match="unsafe asset name"):
         verify_release_assets(tmp_path)
+
+
+def test_verify_project_assets_without_common_index_uses_sidecar(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "artifact.zip"
+    archive.write_bytes(b"archive")
+    sidecar = tmp_path / "artifact.zip.sha256"
+    sidecar.write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
+        encoding="utf-8",
+    )
+
+    verify_release_assets(
+        tmp_path,
+        require_one=("*.zip", "*.zip.sha256"),
+        require_index=False,
+    )
+
+    archive.write_bytes(b"tampered")
+    with pytest.raises(ReleaseAssetError, match="sidecar SHA-256 mismatch"):
+        verify_release_assets(tmp_path, require_index=False)

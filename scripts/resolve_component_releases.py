@@ -82,6 +82,22 @@ class ResolvedBackend:
     manifest: dict[str, object]
 
 
+def bound_protocol_version(backend_release_dir: Path) -> str:
+    """Read the immutable Protocol release identity bundled by Backend."""
+    path = backend_release_dir / "protocol-release-manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InvalidReleaseError(
+            "Backend is missing its bound Protocol manifest"
+        ) from error
+    version = manifest.get("protocol_version")
+    if not isinstance(version, str):
+        raise InvalidReleaseError("Backend bound Protocol version is invalid")
+    _parse_version(version)
+    return version
+
+
 def _parse_version(value: str) -> tuple[int, int, int]:
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", value)
     if match is None:
@@ -133,9 +149,28 @@ def _is_compatible(
         return False
     if not isinstance(profiles, dict) or policy.profile not in profiles:
         return False
-    return _matches_range(policy.protocol_version, protocol_range) and (
-        policy.required_capabilities <= set(capabilities)
-    )
+    return policy.required_capabilities <= set(capabilities)
+
+
+def validate_bound_protocol(
+    policy: ComponentPolicy,
+    manifest: dict[str, object],
+    protocol_version: str,
+) -> None:
+    supported_major = policy.protocol_version.split(".", 1)[0]
+    actual_major = protocol_version.split(".", 1)[0]
+    protocol_range = manifest.get("protocol")
+    if actual_major != supported_major:
+        raise InvalidReleaseError(
+            f"Backend binds unsupported Protocol major: {protocol_version}"
+        )
+    if not isinstance(protocol_range, str) or not _matches_range(
+        protocol_version, protocol_range
+    ):
+        raise InvalidReleaseError(
+            "Backend bound Protocol is outside its declared runtime range: "
+            f"{protocol_version}"
+        )
 
 
 def select_latest_compatible_backend(
@@ -154,14 +189,20 @@ def select_latest_compatible_backend(
         key=lambda release: release.version or (0, 0, 0),
         reverse=True,
     )
-    for release in stable:
-        try:
-            manifest = load_manifest(release)
-            if _is_compatible(policy, release, manifest):
-                return ResolvedBackend(release=release, manifest=manifest)
-        except (InvalidReleaseError, ValueError, KeyError):
-            continue
-    raise RuntimeError("no compatible stable Backend release was found")
+    if not stable:
+        raise RuntimeError("no stable Backend release was found")
+    latest = stable[0]
+    try:
+        manifest = load_manifest(latest)
+    except (InvalidReleaseError, ValueError, KeyError) as error:
+        raise RuntimeError(
+            f"latest stable Backend release is invalid: {latest.tag}"
+        ) from error
+    if not _is_compatible(policy, latest, manifest):
+        raise RuntimeError(
+            f"latest stable Backend release is incompatible: {latest.tag}"
+        )
+    return ResolvedBackend(release=latest, manifest=manifest)
 
 
 class GitHubReleaseSource:
@@ -287,23 +328,25 @@ def resolve_component_releases(
             load_manifest,
         )
 
-    protocol_root = output_root / "protocol"
     backend_root = output_root / "backend"
-    github.download_release(
-        policy.protocol_repository,
-        f"v{policy.protocol_version}",
-        protocol_root,
-    )
     github.download_release(
         policy.backend_repository,
         selected.release.tag,
         backend_root,
     )
+    protocol_version = bound_protocol_version(backend_root)
+    validate_bound_protocol(policy, selected.manifest, protocol_version)
+    protocol_root = output_root / "protocol"
+    github.download_release(
+        policy.protocol_repository,
+        f"v{protocol_version}",
+        protocol_root,
+    )
     return bind_product_releases(
         protocol_release_dir=protocol_root,
         backend_release_dir=backend_root,
         protocol_repository=policy.protocol_repository,
-        protocol_version=policy.protocol_version,
+        protocol_version=protocol_version,
         backend_repository=policy.backend_repository,
         backend_version=selected.release.tag.removeprefix("v"),
         profile=policy.profile,

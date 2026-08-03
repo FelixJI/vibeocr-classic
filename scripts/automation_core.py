@@ -1,5 +1,9 @@
 """Implementation behind the stable :mod:`scripts.automation` workflow interface."""
 
+# This implementation is mirrored byte-for-byte across repositories with
+# different Ruff formatter settings. Keep its canonical formatting intact.
+# fmt: off
+
 from __future__ import annotations
 
 import fnmatch
@@ -1314,3 +1318,5 @@ class Automation:
                     f"repos/{self.repository}/releases/{release['id']}",
                 ]
             )
+
+# fmt: on

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 from pathlib import Path
 
@@ -61,29 +62,32 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     ).read_text(encoding="utf-8")
 
 
-def test_release_build_uses_resolved_draft_tag_and_project_metadata() -> None:
+def test_release_build_uses_candidate_version_and_direct_publish_contract() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
 
     assert "[string]$Version" in script
     assert "frontend-version $Version" in script
     assert "VibeOCR-Classic-v$Version-win64.zip" in script
     assert "vibeocr_classic-$Version-*.whl" in script
-    assert 'workflows: ["Release Please"]' in workflow
-    assert "INPUT_TAG: ${{ inputs.release_tag }}" in workflow
-    assert workflow.count("RELEASE_TAG: ${{ env.RELEASE_TAG }}") == 4
-    assert "-Version '${{ env.RELEASE_TAG }}'" in workflow
-    assert "gh release upload $env:RELEASE_TAG @publicAssets --clobber" in workflow
-    assert "gh release edit $env:RELEASE_TAG --draft=false" in workflow
-    assert "gh release create" not in workflow
+    assert config["ci"]["release_build"][0][-4:] == [
+        "-ReleaseInput",
+        "build/automation/release-input",
+        "-ArtifactsDir",
+        "{artifacts_dir}",
+    ]
+    assert not config["ci"]["release_build"][0][-3].startswith("{artifacts_dir}")
+    assert "name: Download exact CI candidate" in workflow
+    assert "name: Publish and reconcile release" in workflow
+    assert "draft" not in workflow.lower()
     assert "v0.7.0" not in workflow
 
 
 def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
     policy = ROOT / "component-policy.json"
     project = tomllib.loads(
         (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
@@ -93,11 +97,12 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
 
     assert policy.is_file()
     assert not (ROOT / "component-lock.json").exists()
-    assert "resolve_component_releases.py" in script
-    assert "resolve_component_releases.py" in workflow
-    assert "resolved-components.txt" in workflow
-    assert "python -m pip install @resolvedWheels" in workflow
-    assert "if ($LASTEXITCODE -ne 0) { throw 'Classic tests failed' }" in workflow
+    assert "resolve_component_releases.py" not in workflow
+    assert config["ci"]["bootstrap"][0][1] == "scripts/resolve_component_releases.py"
+    assert config["ci"]["bootstrap"][1][1] == "scripts/install_resolved_components.py"
+    assert config["ci"]["e2e"][0][1] == "scripts/verify_component_release_input.py"
+    assert workflow.count("python scripts/automation.py") == 1
+    assert "[string]$ReleaseInput" in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow
     assert "vibeocr-backend" in project["project"]["dependencies"]

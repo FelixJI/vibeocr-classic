@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from scripts.resolve_component_releases import (
-    ComponentPolicy,
     InvalidReleaseError,
+    ComponentPolicy,
     ReleaseInfo,
     select_latest_compatible_backend,
+    validate_bound_protocol,
 )
 
 
@@ -20,122 +23,88 @@ def _policy() -> ComponentPolicy:
     )
 
 
-def _manifest(
-    version: str,
-    *,
-    protocol: str = ">=2.0.0,<3.0.0",
-    capabilities: tuple[str, ...] = (
-        "ocr.recognition.v2",
-        "runtime.settings.v2",
-    ),
-    profiles: tuple[str, ...] = ("win-x64-cpu",),
-) -> dict[str, object]:
+def _manifest(version: str, protocol: str = ">=2.0.0,<3.0.0") -> dict[str, object]:
     return {
         "schema_version": 1,
         "backend_version": version,
         "protocol": protocol,
-        "capabilities": list(capabilities),
-        "profiles": {name: {} for name in profiles},
+        "capabilities": ["ocr.recognition.v2", "runtime.settings.v2"],
+        "profiles": {"win-x64-cpu": {}},
     }
 
 
-def test_selects_latest_stable_compatible_backend() -> None:
+def test_selects_the_latest_formal_backend_when_compatible() -> None:
     releases = [
-        ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False),
-        ReleaseInfo(tag="v0.8.0", is_draft=False, is_prerelease=False),
-        ReleaseInfo(tag="v0.7.4", is_draft=True, is_prerelease=False),
-        ReleaseInfo(tag="v0.7.3", is_draft=False, is_prerelease=True),
         ReleaseInfo(tag="v0.7.1", is_draft=False, is_prerelease=False),
+        ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False),
     ]
-    manifests = {
-        "v0.8.0": _manifest("0.8.0", protocol=">=3.0.0,<4.0.0"),
-        "v0.7.2": _manifest("0.7.2"),
-        "v0.7.1": _manifest("0.7.1"),
-    }
 
     selected = select_latest_compatible_backend(
-        _policy(), releases, lambda release: manifests[release.tag]
+        _policy(), releases, lambda release: _manifest(release.tag.removeprefix("v"))
     )
 
     assert selected.release.tag == "v0.7.2"
-    assert selected.manifest["backend_version"] == "0.7.2"
 
 
-def test_skips_missing_capabilities_and_profile() -> None:
+def test_rejects_latest_missing_capability_without_fallback() -> None:
     releases = [
-        ReleaseInfo(tag="v0.7.3", is_draft=False, is_prerelease=False),
         ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False),
         ReleaseInfo(tag="v0.7.1", is_draft=False, is_prerelease=False),
     ]
-    manifests = {
-        "v0.7.3": _manifest("0.7.3", capabilities=("ocr.recognition.v2",)),
-        "v0.7.2": _manifest("0.7.2", profiles=("linux-x64-cpu",)),
-        "v0.7.1": _manifest("0.7.1"),
-    }
 
-    selected = select_latest_compatible_backend(
-        _policy(), releases, lambda release: manifests[release.tag]
-    )
-
-    assert selected.release.tag == "v0.7.1"
-
-
-def test_rejects_when_no_compatible_backend_exists() -> None:
-    releases = [
-        ReleaseInfo(tag="v1.0.0", is_draft=False, is_prerelease=False),
-    ]
-
-    try:
+    with pytest.raises(
+        RuntimeError, match="latest stable Backend release is incompatible: v0.7.2"
+    ):
         select_latest_compatible_backend(
             _policy(),
             releases,
-            lambda _release: _manifest("1.0.0", protocol=">=3.0.0,<4.0.0"),
+            lambda release: {
+                **_manifest(release.tag.removeprefix("v")),
+                "capabilities": []
+                if release.tag == "v0.7.2"
+                else ["ocr.recognition.v2"],
+            },
         )
-    except RuntimeError as error:
-        assert "no compatible stable Backend release" in str(error)
-    else:
-        raise AssertionError("incompatible Backend release was selected")
 
 
-def test_skips_unknown_schema_invalid_range_and_missing_manifest() -> None:
+def test_minor_compatible_selection_uses_the_backend_bound_protocol() -> None:
+    release = ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False)
+    manifest = _manifest("0.7.2", ">=2.1.0,<3.0.0")
+
+    selected = select_latest_compatible_backend(
+        _policy(), [release], lambda _: manifest
+    )
+    validate_bound_protocol(_policy(), selected.manifest, "2.1.4")
+
+    with pytest.raises(InvalidReleaseError, match="outside its declared runtime range"):
+        validate_bound_protocol(_policy(), selected.manifest, "2.0.0")
+
+
+def test_ignores_draft_and_prerelease_when_selecting_latest() -> None:
     releases = [
-        ReleaseInfo(tag="v0.7.5", is_draft=False, is_prerelease=False),
-        ReleaseInfo(tag="v0.7.4", is_draft=False, is_prerelease=False),
-        ReleaseInfo(tag="v0.7.3", is_draft=False, is_prerelease=False),
+        ReleaseInfo(tag="v0.8.0", is_draft=True, is_prerelease=False),
+        ReleaseInfo(tag="v0.7.3", is_draft=False, is_prerelease=True),
         ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False),
     ]
-    schema_two = _manifest("0.7.5")
-    schema_two["schema_version"] = 2
-    manifests = {
-        "v0.7.5": schema_two,
-        "v0.7.4": _manifest("0.7.4", protocol="~=2.0"),
-        "v0.7.2": _manifest("0.7.2"),
-    }
 
-    def load_manifest(release: ReleaseInfo) -> dict[str, object]:
-        if release.tag == "v0.7.3":
-            raise InvalidReleaseError("runtime-manifest.json is missing")
-        return manifests[release.tag]
-
-    selected = select_latest_compatible_backend(_policy(), releases, load_manifest)
+    selected = select_latest_compatible_backend(
+        _policy(), releases, lambda release: _manifest(release.tag.removeprefix("v"))
+    )
 
     assert selected.release.tag == "v0.7.2"
 
 
-def test_rejects_non_integer_manifest_schema_versions() -> None:
-    release = ReleaseInfo(tag="v0.7.2", is_draft=False, is_prerelease=False)
+def test_reads_backend_bound_protocol_identity(tmp_path) -> None:
+    (tmp_path / "protocol-release-manifest.json").write_text(
+        '{"protocol_version":"2.1.0"}', encoding="utf-8"
+    )
 
-    for invalid_schema in (True, 1.0):
-        manifest = _manifest("0.7.2")
-        manifest["schema_version"] = invalid_schema
-        try:
-            select_latest_compatible_backend(
-                _policy(), [release], lambda _release: manifest
-            )
-        except RuntimeError as error:
-            assert "no compatible stable Backend release" in str(error)
-        else:
-            raise AssertionError(f"invalid schema was selected: {invalid_schema!r}")
+    from scripts.resolve_component_releases import bound_protocol_version
+
+    assert bound_protocol_version(tmp_path) == "2.1.0"
+    (tmp_path / "protocol-release-manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(InvalidReleaseError, match="bound Protocol version"):
+        bound_protocol_version(tmp_path)
 
 
 def test_policy_rejects_non_integer_schema_versions(tmp_path) -> None:

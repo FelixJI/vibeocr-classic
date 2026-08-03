@@ -27,6 +27,7 @@ def verify_release_assets(
     *,
     required: Iterable[str] = (),
     require_one: Iterable[str] = (),
+    require_index: bool = True,
 ) -> tuple[str, ...]:
     """Verify checksums, the indexed file set, and repository asset requirements."""
     root = artifacts_dir.resolve(strict=True)
@@ -34,39 +35,55 @@ def verify_release_assets(
         raise ReleaseAssetError("artifacts_dir must be a directory")
 
     checksum_path = root / "SHA256SUMS"
-    if not checksum_path.is_file():
+    if require_index and not checksum_path.is_file():
         raise ReleaseAssetError("missing required asset: SHA256SUMS")
 
     checksums: dict[str, str] = {}
-    for line_number, line in enumerate(
-        checksum_path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        match = _CHECKSUM_LINE.fullmatch(line)
-        if match is None:
-            raise ReleaseAssetError(f"invalid SHA256SUMS line {line_number}")
-        digest, raw_name = match.groups()
-        name = _asset_name(raw_name)
-        if name in checksums:
-            raise ReleaseAssetError(f"duplicate SHA256SUMS entry: {name}")
-        checksums[name] = digest
-
-    indexed = set(checksums)
     actual = {
         path.name
         for path in root.iterdir()
         if path.is_file() and path.name != checksum_path.name
     }
-    if indexed != actual:
-        missing = sorted(indexed - actual)
-        unindexed = sorted(actual - indexed)
-        raise ReleaseAssetError(
-            f"SHA256SUMS file set mismatch; missing={missing}, unindexed={unindexed}"
-        )
+    if checksum_path.is_file():
+        for line_number, line in enumerate(
+            checksum_path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            match = _CHECKSUM_LINE.fullmatch(line)
+            if match is None:
+                raise ReleaseAssetError(f"invalid SHA256SUMS line {line_number}")
+            digest, raw_name = match.groups()
+            name = _asset_name(raw_name)
+            if name in checksums:
+                raise ReleaseAssetError(f"duplicate SHA256SUMS entry: {name}")
+            checksums[name] = digest
+
+        indexed = set(checksums)
+        if indexed != actual:
+            missing = sorted(indexed - actual)
+            unindexed = sorted(actual - indexed)
+            raise ReleaseAssetError(
+                f"SHA256SUMS file set mismatch; missing={missing}, unindexed={unindexed}"
+            )
 
     for name, expected in checksums.items():
         actual_digest = hashlib.sha256((root / name).read_bytes()).hexdigest()
         if actual_digest != expected:
             raise ReleaseAssetError(f"SHA-256 mismatch: {name}")
+
+    if not require_index:
+        for sidecar in root.glob("*.sha256"):
+            match = _CHECKSUM_LINE.fullmatch(
+                sidecar.read_text(encoding="utf-8").strip()
+            )
+            if match is None:
+                raise ReleaseAssetError(f"invalid sidecar checksum: {sidecar.name}")
+            digest, raw_name = match.groups()
+            target = root / _asset_name(raw_name)
+            if (
+                not target.is_file()
+                or hashlib.sha256(target.read_bytes()).hexdigest() != digest
+            ):
+                raise ReleaseAssetError(f"sidecar SHA-256 mismatch: {sidecar.name}")
 
     for name in required:
         safe_name = _asset_name(name)
@@ -81,7 +98,9 @@ def verify_release_assets(
                 f"matches={matches}"
             )
 
-    return tuple(sorted(actual | {checksum_path.name}))
+    return tuple(
+        sorted(actual | ({checksum_path.name} if checksum_path.is_file() else set()))
+    )
 
 
 def main() -> int:
@@ -89,11 +108,13 @@ def main() -> int:
     parser.add_argument("artifacts_dir", type=Path)
     parser.add_argument("--require", action="append", default=[])
     parser.add_argument("--require-one", action="append", default=[])
+    parser.add_argument("--no-checksum-index", action="store_true")
     args = parser.parse_args()
     for name in verify_release_assets(
         args.artifacts_dir,
         required=args.require,
         require_one=args.require_one,
+        require_index=not args.no_checksum_index,
     ):
         print(name)
     return 0

@@ -1,53 +1,64 @@
 name: CI
 
-# CI runs only on pull requests. Every commit to main must arrive through a
-# PR, enforced by the repository branch protection rule
-# ("Require a pull request before merging" + "Do not allow bypassing the
-# above"). That removes the duplicate push(main) run after a merge while
-# keeping direct pushes from landing unverified.
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   required:
     name: required
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          python-version: '3.13'
-      - name: Verify
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.16"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: hashFiles('global.json') != ''
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: hashFiles('**/package-lock.json') != ''
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: hashFiles('sidecar/go.mod') != ''
+        with:
+          go-version-file: sidecar/go.mod
+          cache-dependency-path: sidecar/go.sum
+      - name: Verify repository
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          python scripts/resolve_component_releases.py --policy component-policy.json --output-root .release-input
-          if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
-          Get-ChildItem .release-input/protocol, .release-input/backend -Filter '*.whl' | ForEach-Object {
-            $repository = if ($_.Directory.Name -eq 'protocol') { 'FelixJI/vibeocr-protocol' } else { 'FelixJI/vibeocr-backend' }
-            gh attestation verify $_.FullName --repo $repository
-            if ($LASTEXITCODE -ne 0) { throw "attestation failed: $($_.Name)" }
-          }
-          $componentLock = Get-Content .release-input/component-lock.json -Raw | ConvertFrom-Json
-          $constraints = '.release-input/resolved-components.txt'
-          @(
-            "vibeocr-backend==$($componentLock.backend.version)"
-            "vibeocr-runtime-contracts==$($componentLock.protocol.version)"
-            "vibeocr-runtime-client==$($componentLock.protocol.version)"
-          ) | Set-Content $constraints -Encoding utf8
-          $resolvedWheels = @(
-            Get-ChildItem .release-input/protocol -Filter '*.whl'
-            Get-ChildItem .release-input/backend -Filter 'vibeocr_backend-*.whl'
-          ) | ForEach-Object FullName
-          python -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
-          python -m pip install @resolvedWheels
-          if ($LASTEXITCODE -ne 0) { throw 'resolved wheel install failed' }
-          python -m pip install -c $constraints pytest pytest-asyncio pytest-qt ./apps/vibeocr-pyside
-          if ($LASTEXITCODE -ne 0) { throw 'Classic test dependency install failed' }
-          python -m pytest
-          if ($LASTEXITCODE -ne 0) { throw 'Classic tests failed' }
-          ./scripts/build-release.ps1 -ReleaseInput (Resolve-Path .release-input).Path
+        run: >-
+          python scripts/automation.py ci
+          --event '${{ github.event_name }}'
+          --source-sha '${{ github.sha }}'
+      - name: Upload main release candidate
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: build/automation/release-candidate
+          if-no-files-found: error
+          retention-days: 14

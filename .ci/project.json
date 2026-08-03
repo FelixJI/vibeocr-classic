@@ -10,12 +10,12 @@
   },
   "ci": {
     "bootstrap": [
-      ["python", "scripts/resolve_component_releases.py", "--policy", "component-policy.json", "--output-root", "{artifacts_dir}/release-input"],
-      ["python", "scripts/install_resolved_components.py", "--release-input", "{artifacts_dir}/release-input"]
+      ["python", "scripts/resolve_component_releases.py", "--policy", "component-policy.json", "--output-root", "build/automation/release-input"],
+      ["python", "scripts/install_resolved_components.py", "--release-input", "build/automation/release-input"]
     ],
     "quality": [["python", "-m", "pytest"]],
-    "e2e": [["python", "scripts/verify_component_release_input.py", "--release-input", "{artifacts_dir}/release-input"]],
-    "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ReleaseInput", "{artifacts_dir}/release-input", "-ArtifactsDir", "{artifacts_dir}"]],
+    "e2e": [["python", "scripts/verify_component_release_input.py", "--release-input", "build/automation/release-input"]],
+    "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ReleaseInput", "build/automation/release-input", "-ArtifactsDir", "{artifacts_dir}"]],
     "release_smoke": [["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--require", "component-lock.json", "--require", "SBOM.spdx.json", "--require-one", "VibeOCR-Classic-v*-win64.zip", "--require-one", "VibeOCR-Classic-v*-win64.zip.sha256"]]
   },
   "release": {

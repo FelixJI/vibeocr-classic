@@ -73,10 +73,11 @@ def test_release_build_uses_candidate_version_and_direct_publish_contract() -> N
     assert "vibeocr_classic-$Version-*.whl" in script
     assert config["ci"]["release_build"][0][-4:] == [
         "-ReleaseInput",
-        "{artifacts_dir}/release-input",
+        "build/automation/release-input",
         "-ArtifactsDir",
         "{artifacts_dir}",
     ]
+    assert not config["ci"]["release_build"][0][-3].startswith("{artifacts_dir}")
     assert "name: Download exact CI candidate" in workflow
     assert "name: Publish and reconcile release" in workflow
     assert "draft" not in workflow.lower()

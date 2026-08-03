@@ -87,10 +87,13 @@ class CommandRunner:
         capture: bool = False,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        merged_env = {**os.environ, **(env or {})}
+        executable = shutil.which(argv[0], path=merged_env.get("PATH"))
+        command = [executable, *argv[1:]] if executable is not None else argv
         process = subprocess.run(
-            argv,
+            command,
             cwd=self.root,
-            env={**os.environ, **(env or {})},
+            env=merged_env,
             check=False,
             text=True,
             encoding="utf-8",

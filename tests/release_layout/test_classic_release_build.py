@@ -133,6 +133,22 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     )
 
 
+def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    project = tomllib.loads(
+        (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    compatibility = config["project"]["protocol_compatibility"]
+    dependencies = set(project["project"]["dependencies"])
+
+    assert compatibility == {"supported_majors": [2], "minor_compatible": True}
+    assert "vibeocr-runtime-contracts>=2.0.0,<3.0.0" in dependencies
+    assert "vibeocr-runtime-client>=2.0.0,<3.0.0" in dependencies
+
+
 def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None:
     pyside = tmp_path / "_internal" / "PySide6"
     for directory in (

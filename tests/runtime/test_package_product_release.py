@@ -102,7 +102,7 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
         backend_version="0.7.0",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=("ocr.recognition.v2",),
         output=component_lock,
     )
@@ -153,7 +153,7 @@ def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> N
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
         backend_version="0.7.0",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=("ocr.recognition.v2",),
         output=component_lock,
     )
@@ -187,7 +187,7 @@ def test_product_package_accepts_equivalent_crlf_component_lock(
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
         backend_version="0.7.0",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=("ocr.recognition.v2",),
         output=component_lock,
     )

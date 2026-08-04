@@ -104,7 +104,7 @@ def package_product_release(
             protocol_version=str(protocol["version"]),
             backend_repository=str(backend["repository"]),
             backend_version=str(backend["version"]),
-            profile=str(backend["profile"]),
+            accelerator=str(backend["accelerator"]),
             required_capabilities=required_capabilities,
             output=generated,
         )

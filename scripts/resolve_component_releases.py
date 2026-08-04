@@ -12,9 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
-    from .bind_component_releases import bind_product_releases
+    from .bind_component_releases import (
+        bind_product_releases,
+        protocol_manifest_version,
+    )
 else:
-    from bind_component_releases import bind_product_releases
+    from bind_component_releases import bind_product_releases, protocol_manifest_version
 
 _STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _RANGE_PART = re.compile(r"^(>=|<=|==|>|<)(\d+)\.(\d+)\.(\d+)$")
@@ -29,7 +32,7 @@ class ComponentPolicy:
     protocol_repository: str
     protocol_version: str
     backend_repository: str
-    profile: str
+    accelerator: str
     required_capabilities: frozenset[str]
 
     @classmethod
@@ -57,7 +60,7 @@ class ComponentPolicy:
             protocol_repository=str(protocol["repository"]),
             protocol_version=str(protocol["version"]),
             backend_repository=str(backend["repository"]),
-            profile=str(backend["profile"]),
+            accelerator=str(backend["accelerator"]),
             required_capabilities=frozenset(capabilities),
         )
 
@@ -91,10 +94,13 @@ def bound_protocol_version(backend_release_dir: Path) -> str:
         raise InvalidReleaseError(
             "Backend is missing its bound Protocol manifest"
         ) from error
-    version = manifest.get("protocol_version")
-    if not isinstance(version, str):
-        raise InvalidReleaseError("Backend bound Protocol version is invalid")
-    _parse_version(version)
+    try:
+        version = protocol_manifest_version(manifest)
+        _parse_version(version)
+    except ValueError as error:
+        raise InvalidReleaseError(
+            "Backend bound Protocol version is invalid"
+        ) from error
     return version
 
 
@@ -141,13 +147,16 @@ def _is_compatible(
     protocol_range = manifest.get("protocol")
     capabilities = manifest.get("capabilities")
     profiles = manifest.get("profiles")
+    plan = {"cpu": "win-x64-cpu", "nvidia_cuda": "win-x64-cu126"}.get(
+        policy.accelerator
+    )
     if not isinstance(protocol_range, str):
         return False
     if not isinstance(capabilities, list) or not all(
         isinstance(item, str) for item in capabilities
     ):
         return False
-    if not isinstance(profiles, dict) or policy.profile not in profiles:
+    if plan is None or not isinstance(profiles, dict) or plan not in profiles:
         return False
     return policy.required_capabilities <= set(capabilities)
 
@@ -349,7 +358,7 @@ def resolve_component_releases(
         protocol_version=protocol_version,
         backend_repository=policy.backend_repository,
         backend_version=selected.release.tag.removeprefix("v"),
-        profile=policy.profile,
+        accelerator=policy.accelerator,
         required_capabilities=tuple(sorted(policy.required_capabilities)),
         output=output_root / "component-lock.json",
     )

@@ -11,6 +11,7 @@ from scripts.verify_pyside_artifact import (
     MAX_CLASSIC_ARCHIVE_BYTES,
     _verify_archive_size,
     _verify_bound_python_archive,
+    _verify_embedded_app_icon,
     _verify_product_file_closure,
     _verify_reduced_layout,
     _verify_runtime_layout,
@@ -62,6 +63,26 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     ).read_text(encoding="utf-8")
 
 
+def test_product_verifier_requires_the_custom_icon_payload(tmp_path: Path) -> None:
+    payload = b"custom-vibeocr-icon-frame"
+    ico = tmp_path / "app_icon.ico"
+    ico.write_bytes(
+        b"\x00\x00\x01\x00\x01\x00"
+        + b"\x20\x20\x00\x00\x01\x00\x20\x00"
+        + len(payload).to_bytes(4, "little")
+        + (22).to_bytes(4, "little")
+        + payload
+    )
+    executable = tmp_path / "VibeOCR.exe"
+    executable.write_bytes(b"MZ" + payload)
+
+    _verify_embedded_app_icon(executable, ico)
+
+    executable.write_bytes(b"MZ-default-icon")
+    with pytest.raises(RuntimeError, match="custom app icon"):
+        _verify_embedded_app_icon(executable, ico)
+
+
 def test_release_build_uses_candidate_version_and_direct_publish_contract() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "cd.yml").read_text(encoding="utf-8")
@@ -110,6 +131,22 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         dependency.startswith("vibeocr-backend") and dependency != "vibeocr-backend"
         for dependency in project["project"]["dependencies"]
     )
+
+
+def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    project = tomllib.loads(
+        (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    compatibility = config["project"]["protocol_compatibility"]
+    dependencies = set(project["project"]["dependencies"])
+
+    assert compatibility == {"supported_majors": [2], "minor_compatible": True}
+    assert "vibeocr-runtime-contracts>=2.0.0,<3.0.0" in dependencies
+    assert "vibeocr-runtime-client>=2.0.0,<3.0.0" in dependencies
 
 
 def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None:
@@ -184,36 +221,31 @@ def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
     assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
 
 
-def test_runtime_layout_requires_backend_short_id_under_data(tmp_path: Path) -> None:
+def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -> None:
     good = {
-        "runtime_id": "13caec/win-x64-cpu",
-        "runtime_root": str(tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cpu"),
+        "accelerator": "cpu",
+        "runtime_root": str(tmp_path / "data" / "runtime"),
     }
-    _verify_runtime_layout(good, tmp_path, "win-x64-cpu")
+    _verify_runtime_layout(good, tmp_path, "cpu")
 
-    long_id = "13caec62e2d74e71a6a46bee8dc7fd70b48d22127d1fa93d2477b1956e449f43"
-    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+    with pytest.raises(RuntimeError, match="invalid accelerator"):
         _verify_runtime_layout(
             {
-                "runtime_id": f"{long_id}/win-x64-cpu",
-                "runtime_root": str(
-                    tmp_path / "data" / "runtimes" / long_id / "win-x64-cpu"
-                ),
+                "accelerator": "nvidia_cuda",
+                "runtime_root": str(tmp_path / "data" / "runtime"),
             },
             tmp_path,
-            "win-x64-cpu",
+            "cpu",
         )
 
-    with pytest.raises(RuntimeError, match="invalid runtime_id"):
+    with pytest.raises(RuntimeError, match="escaped"):
         _verify_runtime_layout(
             {
-                "runtime_id": "13caec/win-x64-cuda",
-                "runtime_root": str(
-                    tmp_path / "data" / "runtimes" / "13caec" / "win-x64-cuda"
-                ),
+                "accelerator": "cpu",
+                "runtime_root": str(tmp_path / "data" / "runtimes" / "cpu"),
             },
             tmp_path,
-            "win-x64-cpu",
+            "cpu",
         )
 
 

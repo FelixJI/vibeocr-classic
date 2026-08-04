@@ -34,7 +34,7 @@ class TestDependencyCheckTask:
         client = MagicMock()
         client.inspect.return_value = SimpleNamespace(
             ready=True,
-            runtime_id="digest/win-x64-cpu",
+            accelerator="cpu",
         )
         task = DependencyCheckTask(tmp_path, client)
 
@@ -54,7 +54,7 @@ class TestDependencyCheckTask:
         client = MagicMock()
         client.inspect.return_value = SimpleNamespace(
             ready=False,
-            profile="win-x64-cpu",
+            accelerator="cpu",
             integrity="not-installed",
         )
         task = DependencyCheckTask(tmp_path, client)
@@ -66,7 +66,7 @@ class TestDependencyCheckTask:
 
         finished_mock.assert_called_once_with(
             False,
-            ["win-x64-cpu: not-installed"],
+            ["cpu: not-installed"],
         )
 
 
@@ -175,7 +175,7 @@ class TestDependencyManager:
             release.wait(timeout=2)
             return SimpleNamespace(
                 ready=True,
-                runtime_id="digest/win-x64-cpu",
+                accelerator="cpu",
             )
 
         manager = DependencyManager(project_root=tmp_path)

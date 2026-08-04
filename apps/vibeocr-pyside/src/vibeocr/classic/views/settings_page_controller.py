@@ -135,8 +135,8 @@ class SettingsPageController:
         self._runtime_status_callback = runtime_status_callback
         self._ocr_ready_callback = ocr_ready_callback
         self._subprocess_manager = subprocess_manager
-        self._runtime_installer = (
-            runtime_installer_client or RuntimeInstallerClient(project_root)
+        self._runtime_installer = runtime_installer_client or RuntimeInstallerClient(
+            project_root
         )
         # 设置页重装/补装依赖成功后的联动回调（由 MainWindow 提供）。
         # 回归（Bug A）：旧逻辑设置页 BackendChoiceDialog 只连 finished 刷新表格，
@@ -1563,6 +1563,7 @@ class SettingsPageController:
             tree.clear()
         self._env_refresh_generation += 1
         generation = self._env_refresh_generation
+
         def operation() -> dict:
             inspection = self._runtime_installer.inspect()
             return {
@@ -1603,7 +1604,7 @@ class SettingsPageController:
                 status = "已验证" if inspection.ready else "未就绪"
                 label.setText(
                     f"Runtime：{status}\n"
-                    f"Profile：{inspection.profile}\n"
+                    f"加速方案：{inspection.accelerator}\n"
                     f"Backend：{inspection.backend_version}\n"
                     f"Manifest：{inspection.manifest_sha256[:12]}"
                 )
@@ -1623,7 +1624,7 @@ class SettingsPageController:
         # "重装选中项"初始禁用，由依赖树选择变化驱动启用状态
         if btn_reinstall_sel:
             btn_reinstall_sel.setEnabled(enabled)
-            btn_reinstall_sel.setText("修复 Runtime profile")
+            btn_reinstall_sel.setText("修复 Runtime")
 
         # 填充依赖状态树（仅 portable 模式）
         if tree and mode == "portable":
@@ -1648,7 +1649,7 @@ class SettingsPageController:
     def _populate_deps_tree(
         self, tree: QTreeWidget, snapshot: dict | None = None
     ) -> None:
-        """显示 Runtime profile，而非让 UI 解析 Python 依赖树。"""
+        """显示 Runtime accelerator，而非让 UI 解析 Python 依赖树。"""
         snapshot = snapshot or {}
         inspection = snapshot.get("inspection")
         tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1659,7 +1660,7 @@ class SettingsPageController:
         tree.addTopLevelItem(
             QTreeWidgetItem(
                 [
-                    inspection.profile,
+                    inspection.accelerator,
                     status,
                     inspection.backend_version,
                 ]

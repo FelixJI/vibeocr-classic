@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from scripts.resolve_component_releases import (
@@ -16,8 +18,8 @@ def _policy() -> ComponentPolicy:
         protocol_repository="FelixJI/vibeocr-protocol",
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
-        profile="win-x64-cpu",
-        required_capabilities=frozenset({"ocr.recognition.v2"}),
+        accelerator="cpu",
+        required_capabilities=frozenset({"ocr.recognition.v2", "runtime.settings.v2"}),
     )
 
 
@@ -26,7 +28,7 @@ def _manifest(version: str, protocol: str = ">=2.0.0,<3.0.0") -> dict[str, objec
         "schema_version": 1,
         "backend_version": version,
         "protocol": protocol,
-        "capabilities": ["ocr.recognition.v2"],
+        "capabilities": ["ocr.recognition.v2", "runtime.settings.v2"],
         "profiles": {"win-x64-cpu": {}},
     }
 
@@ -100,6 +102,48 @@ def test_reads_backend_bound_protocol_identity(tmp_path) -> None:
     from scripts.resolve_component_releases import bound_protocol_version
 
     assert bound_protocol_version(tmp_path) == "2.1.0"
+    (tmp_path / "protocol-release-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "project": {"component": "protocol"},
+                "protocol": {"version": "2.1.0"},
+                "release": {"version": "2.1.0", "tag": "v2.1.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert bound_protocol_version(tmp_path) == "2.1.0"
     (tmp_path / "protocol-release-manifest.json").write_text("{}", encoding="utf-8")
     with pytest.raises(InvalidReleaseError, match="bound Protocol version"):
         bound_protocol_version(tmp_path)
+
+
+def test_policy_rejects_non_integer_schema_versions(tmp_path) -> None:
+    for invalid_schema in (True, 1.0):
+        policy_path = tmp_path / f"policy-{invalid_schema!r}.json"
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": invalid_schema,
+                    "protocol": {
+                        "repository": "FelixJI/vibeocr-protocol",
+                        "version": "2.0.0",
+                    },
+                    "backend": {
+                        "channel": "stable",
+                        "accelerator": "cpu",
+                        "repository": "FelixJI/vibeocr-backend",
+                    },
+                    "required_capabilities": ["ocr.recognition.v2"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        try:
+            ComponentPolicy.load(policy_path)
+        except ValueError as error:
+            assert "schema_version must be 1" in str(error)
+        else:
+            raise AssertionError(f"invalid policy schema accepted: {invalid_schema!r}")

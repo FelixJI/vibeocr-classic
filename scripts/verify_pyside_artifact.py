@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,26 @@ import zipfile
 from pathlib import Path
 
 MAX_CLASSIC_ARCHIVE_BYTES = 260_000_000
+
+
+def _verify_embedded_app_icon(executable: Path, icon: Path) -> None:
+    """Require every source ICO frame to be embedded in the final PE."""
+    try:
+        icon_bytes = icon.read_bytes()
+        executable_bytes = executable.read_bytes()
+        reserved, image_type, count = struct.unpack_from("<HHH", icon_bytes)
+        if reserved != 0 or image_type != 1 or count == 0:
+            raise ValueError("invalid ICO header")
+        for index in range(count):
+            entry_offset = 6 + index * 16
+            size, payload_offset = struct.unpack_from(
+                "<II", icon_bytes, entry_offset + 8
+            )
+            payload = icon_bytes[payload_offset : payload_offset + size]
+            if len(payload) != size or payload not in executable_bytes:
+                raise ValueError(f"ICO frame {index} is not embedded")
+    except (OSError, struct.error, ValueError) as error:
+        raise RuntimeError("VibeOCR.exe has no embedded custom app icon") from error
 
 
 def _verify_archive_size(
@@ -99,7 +120,7 @@ def _verify_bound_installer_inspect(
     root: Path,
     runtime_manifest: dict[str, object],
     executable: bytes,
-    profile: str,
+    accelerator: str,
     timeout_seconds: float = 30.0,
 ) -> None:
     """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
@@ -108,24 +129,18 @@ def _verify_bound_installer_inspect(
     )
     executable_path.parent.mkdir(parents=True, exist_ok=True)
     executable_path.write_bytes(executable)
+    request = {
+        "protocol_version": 2,
+        "operation": "inspect",
+        "product_root": str(root),
+        "component_lock": str(root / "component-lock.json"),
+        "runtime_manifest": str(root / "backend" / "runtime-manifest.json"),
+        "accelerator": accelerator,
+        "layout_manifest": str(root / "product-release-manifest.json"),
+        "product_id": "classic",
+    }
     result = subprocess.run(
-        [
-            str(executable_path),
-            "inspect",
-            "--product-root",
-            str(root),
-            "--component-lock",
-            str(root / "component-lock.json"),
-            "--runtime-manifest",
-            str(root / "backend" / "runtime-manifest.json"),
-            "--profile",
-            profile,
-            "--layout-manifest",
-            str(root / "product-release-manifest.json"),
-            "--product-id",
-            "classic",
-            "--json",
-        ],
+        [str(executable_path), "--request-json", json.dumps(request)],
         cwd=root,
         capture_output=True,
         text=True,
@@ -144,38 +159,36 @@ def _verify_bound_installer_inspect(
         if isinstance(value, dict):
             envelopes.append(value)
     envelope = envelopes[-1] if envelopes else {}
-    if result.returncode != 0 or envelope.get("status") != "missing":
+    state = envelope.get("state")
+    if (
+        result.returncode != 0
+        or envelope.get("protocol_version") != 2
+        or envelope.get("ok") is not True
+        or envelope.get("operation") != "inspect"
+        or not isinstance(state, dict)
+        or state.get("status") != "missing"
+    ):
         raise RuntimeError(
             "bound Runtime Installer inspect failed: "
             f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
         )
-    if envelope.get("integrity") != "not-installed":
+    if state.get("integrity") != "not-installed":
         raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
-    _verify_runtime_layout(envelope, root, profile)
+    _verify_runtime_layout(state, root, accelerator)
 
 
 def _verify_runtime_layout(
     envelope: dict[str, object],
     root: Path,
-    profile: str,
+    accelerator: str,
 ) -> None:
-    """Require Backend's ``<short digest>/<profile>`` runtime layout."""
-    runtime_id = envelope.get("runtime_id")
-    if not isinstance(runtime_id, str):
-        raise RuntimeError("bound Runtime Installer returned no runtime_id")
-    runtime_parts = runtime_id.split("/")
-    digest = runtime_parts[0] if runtime_parts else ""
-    if (
-        len(runtime_parts) != 2
-        or runtime_parts[1] != profile
-        or len(digest) != 6
-        or any(character not in "0123456789abcdef" for character in digest)
-    ):
-        raise RuntimeError("bound Runtime Installer returned an invalid runtime_id")
+    """Require Backend's single fixed Runtime layout."""
+    if envelope.get("accelerator") != accelerator:
+        raise RuntimeError("bound Runtime Installer returned an invalid accelerator")
     runtime_root = envelope.get("runtime_root")
     if not isinstance(runtime_root, str):
         raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    expected = (root / "data" / "runtimes" / digest / profile).resolve()
+    expected = (root / "data" / "runtime").resolve()
     if Path(runtime_root).resolve() != expected:
         raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
 
@@ -533,6 +546,10 @@ def main() -> int:
             raise RuntimeError("product release manifest has no file closure")
         _verify_product_file_closure(root, records)
         _verify_reduced_layout(root)
+        _verify_embedded_app_icon(
+            root / "VibeOCR.exe",
+            root / "_internal" / "resources" / "app_icon.ico",
+        )
         for relative, record in records.items():
             bound = root / str(relative)
             if not bound.is_file():
@@ -586,7 +603,7 @@ def main() -> int:
                 root,
                 runtime_manifest,
                 installer_executable,
-                str(backend.get("profile", "")),
+                str(backend.get("accelerator", "")),
             )
             _verify_frozen_updater(root)
             _verify_frozen_startup(root)

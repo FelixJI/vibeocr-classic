@@ -34,7 +34,7 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
         json.dumps(
             {
                 "backend": {
-                    "profile": "win-x64-cpu",
+                    "accelerator": "cpu",
                     "runtime_manifest_sha256": hashlib.sha256(
                         manifest.read_bytes()
                     ).hexdigest(),
@@ -78,8 +78,9 @@ def test_explicit_layout_environment_is_forwarded(
         command=("python", "-m", "vibeocr.backend.runtime_installer"),
     )
     arguments = client._arguments("inspect")
-    assert arguments[arguments.index("--layout-manifest") + 1] == str(marker.resolve())
-    assert arguments[arguments.index("--product-id") + 1] == "classic"
+    request = json.loads(arguments[arguments.index("--request-json") + 1])
+    assert request["layout_manifest"] == str(marker.resolve())
+    assert request["product_id"] == "classic"
 
 
 def test_local_layout_does_not_forward_product_id(
@@ -94,8 +95,9 @@ def test_local_layout_does_not_forward_product_id(
 
     arguments = client._arguments("inspect")
 
-    assert "--layout-manifest" not in arguments
-    assert "--product-id" not in arguments
+    request = json.loads(arguments[arguments.index("--request-json") + 1])
+    assert "layout_manifest" not in request
+    assert "product_id" not in request
 
 
 def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> None:
@@ -124,8 +126,9 @@ def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> 
     )
     arguments = client._arguments("inspect")
 
-    assert arguments[arguments.index("--layout-manifest") + 1] == str(marker.resolve())
-    assert arguments[arguments.index("--product-id") + 1] == "classic"
+    request = json.loads(arguments[arguments.index("--request-json") + 1])
+    assert request["layout_manifest"] == str(marker.resolve())
+    assert request["product_id"] == "classic"
 
 
 def test_frozen_installer_is_materialized_from_bound_archive(
@@ -160,7 +163,7 @@ def test_frozen_installer_is_materialized_from_bound_archive(
         json.dumps(
             {
                 "backend": {
-                    "profile": "win-x64-cpu",
+                    "accelerator": "cpu",
                     "runtime_manifest_sha256": hashlib.sha256(
                         manifest.read_bytes()
                     ).hexdigest(),
@@ -201,4 +204,45 @@ def test_frozen_t6_inspect_does_not_spawn_installer(
     inspection = client.inspect()
 
     assert inspection.ready
-    assert inspection.profile == "win-x64-cpu"
+    assert inspection.accelerator == "cpu"
+
+
+def test_installer_output_larger_than_pipe_buffer_does_not_deadlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = """
+import json
+import sys
+
+sys.stdout.write("x" * 1_000_000 + "\\n")
+print(json.dumps({
+    "protocol_version": 2,
+    "ok": True,
+    "operation": "ensure",
+    "state": {
+        "status": "ready",
+        "runtime_root": "runtime",
+        "accelerator": "cpu",
+        "manifest_sha256": "0" * 64,
+        "backend_version": "0.7.0",
+        "integrity": "verified",
+    },
+    "launch": {
+        "python_executable": "python.exe",
+        "supervisor_module": "vibeocr.backend.supervisor.main",
+        "working_directory": ".",
+        "model_root": "models",
+        "environment": {},
+    },
+}))
+"""
+    client = RuntimeInstallerClient(
+        tmp_path,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+
+    value = client._invoke("ensure", timeout=3)
+
+    assert value["state"]["accelerator"] == "cpu"

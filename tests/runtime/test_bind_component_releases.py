@@ -10,6 +10,7 @@ import pytest
 from scripts.bind_component_releases import (
     bind_product_releases,
     bind_protocol_release,
+    protocol_manifest_version,
 )
 
 if TYPE_CHECKING:
@@ -109,6 +110,21 @@ def test_binds_verified_protocol_manifest(tmp_path: Path) -> None:
     )
 
 
+def test_protocol_manifest_version_supports_versioned_identities() -> None:
+    assert protocol_manifest_version({"protocol_version": "2.0.0"}) == "2.0.0"
+    manifest = {
+        "schema_version": 2,
+        "project": {"component": "protocol"},
+        "protocol": {"version": "2.1.0"},
+        "release": {"version": "2.1.0", "tag": "v2.1.0"},
+    }
+    assert protocol_manifest_version(manifest) == "2.1.0"
+
+    manifest["release"] = {"version": "2.0.0", "tag": "v2.0.0"}
+    with pytest.raises(ValueError, match="release identity mismatch"):
+        protocol_manifest_version(manifest)
+
+
 def test_rejects_tampered_protocol_asset(tmp_path: Path) -> None:
     release = _protocol_release(tmp_path / "protocol")
     next(release.glob("*.whl")).write_bytes(b"tampered")
@@ -131,7 +147,7 @@ def test_binds_product_to_exact_backend_and_protocol(tmp_path: Path) -> None:
         protocol_version="2.0.0",
         backend_repository="FelixJI/vibeocr-backend",
         backend_version="0.7.0",
-        profile="win-x64-cpu",
+        accelerator="cpu",
         required_capabilities=("ocr.recognition.v2",),
         output=tmp_path / "component-lock.json",
     )
@@ -151,7 +167,7 @@ def test_product_lock_rejects_missing_capability(tmp_path: Path) -> None:
             protocol_version="2.0.0",
             backend_repository="FelixJI/vibeocr-backend",
             backend_version="0.7.0",
-            profile="win-x64-cpu",
+            accelerator="cpu",
             required_capabilities=("qrcode.v2",),
             output=tmp_path / "component-lock.json",
         )
@@ -169,7 +185,7 @@ def test_product_lock_rejects_tampered_runtime_closure(tmp_path: Path) -> None:
             protocol_version="2.0.0",
             backend_repository="FelixJI/vibeocr-backend",
             backend_version="0.7.0",
-            profile="win-x64-cpu",
+            accelerator="cpu",
             required_capabilities=("ocr.recognition.v2",),
             output=tmp_path / "component-lock.json",
         )

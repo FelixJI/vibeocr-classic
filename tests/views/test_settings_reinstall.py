@@ -92,7 +92,7 @@ def controller(qtbot, tmp_path):
         )
         runtime_client.return_value.inspect.return_value = SimpleNamespace(
             ready=True,
-            profile="win-x64-cpu",
+            accelerator="cpu",
             backend_version="0.7.0",
             manifest_sha256="a" * 64,
             integrity="verified",
@@ -230,7 +230,7 @@ def test_runtime_maintenance_buttons_enabled_for_bound_product(controller, qtbot
 
 
 def test_env_status_label_shows_runtime_binding(controller, qtbot):
-    """labelEnvStatus 显示 profile、Backend 版本与 manifest 摘要。"""
+    """labelEnvStatus 显示 accelerator、Backend 版本与 manifest 摘要。"""
     _ctrl, host = controller
     from PySide6.QtWidgets import QLabel
 
@@ -239,7 +239,7 @@ def test_env_status_label_shows_runtime_binding(controller, qtbot):
     label = host.findChild(QLabel, "labelEnvStatus")
     qtbot.waitUntil(lambda: "Backend：0.7.0" in label.text(), timeout=3000)
     text = label.text()
-    assert "win-x64-cpu" in text
+    assert "cpu" in text
     assert "已验证" in text
 
 
@@ -262,14 +262,14 @@ def test_deps_status_tree_exists(controller):
 
 
 def test_reinstall_selected_button_exists(controller):
-    """旧按钮保留为整 profile 修复入口。"""
+    """旧按钮保留为整个 Runtime 修复入口。"""
     _ctrl, host = controller
     from PySide6.QtWidgets import QPushButton
 
     btn = host.findChild(QPushButton, "btnReinstallSelected")
     assert btn is not None, "btnReinstallSelected 应存在"
     assert btn.isEnabled()
-    assert "Runtime profile" in btn.text()
+    assert "修复 Runtime" in btn.text()
 
 
 def test_click_install_missing_opens_dialog_with_missing_only(controller, monkeypatch):
@@ -317,8 +317,8 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
     )
 
 
-def test_refresh_fills_runtime_profile_tree(controller, qtbot):
-    """设置页只展示一个不可变 Runtime profile，不展示包清单。"""
+def test_refresh_fills_runtime_accelerator_tree(controller, qtbot):
+    """设置页只展示当前 Runtime accelerator，不展示包清单。"""
     ctrl, host = controller
     from PySide6.QtWidgets import QTreeWidget
 
@@ -328,7 +328,7 @@ def test_refresh_fills_runtime_profile_tree(controller, qtbot):
     assert tree is not None
     qtbot.waitUntil(lambda: tree.topLevelItemCount() == 1, timeout=3000)
     top0 = tree.topLevelItem(0)
-    assert top0.text(0) == "win-x64-cpu"
+    assert top0.text(0) == "cpu"
     assert "已验证" in top0.text(1)
     assert top0.text(2) == "0.7.0"
 
@@ -353,9 +353,7 @@ def test_runtime_tree_does_not_expose_python_dependency_children(controller, qtb
     assert tree.topLevelItem(0).childCount() == 0
 
 
-def test_click_reinstall_selected_repairs_whole_profile(
-    controller, monkeypatch, qtbot
-):
+def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch, qtbot):
     """兼容按钮请求完整 profile repair，不传真实包名。"""
     ctrl, host = controller
     from PySide6.QtWidgets import QMessageBox, QPushButton, QTreeWidget

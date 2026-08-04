@@ -34,6 +34,35 @@ def _write_json(path: Path, value: dict[str, object]) -> Path:
     return path
 
 
+def protocol_manifest_version(manifest: dict[str, object]) -> str:
+    """Return the authoritative version from a supported Protocol manifest."""
+    schema_version = manifest.get("schema_version")
+    if schema_version in (None, 1):
+        version = manifest.get("protocol_version")
+        if not isinstance(version, str):
+            raise ValueError("Protocol v1 manifest version is missing")
+        return version
+    if schema_version != 2:
+        raise ValueError("unsupported Protocol manifest schema_version")
+
+    project = manifest.get("project")
+    protocol = manifest.get("protocol")
+    release = manifest.get("release")
+    if (
+        not isinstance(project, dict)
+        or project.get("component") != "protocol"
+        or not isinstance(protocol, dict)
+        or not isinstance(release, dict)
+    ):
+        raise ValueError("Protocol v2 manifest identity is incomplete")
+    version = protocol.get("version")
+    if not isinstance(version, str):
+        raise ValueError("Protocol v2 manifest version is missing")
+    if release.get("version") != version or release.get("tag") != f"v{version}":
+        raise ValueError("Protocol v2 manifest release identity mismatch")
+    return version
+
+
 def verify_protocol_release(
     release_dir: Path,
     *,
@@ -42,7 +71,7 @@ def verify_protocol_release(
     root = release_dir.resolve(strict=True)
     manifest_path = root / "release-manifest.json"
     manifest = _load_json(manifest_path)
-    if manifest.get("protocol_version") != version:
+    if protocol_manifest_version(manifest) != version:
         raise ValueError("Protocol manifest version mismatch")
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, dict):
@@ -88,7 +117,7 @@ def bind_product_releases(
     protocol_version: str,
     backend_repository: str,
     backend_version: str,
-    profile: str,
+    accelerator: str,
     required_capabilities: tuple[str, ...],
     output: Path,
 ) -> Path:
@@ -118,7 +147,9 @@ def bind_product_releases(
     protocol_wheel = backend_root / protocol_wheel_name
     if protocol_copy.read_bytes() != protocol_manifest_path.read_bytes():
         raise ValueError("Backend Protocol manifest copy differs from Protocol release")
-    source_protocol_wheel = protocol_release_dir.resolve(strict=True) / protocol_wheel_name
+    source_protocol_wheel = (
+        protocol_release_dir.resolve(strict=True) / protocol_wheel_name
+    )
     if protocol_wheel.read_bytes() != source_protocol_wheel.read_bytes():
         raise ValueError("Backend Protocol wheel differs from Protocol release")
     if runtime_manifest.get("protocol_manifest_sha256") != _sha256(protocol_copy):
@@ -140,8 +171,11 @@ def bind_product_releases(
         path = backend_root / name
         if record.get("sha256") != _sha256(path):
             raise ValueError(f"{label} hash mismatch")
-    if not isinstance(profiles, dict) or profile not in profiles:
-        raise ValueError(f"Backend profile is missing: {profile}")
+    plan = {"cpu": "win-x64-cpu", "nvidia_cuda": "win-x64-cu126"}.get(accelerator)
+    if plan is None:
+        raise ValueError(f"unsupported accelerator: {accelerator}")
+    if not isinstance(profiles, dict) or plan not in profiles:
+        raise ValueError(f"Backend accelerator plan is missing: {accelerator}")
     for profile_name, record in profiles.items():
         if not isinstance(profile_name, str) or not isinstance(record, dict):
             raise ValueError("invalid Backend profile record")
@@ -199,7 +233,7 @@ def bind_product_releases(
                 "version": backend_version,
                 "artifact_sha256": _sha256(backend_wheel),
                 "runtime_manifest_sha256": _sha256(runtime_manifest_path),
-                "profile": profile,
+                "accelerator": accelerator,
             },
             "required_capabilities": sorted(set(required_capabilities)),
         },
@@ -221,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     product.add_argument("--protocol-version", required=True)
     product.add_argument("--backend-repository", required=True)
     product.add_argument("--backend-version", required=True)
-    product.add_argument("--profile", required=True)
+    product.add_argument("--accelerator", required=True)
     product.add_argument("--required-capability", action="append", required=True)
     product.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -240,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
             protocol_version=args.protocol_version,
             backend_repository=args.backend_repository,
             backend_version=args.backend_version,
-            profile=args.profile,
+            accelerator=args.accelerator,
             required_capabilities=tuple(args.required_capability),
             output=args.output,
         )

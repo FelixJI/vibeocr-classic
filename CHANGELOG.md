@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+### Bug Fixes
+
+- **runtime:** 禁止首次启动静默安装依赖 (#22) (bec7281)
+
+### Performance
+
+- **ci:** 支持统一分片门禁与取消过时 PR 运行 (#24) (efa99d2)
+
 ## 0.8.0
 
 ### Features

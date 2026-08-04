@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.8.0
+
+### Features
+
+- **ci:** 统一 CI/CD 自动化 (#16) (30edbca)
+
+### Bug Fixes
+
+- **runtime:** 修复启动超时并接入统一 Runtime (#15) (c733834)
+- **release:** 统一候选派生资产归属 (#20) (9292119)
+- **ci:** 修复发布 tag 推送认证 (#19) (bddbd86)
+
 ## [0.7.6](https://github.com/FelixJI/vibeocr-classic/compare/v0.7.5...v0.7.6) (2026-08-02)
 
 

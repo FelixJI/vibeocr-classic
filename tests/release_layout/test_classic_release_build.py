@@ -122,7 +122,9 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert config["ci"]["bootstrap"][0][1] == "scripts/resolve_component_releases.py"
     assert config["ci"]["bootstrap"][1][1] == "scripts/install_resolved_components.py"
     assert config["ci"]["e2e"][0][1] == "scripts/verify_component_release_input.py"
-    assert workflow.count("python scripts/automation.py") == 1
+    assert "--phase plan" in workflow
+    assert "--phase finalize" in workflow
+    assert "name: required" in workflow
     assert "[string]$ReleaseInput" in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow

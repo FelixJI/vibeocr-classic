@@ -12,9 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 if __package__:
-    from .bind_component_releases import bind_product_releases
+    from .bind_component_releases import (
+        bind_product_releases,
+        protocol_manifest_version,
+    )
 else:
-    from bind_component_releases import bind_product_releases
+    from bind_component_releases import bind_product_releases, protocol_manifest_version
 
 _STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _RANGE_PART = re.compile(r"^(>=|<=|==|>|<)(\d+)\.(\d+)\.(\d+)$")
@@ -91,10 +94,13 @@ def bound_protocol_version(backend_release_dir: Path) -> str:
         raise InvalidReleaseError(
             "Backend is missing its bound Protocol manifest"
         ) from error
-    version = manifest.get("protocol_version")
-    if not isinstance(version, str):
-        raise InvalidReleaseError("Backend bound Protocol version is invalid")
-    _parse_version(version)
+    try:
+        version = protocol_manifest_version(manifest)
+        _parse_version(version)
+    except ValueError as error:
+        raise InvalidReleaseError(
+            "Backend bound Protocol version is invalid"
+        ) from error
     return version
 
 

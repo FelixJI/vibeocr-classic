@@ -102,6 +102,18 @@ def test_reads_backend_bound_protocol_identity(tmp_path) -> None:
     from scripts.resolve_component_releases import bound_protocol_version
 
     assert bound_protocol_version(tmp_path) == "2.1.0"
+    (tmp_path / "protocol-release-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "project": {"component": "protocol"},
+                "protocol": {"version": "2.1.0"},
+                "release": {"version": "2.1.0", "tag": "v2.1.0"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert bound_protocol_version(tmp_path) == "2.1.0"
     (tmp_path / "protocol-release-manifest.json").write_text("{}", encoding="utf-8")
     with pytest.raises(InvalidReleaseError, match="bound Protocol version"):
         bound_protocol_version(tmp_path)

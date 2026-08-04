@@ -36,6 +36,9 @@ class RuntimeInspection:
     status: str
     runtime_root: str
     accelerator: str
+    profile: str
+    python_version: str
+    protocol_version: str
     manifest_sha256: str
     backend_version: str
     integrity: str
@@ -287,15 +290,28 @@ class RuntimeInstallerClient:
         envelope = self._invoke("inspect", timeout=60)
         try:
             value = envelope["state"]
+            accelerator = str(value["accelerator"])
+            manifest = json.loads(self.runtime_manifest.read_text(encoding="utf-8"))
+            component_lock = json.loads(self.component_lock.read_text(encoding="utf-8"))
+            profile = {
+                "cpu": "win-x64-cpu",
+                "nvidia_cuda": "win-x64-cu126",
+            }[accelerator]
+            profiles = manifest["profiles"]
+            if not isinstance(profiles[profile], dict):
+                raise TypeError("invalid runtime profile")
             return RuntimeInspection(
                 status=str(value["status"]),
                 runtime_root=str(value["runtime_root"]),
-                accelerator=str(value["accelerator"]),
+                accelerator=accelerator,
+                profile=profile,
+                python_version=str(manifest["python"]["version"]),
+                protocol_version=str(component_lock["protocol"]["version"]),
                 manifest_sha256=str(value["manifest_sha256"]),
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, OSError, TypeError, ValueError) as exc:
             raise RuntimeInstallerClientError(
                 "Runtime Installer inspect 响应不完整"
             ) from exc

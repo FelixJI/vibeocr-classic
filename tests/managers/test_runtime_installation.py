@@ -22,6 +22,8 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
         json.dumps(
             {
                 "backend_version": "0.7.0",
+                "python": {"version": "3.13.12"},
+                "profiles": {"win-x64-cpu": {}},
                 "installer": {
                     "executable_sha256": hashlib.sha256(b"installer").hexdigest()
                 },
@@ -33,12 +35,13 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
     lock.write_text(
         json.dumps(
             {
+                "protocol": {"version": "2.1.0"},
                 "backend": {
                     "accelerator": "cpu",
                     "runtime_manifest_sha256": hashlib.sha256(
                         manifest.read_bytes()
                     ).hexdigest(),
-                }
+                },
             }
         ),
         encoding="utf-8",
@@ -205,6 +208,9 @@ def test_frozen_t6_inspect_does_not_spawn_installer(
 
     assert inspection.ready
     assert inspection.accelerator == "cpu"
+    assert inspection.profile == "win-x64-cpu"
+    assert inspection.python_version == "3.13.12"
+    assert inspection.protocol_version == "2.1.0"
 
 
 def test_installer_output_larger_than_pipe_buffer_does_not_deadlock(

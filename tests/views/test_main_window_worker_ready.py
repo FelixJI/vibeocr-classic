@@ -19,6 +19,31 @@ class _ReadyWindow:
     _on_subprocess_progress = MainWindow._on_subprocess_progress
 
 
+class _MissingRuntimeWindow:
+    def __init__(self) -> None:
+        self._closing = False
+        self._ocr_ready = False
+        self._dependency_check_complete = False
+        self._statusbar = MagicMock()
+        self._check_pending_sync = MagicMock(return_value=False)
+        self._start_install = MagicMock()
+
+    _on_dependency_check_finished = MainWindow._on_dependency_check_finished
+
+
+def test_missing_runtime_opens_backend_choice_after_gui_is_ready() -> None:
+    window = _MissingRuntimeWindow()
+
+    with patch(
+        "vibeocr.classic.views.main_window.QTimer.singleShot",
+        side_effect=lambda _delay, callback: callback(),
+    ) as single_shot:
+        window._on_dependency_check_finished(False, ["cpu: not-installed"])
+
+    single_shot.assert_called_once()
+    window._start_install.assert_called_once_with()
+
+
 def test_supervisor_ready_is_not_reported_as_startup_failure() -> None:
     """A started v2 adapter makes the Supervisor handshake ready."""
     window = _ReadyWindow()

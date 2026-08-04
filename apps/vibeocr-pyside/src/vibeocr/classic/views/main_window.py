@@ -796,12 +796,11 @@ class MainWindow(QMainWindow):
             self._statusbar.set_result(f"缺少依赖：{missing_str}")
             self._statusbar.clearMessage()
 
-            # 首启场景：Python 运行时未安装意味着用户首次运行，且无任何 OCR
-            # 依赖。此时仅更新状态栏会让用户无所适从（安装入口原本只在用户
-            # 点截图/打开图片时才经 _check_ocr_ready 弹出）。这里主动弹出首启
-            # 安装引导，引导用户先安装 Python 运行时 + OCR 依赖。
+            # Runtime 未就绪时主动弹出首启安装引导。DependencyManager 现在
+            # 返回 Installer integrity（例如 ``cpu: not-installed``），不能再
+            # 依赖旧版“Python 运行时”文案判断首启。
             # 用 singleShot 延迟，避免在依赖检查回调线程上下文直接弹模态对话框。
-            if any("Python 运行时" in m for m in missing):
+            if missing:
                 QTimer.singleShot(300, self._start_install)
 
     def _continue_ready_startup(self) -> None:
@@ -1376,7 +1375,7 @@ class MainWindow(QMainWindow):
         controller = getattr(self, "_settings_controller", None)
         if controller is not None:
             try:
-                controller._refresh_env_maintenance_state()
+                controller.refresh_runtime_state()
             except Exception as e:
                 logging.warning("[MainWindow] 刷新设置页环境状态失败: %s", e)
 
@@ -2035,7 +2034,9 @@ class MainWindow(QMainWindow):
         """
         if self._closing:
             return
-        rw = getattr(getattr(self._single_tab, "_result_widget", None), "prewarm_webengine", None)
+        rw = getattr(
+            getattr(self._single_tab, "_result_widget", None), "prewarm_webengine", None
+        )
         if rw is not None:
             rw()
 

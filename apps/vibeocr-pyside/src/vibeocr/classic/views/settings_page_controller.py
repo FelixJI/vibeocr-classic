@@ -320,18 +320,34 @@ class SettingsPageController:
         # --- 环境维护：重装 Python 运行时 / 重装 OCR 依赖 / 补充安装缺失依赖 ---
         btn_reinstall_python = self._ui.findChild(QPushButton, "btnReinstallPython")
         if btn_reinstall_python:
+            btn_reinstall_python.setText("重建完整 Runtime")
+            btn_reinstall_python.setToolTip(
+                "重新安装受产品绑定的 Python、Backend、Protocol 与当前推理 profile。"
+            )
             btn_reinstall_python.clicked.connect(self._on_reinstall_python)
 
         btn_reinstall_deps = self._ui.findChild(QPushButton, "btnReinstallDeps")
         if btn_reinstall_deps:
+            btn_reinstall_deps.setText("选择并确保 Runtime profile")
+            btn_reinstall_deps.setToolTip(
+                "选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。"
+            )
             btn_reinstall_deps.clicked.connect(self._on_reinstall_deps)
 
         btn_install_missing = self._ui.findChild(QPushButton, "btnInstallMissing")
         if btn_install_missing:
+            btn_install_missing.setText("补全当前 Runtime")
+            btn_install_missing.setToolTip(
+                "校验当前 profile，仅在缺失或损坏时下载并补全。"
+            )
             btn_install_missing.clicked.connect(self._on_install_missing)
 
         btn_update_deps = self._ui.findChild(QPushButton, "btnUpdateDeps")
         if btn_update_deps:
+            btn_update_deps.setText("刷新产品绑定状态")
+            btn_update_deps.setToolTip(
+                "Runtime 版本随 VibeOCR 产品更新统一升级；此处只刷新绑定状态。"
+            )
             btn_update_deps.clicked.connect(self._on_update_deps)
 
         self._refresh_env_maintenance_state()
@@ -652,9 +668,8 @@ class SettingsPageController:
         if layout is not None:
             layout.addWidget(self._backend_options)
 
-        # 后端切换时弹出保存成功提示
-        self._backend_options.backend_changed.connect(
-            lambda: self._show_settings_toast()
+        self._backend_options.backend_change_requested.connect(
+            self._on_backend_change_requested
         )
 
     def initialize_deferred_backend_options(self) -> None:
@@ -680,6 +695,30 @@ class SettingsPageController:
                 missing_only=False,
                 force_backend="gpu" if has_gpu else "cpu",
             )
+
+    def _on_backend_change_requested(self, target: str) -> None:
+        """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
+        backend_options = self._backend_options
+        if target not in {"cpu", "gpu"}:
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            return
+        name = "GPU（NVIDIA CUDA）" if target == "gpu" else "CPU"
+        size = "通常需要数 GB" if target == "gpu" else "通常超过 1 GB"
+        reply = QMessageBox.question(
+            None,
+            "确认切换推理后端",
+            f"将停止当前 OCR Supervisor，并联网下载、安装完整的 {name} "
+            f"Runtime profile（{size}，实际流量取决于已有缓存）。\n\n"
+            "安装期间会显示进度并可取消。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            return
+        self._open_install_dialog(force_backend=target)
 
     def _on_pdf_pipeline_switching(self, old_pipeline, options) -> None:
         self._pdf_switching = True
@@ -1240,6 +1279,9 @@ class SettingsPageController:
         started = manager.invalidate_supervisor()
         if not started:
             self._cancel_pending_maintenance_dialog()
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
             if manager.is_invalidating:
                 self._status_callback("已有 Supervisor 维护准备正在进行，请稍候...")
                 return
@@ -1259,6 +1301,9 @@ class SettingsPageController:
         if self._closing or continuation is None:
             return
         if not success:
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
             QMessageBox.warning(
                 None,
                 "无法开始维护",
@@ -1345,12 +1390,12 @@ class SettingsPageController:
         self._open_reinstall_dialog(reinstall_python=True)
 
     def _on_reinstall_deps(self) -> None:
-        """重装 OCR 依赖按钮：确认后弹 BackendChoiceDialog(reinstall_python=False)"""
+        """让用户选择并校验或切换完整 Runtime profile。"""
         reply = QMessageBox.question(
             None,
-            "确认重装 OCR 依赖",
-            "将使用 pip 重新安装 OCR 依赖（paddle/torch/mineru）。\n\n"
-            "此操作不删除任何文件，仅重装 pip 包。\n\n"
+            "选择 Runtime profile",
+            "下一步可选择 CPU 或 GPU profile。只有点击“开始安装”后才会联网；"
+            "安装期间会显示进度并可取消。\n\n"
             "是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1361,19 +1406,12 @@ class SettingsPageController:
         self._open_reinstall_dialog(reinstall_python=False)
 
     def _on_install_missing(self) -> None:
-        """补充安装缺失依赖按钮。
-
-        走当前推理后端（不再二次提示选择 GPU/CPU）：补装只是补齐缺失/损坏的依赖，
-        后端（GPU/CPU）在首启或设置页「推理后端」已确定，补装时重选无意义且易误操作。
-        故直接读 resolve_use_gpu 作为 force_backend，跳过 BackendChoiceDialog。
-        重装 OCR 依赖 / 重装 Python 运行时会清空环境，仍保留 BackendChoiceDialog。
-        """
+        """使用 Installer 的当前 accelerator 补全缺失 Runtime 内容。"""
         reply = QMessageBox.question(
             None,
             "确认补充安装缺失依赖",
-            "将检测并只安装缺失的 OCR 依赖（已安装的自动跳过，不重复下载）。\n\n"
-            "将使用当前推理后端，不重新选择。\n"
-            "适合上次安装中途失败后补装。\n\n是否继续？",
+            "将校验当前 Runtime profile；仅在缺失或损坏时联网补全。\n\n"
+            "不会更改当前 CPU/GPU 选择。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1454,16 +1492,14 @@ class SettingsPageController:
         QMessageBox.warning(None, "检测失败", f"检测依赖更新时出错：\n{error}")
 
     def _runtime_backend_or_none(self) -> str | None:
-        """只消费后台 GPU worker 已回填的运行时后端，不在 GUI 线程探测。"""
+        """只消费后台 Installer inspect 已回填的后端，不在 GUI 线程探测。"""
+        backend_options = self._backend_options
+        if backend_options is not None and hasattr(backend_options, "current_backend"):
+            # inspect 完成前返回 None，调用方必须等待，不能按物理 GPU 猜测。
+            current = backend_options.current_backend()
+            return str(current) if current in {"cpu", "gpu"} else None
         if self._runtime_has_gpu is None:
-            backend_options = self._backend_options
-            if backend_options is None or not hasattr(
-                backend_options, "current_backend"
-            ):
-                return None
-            # 探测完成前该值来自 _load_cached_state；缓存缺失时安全回退 CPU，
-            # 不会调用 resolve_use_gpu / nvidia-smi。
-            return str(backend_options.current_backend())
+            return None
         return "gpu" if self._runtime_has_gpu else "cpu"
 
     def _open_install_dialog(
@@ -1489,13 +1525,7 @@ class SettingsPageController:
         single_pkg: str | None = None,
         packages: list[str] | None = None,
     ) -> None:
-        """以非模态方式打开安装进度对话框（补装/更新/单包/批量重装共用，不阻塞主窗口）。
-
-        与 _open_reinstall_dialog 的区别：不弹 BackendChoiceDialog 选后端，
-        直接用传入的 force_backend（通常来自 resolve_use_gpu 当前值）。
-        single_pkg 指定时进入单包重装模式；packages 指定时进入批量重装模式
-        （二者互斥，均不弹后端选择）。设置页依赖树"重装选中项"走 packages。
-        """
+        """显示非模态 Runtime 安装进度；操作只通过 Installer ensure/repair。"""
         from vibeocr.classic.widgets.install_dialog import InstallDialog
 
         dialog = InstallDialog(
@@ -1507,8 +1537,7 @@ class SettingsPageController:
         )
 
         def _on_finished(_result: int) -> None:
-            if _result != 1:
-                self._refresh_env_maintenance_state()
+            self.refresh_runtime_state()
             try:
                 self._active_dialogs.remove(dialog)
             except ValueError:
@@ -1532,6 +1561,13 @@ class SettingsPageController:
             single_pkg,
             packages,
         )
+
+    def refresh_runtime_state(self) -> None:
+        """刷新依赖区与推理后端控件的 Runtime 权威状态。"""
+        self._refresh_env_maintenance_state()
+        backend_options = self._backend_options
+        if backend_options is not None:
+            backend_options.refresh_runtime_state()
 
     def _on_reinstall_single_dep(self, pkg: str) -> None:
         """单包重装入口（依赖表格"重装"按钮）。
@@ -1602,10 +1638,15 @@ class SettingsPageController:
         if label:
             if mode == "portable" and inspection is not None:
                 status = "已验证" if inspection.ready else "未就绪"
+                accelerator = (
+                    "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
+                )
                 label.setText(
                     f"Runtime：{status}\n"
-                    f"加速方案：{inspection.accelerator}\n"
+                    f"加速方案：{accelerator}\n"
+                    f"Python：{inspection.python_version}\n"
                     f"Backend：{inspection.backend_version}\n"
+                    f"Protocol：{inspection.protocol_version}\n"
                     f"Manifest：{inspection.manifest_sha256[:12]}"
                 )
             else:
@@ -1649,22 +1690,28 @@ class SettingsPageController:
     def _populate_deps_tree(
         self, tree: QTreeWidget, snapshot: dict | None = None
     ) -> None:
-        """显示 Runtime accelerator，而非让 UI 解析 Python 依赖树。"""
+        """显示受产品绑定的 Runtime 组件，不向 UI 泄漏逐包安装细节。"""
         snapshot = snapshot or {}
         inspection = snapshot.get("inspection")
         tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         tree.clear()
         if inspection is None:
             return
-        status = "✓ 已验证" if inspection.ready else f"⚠ {inspection.integrity}"
-        tree.addTopLevelItem(
-            QTreeWidgetItem(
-                [
-                    inspection.accelerator,
-                    status,
-                    inspection.backend_version,
-                ]
-            )
+        runtime_status = "✓ 已验证" if inspection.ready else f"⚠ {inspection.integrity}"
+        accelerator = (
+            "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
+        )
+        rows = (
+            ("Python 运行时", runtime_status, inspection.python_version),
+            ("Backend Supervisor", runtime_status, inspection.backend_version),
+            ("Protocol", "✓ 已绑定", inspection.protocol_version),
+            (f"{accelerator} 推理 profile", "✓ 已选择", inspection.profile),
+        )
+        for row in rows:
+            tree.addTopLevelItem(QTreeWidgetItem(list(row)))
+        tree.setToolTip(
+            "显示产品绑定的 Python、Backend、Protocol 与推理 profile。"
+            "完整 profile 由 Runtime Installer 统一校验和修复。"
         )
 
     @staticmethod

@@ -43,12 +43,6 @@ def controller(qtbot, tmp_path):
     ui.setupUi(host)
 
     with (
-        # BackendOptionsWidget 构造读 env_manager / machine_cache
-        patch("vibeocr.classic.widgets.backend_options_widget.env_manager") as mock_em,
-        patch(
-            "vibeocr.classic.widgets.backend_options_widget.load_cache",
-            return_value=None,
-        ),
         # 本文件测试依赖表/按钮，GPU worker 由组件专项测试覆盖。
         # 禁用真线程，避免 with 退出恢复 mock 时 worker 仍跨用例运行。
         patch(
@@ -68,16 +62,6 @@ def controller(qtbot, tmp_path):
             "vibeocr.classic.views.settings_page_controller.RuntimeInstallerClient"
         ) as runtime_client,
     ):
-        mock_em.detect_gpu.return_value = (False, None)
-        # BackendOptionsWidget._load_state 读 detect_gpu_info()（含 vram/cuda
-        # 等字段），必须返回真实结构而非默认 MagicMock，否则 vram >= 1024
-        # 会因 MagicMock 与 int 比较抛 TypeError。此处配置无 GPU 的回退值。
-        mock_em.detect_gpu_info.return_value = {
-            "has_gpu": False,
-            "name": "",
-            "vram_mb": 0,
-            "cuda": None,
-        }
         mock_cm.instance.return_value = MagicMock(
             get_pipeline_ttls=MagicMock(
                 return_value={
@@ -94,6 +78,9 @@ def controller(qtbot, tmp_path):
             ready=True,
             accelerator="cpu",
             backend_version="0.7.0",
+            python_version="3.13.12",
+            protocol_version="2.1.0",
+            profile="win-x64-cpu",
             manifest_sha256="a" * 64,
             integrity="verified",
         )
@@ -239,7 +226,7 @@ def test_env_status_label_shows_runtime_binding(controller, qtbot):
     label = host.findChild(QLabel, "labelEnvStatus")
     qtbot.waitUntil(lambda: "Backend：0.7.0" in label.text(), timeout=3000)
     text = label.text()
-    assert "cpu" in text
+    assert "CPU" in text
     assert "已验证" in text
 
 
@@ -276,7 +263,7 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
     """点补充安装缺失依赖：走当前后端，弹 InstallDialog(missing_only=True)
 
     回归（问题4）：补装不再二次提示选择 GPU/CPU（旧逻辑弹 BackendChoiceDialog）。
-    改为直接读 resolve_use_gpu 当前后端，用 InstallDialog 跑增量补装。
+    改为读取 Installer 已验证的当前后端，用 InstallDialog 跑增量补装。
     """
     _ctrl, host = controller
     from PySide6.QtWidgets import QMessageBox, QPushButton
@@ -303,10 +290,7 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
     monkeypatch.setattr(
         "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
-    # resolve_use_gpu 返回 False（CPU），验证 force_backend 被透传
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.resolve_use_gpu", lambda root: False
-    )
+    controller[0]._backend_options.current_backend = MagicMock(return_value="cpu")
 
     btn.click()
 
@@ -317,8 +301,55 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
     )
 
 
-def test_refresh_fills_runtime_accelerator_tree(controller, qtbot):
-    """设置页只展示当前 Runtime accelerator，不展示包清单。"""
+def test_backend_change_cancel_does_not_start_install(controller, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    ctrl, _host = controller
+    options = MagicMock()
+    ctrl._backend_options = options
+    open_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+
+    ctrl._on_backend_change_requested("gpu")
+
+    open_install.assert_not_called()
+    options.set_change_in_progress.assert_called_once_with(False)
+
+
+def test_backend_change_confirmation_opens_visible_install(controller, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+
+    ctrl, _host = controller
+    open_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+
+    ctrl._on_backend_change_requested("gpu")
+
+    open_install.assert_called_once_with(force_backend="gpu")
+
+
+def test_uninstalled_runtime_is_not_inferred_as_cpu(controller):
+    ctrl, _host = controller
+    options = MagicMock()
+    options.current_backend.return_value = None
+    ctrl._backend_options = options
+    ctrl._runtime_has_gpu = False
+
+    assert ctrl._runtime_backend_or_none() is None
+
+
+def test_refresh_fills_bound_runtime_components(controller, qtbot):
+    """设置页展示用户可理解的绑定组件，而非只显示 accelerator。"""
     ctrl, host = controller
     from PySide6.QtWidgets import QTreeWidget
 
@@ -326,18 +357,27 @@ def test_refresh_fills_runtime_accelerator_tree(controller, qtbot):
 
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
     assert tree is not None
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 1, timeout=3000)
-    top0 = tree.topLevelItem(0)
-    assert top0.text(0) == "cpu"
-    assert "已验证" in top0.text(1)
-    assert top0.text(2) == "0.7.0"
+    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
+    rows = {
+        tree.topLevelItem(index).text(0): (
+            tree.topLevelItem(index).text(1),
+            tree.topLevelItem(index).text(2),
+        )
+        for index in range(tree.topLevelItemCount())
+    }
+    assert rows == {
+        "Python 运行时": ("✓ 已验证", "3.13.12"),
+        "Backend Supervisor": ("✓ 已验证", "0.7.0"),
+        "Protocol": ("✓ 已绑定", "2.1.0"),
+        "CPU 推理 profile": ("✓ 已选择", "win-x64-cpu"),
+    }
 
 
 def test_runtime_tree_uses_installer_inspect(controller, qtbot):
     ctrl, host = controller
     ctrl._refresh_env_maintenance_state()
     qtbot.waitUntil(
-        lambda: host.findChild(QTreeWidget, "treeDepsStatus").topLevelItemCount() == 1,
+        lambda: host.findChild(QTreeWidget, "treeDepsStatus").topLevelItemCount() == 4,
         timeout=3000,
     )
     assert ctrl._runtime_installer.inspect.call_count >= 1
@@ -349,8 +389,11 @@ def test_runtime_tree_does_not_expose_python_dependency_children(controller, qtb
 
     ctrl._refresh_env_maintenance_state()
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 1, timeout=3000)
-    assert tree.topLevelItem(0).childCount() == 0
+    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
+    assert all(
+        tree.topLevelItem(index).childCount() == 0
+        for index in range(tree.topLevelItemCount())
+    )
 
 
 def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch, qtbot):
@@ -361,7 +404,7 @@ def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch,
     ctrl._refresh_env_maintenance_state()
 
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 1, timeout=3000)
+    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
 
     monkeypatch.setattr(
         QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes

@@ -3,6 +3,7 @@
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
@@ -30,18 +31,20 @@ def test_slow_gpu_probe_does_not_block_edge_toolbar_drag(qapp, monkeypatch):
     release_probe = threading.Event()
     probe_returned = threading.Event()
 
-    def slow_gpu_capability(_project_root, *, detected_has_gpu=None):
-        try:
-            release_probe.wait(timeout=1.0)
-            return bool(detected_has_gpu)
-        finally:
-            probe_returned.set()
+    class SlowRuntimeInstallerClient:
+        def __init__(self, _project_root):
+            pass
 
-    monkeypatch.setattr(env_manager, "get_runtime_gpu_capability", slow_gpu_capability)
+        def inspect(self):
+            try:
+                release_probe.wait(timeout=1.0)
+                return SimpleNamespace(ready=True, accelerator="nvidia_cuda")
+            finally:
+                probe_returned.set()
 
     monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.load_cache",
-        lambda _project_root: None,
+        "vibeocr.classic.widgets.backend_options_widget.RuntimeInstallerClient",
+        SlowRuntimeInstallerClient,
     )
     monkeypatch.setattr(
         env_manager,

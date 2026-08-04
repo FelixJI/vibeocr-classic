@@ -100,7 +100,7 @@ def _startup_lock_names() -> tuple[str, str | None]:
 
 
 def check_production_dependencies() -> bool:
-    """通过产品绑定的 Installer 检查并按需准备 Runtime。"""
+    """验证产品绑定的 Installer；Runtime 安装必须由 GUI 征得用户同意。"""
     smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
     if (
         getattr(sys, "frozen", False)
@@ -116,12 +116,11 @@ def check_production_dependencies() -> bool:
         inspection = client.inspect()
         if not inspection.ready:
             print(
-                "[VibeOCR] Runtime 未就绪，正在从产品内离线资产准备: "
+                "[VibeOCR] Runtime 未就绪，等待用户在安装向导中选择推理后端: "
                 f"{inspection.accelerator} / {inspection.integrity}"
             )
-            client.ensure()
     except RuntimeInstallerClientError as exc:
-        print(f"[VibeOCR] Runtime Installer 准备失败: {exc}")
+        print(f"[VibeOCR] Runtime Installer 验证失败: {exc}")
         return False
     return True
 

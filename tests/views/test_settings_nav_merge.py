@@ -22,9 +22,8 @@ from vibeocr.classic.widgets.backend_options_widget import BackendOptionsWidget
 def controller(qtbot, tmp_path):
     """构造带真实 UI 的 SettingsPageController（patch 掉重依赖）。
 
-    复用 test_settings_reinstall 的隔离策略：BackendOptionsWidget 构造读
-    env_manager / machine_cache，_init_settings_page 读 ConfigManager 等，
-    均需 patch 以保证测试隔离与可重复。
+    复用 test_settings_reinstall 的隔离策略：禁用 BackendOptionsWidget 真后台
+    探测，并隔离 _init_settings_page 的 ConfigManager 等依赖。
     """
     host = QWidget()
     qtbot.addWidget(host)
@@ -32,10 +31,11 @@ def controller(qtbot, tmp_path):
     ui.setupUi(host)
 
     with (
-        patch("vibeocr.classic.widgets.backend_options_widget.env_manager") as mock_em,
         patch(
-            "vibeocr.classic.widgets.backend_options_widget.load_cache",
-            return_value=None,
+            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
+        ),
+        patch(
+            "vibeocr.classic.views.settings_page_controller.SettingsPageController._refresh_env_maintenance_state"
         ),
         patch(
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",
@@ -47,13 +47,6 @@ def controller(qtbot, tmp_path):
             return_value=[],
         ),
     ):
-        mock_em.detect_gpu.return_value = (False, None)
-        mock_em.detect_gpu_info.return_value = {
-            "has_gpu": False,
-            "name": "",
-            "vram_mb": 0,
-            "cuda": None,
-        }
         mock_cm.instance.return_value = MagicMock(
             get_pipeline_ttls=MagicMock(
                 return_value={

@@ -53,10 +53,8 @@ def controller(qtbot, tmp_path):
     install_cb = MagicMock(name="install_succeeded_callback")
 
     with (
-        patch("vibeocr.classic.widgets.backend_options_widget.env_manager") as mock_em,
         patch(
-            "vibeocr.classic.widgets.backend_options_widget.load_cache",
-            return_value=None,
+            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
         ),
         patch(
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",
@@ -68,15 +66,6 @@ def controller(qtbot, tmp_path):
             return_value=[],
         ),
     ):
-        # detect_gpu_info 返回结构化 dict（BackendOptionsWidget._load_state 用）
-        mock_em.detect_gpu_info.return_value = {
-            "has_gpu": False,
-            "name": "",
-            "vram_mb": 0,
-            "cuda": None,
-        }
-        mock_em.detect_gpu.return_value = (False, None)
-        mock_em.resolve_use_gpu.return_value = False
         mock_cm.instance.return_value = MagicMock(
             get_pipeline_ttls=MagicMock(
                 return_value={
@@ -160,8 +149,9 @@ def test_install_succeeded_emission_invokes_callback(controller, monkeypatch):
     dialog = ctrl._active_dialogs[-1]
     dialog.install_succeeded.emit()
 
-    install_cb.assert_called_once(), (
-        "install_succeeded 信号应触发传入的 install_succeeded_callback"
+    (
+        install_cb.assert_called_once(),
+        ("install_succeeded 信号应触发传入的 install_succeeded_callback"),
     )
 
 

@@ -1,7 +1,8 @@
-"""设置页"推理后端"组件
+"""设置页“推理后端”组件。
 
-显示当前 OCR 后端（GPU/CPU），允许用户标记待切换（下次重启自动下载安装）。
-不立即执行切换——纯写 pending_backend 标记。
+物理 GPU 只决定选项是否可用；实际运行后端以 Runtime Installer ``inspect``
+返回的 accelerator 为权威。切换请求交给设置页控制器，在用户二次确认后通过
+可见、可取消的安装对话框执行。
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.backend import env_manager
-from vibeocr.classic.machine_cache import CACHE_VERSION, load_cache, update_cache_field
+from vibeocr.classic.runtime_installation import RuntimeInstallerClient
 from vibeocr.classic.ui import theme
 
 if TYPE_CHECKING:
@@ -66,16 +67,18 @@ class _GpuDetectWorker(QThread):
         if self._cancelled.is_set():
             return
         try:
-            runtime_has_gpu = env_manager.get_runtime_gpu_capability(
-                self._project_root,
-                detected_has_gpu=bool(info.get("has_gpu")),
-            )
+            inspection = RuntimeInstallerClient(self._project_root).inspect()
+            runtime_ready = inspection.ready
+            runtime_accelerator = inspection.accelerator if runtime_ready else None
         except Exception:
-            logger.exception("[BackendOptions] 后台运行时 GPU 能力解析异常")
-            runtime_has_gpu = bool(info.get("has_gpu"))
+            logger.exception("[BackendOptions] Runtime Installer 状态读取异常")
+            runtime_ready = False
+            runtime_accelerator = None
         if self._cancelled.is_set():
             return
-        info["runtime_has_gpu"] = runtime_has_gpu
+        info["runtime_ready"] = runtime_ready
+        info["runtime_accelerator"] = runtime_accelerator
+        info["runtime_has_gpu"] = runtime_accelerator == "nvidia_cuda"
         self.finished_info.emit(dict(info))
 
 
@@ -91,7 +94,7 @@ def _release_gpu_detect_worker(worker: _GpuDetectWorker) -> None:
 class BackendOptionsWidget(QWidget):
     """推理后端设置组件"""
 
-    backend_changed = Signal()  # pending_backend 写入后发射
+    backend_change_requested = Signal(str)
     gpu_capability_resolved = Signal(bool)
 
     def __init__(
@@ -104,17 +107,16 @@ class BackendOptionsWidget(QWidget):
         super().__init__(parent)
         self._project_root = project_root
         self._has_gpu = False
-        self._current = "cpu"
-        self._pending: str | None = None
+        self._current: str | None = None
+        self._change_in_progress = False
         self._detect_worker: _GpuDetectWorker | None = None
         self._detect_generation = 0
+        self._refresh_after_detection = False
         self._closing = False
         self._setup_ui()
         if gpu_capability_callback is not None:
             self.gpu_capability_resolved.connect(gpu_capability_callback)
-        # 缓存读取（纯文件 IO，无 subprocess）可在构造期同步完成；
-        # detect_gpu_info 的 nvidia-smi 探测改为后台线程，避免阻塞启动。
-        self._load_cached_state()
+        self._show_detecting_state()
         self._start_gpu_detection()
 
     def _setup_ui(self) -> None:
@@ -139,9 +141,11 @@ class BackendOptionsWidget(QWidget):
         self._radio_group = QButtonGroup(self)
         radio_layout = QHBoxLayout()
         self._gpu_radio = QRadioButton("GPU 加速（推荐）")
-        self._gpu_radio.setToolTip("约 1.5GB，识别更快，需 NVIDIA GPU")
+        self._gpu_radio.setToolTip(
+            "通常需要下载数 GB 依赖，识别更快，需兼容的 NVIDIA GPU"
+        )
         self._cpu_radio = QRadioButton("CPU 模式")
-        self._cpu_radio.setToolTip("约 150MB，兼容性广")
+        self._cpu_radio.setToolTip("完整文档解析 profile 通常超过 1 GB，兼容性较广")
         # 探测完成前禁用，避免基于未知硬件状态误操作后端切换。
         self._gpu_radio.setEnabled(False)
         self._cpu_radio.setEnabled(False)
@@ -154,7 +158,8 @@ class BackendOptionsWidget(QWidget):
 
         # 提示文字
         self._hint_label = QLabel(
-            "GPU：约 1.5GB，识别更快，需 NVIDIA GPU\nCPU：约 150MB，兼容性广"
+            "GPU：通常需下载数 GB，识别更快，需兼容的 NVIDIA GPU\n"
+            "CPU：完整 profile 通常超过 1 GB；实际流量取决于已有缓存"
         )
         self._hint_label.setWordWrap(True)
         group_layout.addWidget(self._hint_label)
@@ -164,7 +169,7 @@ class BackendOptionsWidget(QWidget):
         self._status_label.setStyleSheet(f"color: {theme.Colors.text_muted};")
         group_layout.addWidget(self._status_label)
 
-        self._apply_button = QPushButton("应用（下次重启生效）")
+        self._apply_button = QPushButton("切换并安装…")
         self._apply_button.clicked.connect(self._apply)
         group_layout.addWidget(self._apply_button)
 
@@ -174,24 +179,14 @@ class BackendOptionsWidget(QWidget):
         # 单选变化时更新应用按钮状态
         self._gpu_radio.toggled.connect(self._update_apply_state)
 
-    def _load_cached_state(self) -> None:
-        """从缓存加载当前/待切换状态（纯文件 IO，无 subprocess，可在构造期同步执行）。
-
-        注意：``_current`` 来自缓存 hardware_info.has_gpu（上次检测写入），
-        ``_has_gpu``（能否选 GPU）要等实时探测 ``_apply_detected_state`` 回填。
-        在探测完成前，radio/apply 均禁用，仅展示"检测中..."。
-        """
-        # This display-only snapshot must never validate machine identity here:
-        # validation can launch WMIC.  The background detector resolves the
-        # authoritative runtime capability before controls become interactive.
-        cached = load_cache(self._project_root)
-        is_valid = bool(cached and cached.get("version") == CACHE_VERSION)
-        hw = (cached or {}).get("hardware_info", {}) if is_valid else {}
-        self._current = "gpu" if hw.get("has_gpu") else "cpu"
-        self._pending = (cached or {}).get("pending_backend") if is_valid else None
-
-        # 待切换状态可立即展示（无需 GPU 探测结果）。
-        self._refresh_status(self._pending)
+    def _show_detecting_state(self) -> None:
+        self._current = None
+        self._current_label.setText("当前后端：检测中...")
+        self._hw_label.setText("硬件检测中...")
+        self._status_label.setText("")
+        self._gpu_radio.setEnabled(False)
+        self._cpu_radio.setEnabled(False)
+        self._apply_button.setEnabled(False)
 
     def _start_gpu_detection(self) -> None:
         """启动后台线程探测 GPU，完成后回填 UI。"""
@@ -232,10 +227,16 @@ class BackendOptionsWidget(QWidget):
         del generation
         if worker is self._detect_worker:
             self._detect_worker = None
+            if self._refresh_after_detection and not self._closing:
+                self._refresh_after_detection = False
+                self._change_in_progress = False
+                self._show_detecting_state()
+                self._start_gpu_detection()
 
     def request_gpu_detection_shutdown(self) -> None:
         """Request hardware-probe cancellation without blocking the GUI thread."""
         self._closing = True
+        self._refresh_after_detection = False
         self._detect_generation += 1
         worker = self._detect_worker
         if worker is None:
@@ -276,35 +277,27 @@ class BackendOptionsWidget(QWidget):
     def _apply_detected_state(self, info: dict[str, Any]) -> None:
         """后台 GPU 探测完成后，在主线程回填 _has_gpu 与硬件展示、启用控件。
 
-        ``_current``（"当前后端"展示值）必须与实际推理设备一致——实际推理走
-        ``env_manager.resolve_use_gpu(project_root)``（main_window 启动 worker 时
-        同样调用它）。早期版本用实时 ``detect_gpu_info()`` 的 has_gpu 直接覆盖
-        ``_current``，当 nvidia-smi 后台探测超时/失败（返回 has_gpu=False）但缓存
-        ``hardware_info.has_gpu=True`` 时，UI 误显示 CPU 而推理实为 GPU。
-        现在 ``detect_gpu_info()`` 仅用于：①决定 GPU 单选是否可用；②展示硬件信息。
+        ``_current`` 只来自 Runtime Installer 的已验证 accelerator。实时硬件探测
+        仅决定 GPU 选项是否可用和展示硬件信息，不能冒充实际安装 profile。
 
         Args:
             info: ``detect_gpu_info()`` 返回的 dict
                 (has_gpu/name/vram_mb/cuda)
         """
         self._has_gpu = bool(info.get("has_gpu"))
-        # 实际运行后端：与 main_window 启动 worker 用同一判断，保证展示与推理一致。
-        # 运行时后端已在 _GpuDetectWorker 中解析；这里绝不再
-        # 调 resolve_use_gpu，否则缓存缺失时会在 GUI 线程再跑
-        # nvidia-smi，拖动浮动工具栏时表现为卡死。
-        runtime_has_gpu = bool(info.get("runtime_has_gpu", self._current == "gpu"))
-        self._current = "gpu" if runtime_has_gpu else "cpu"
+        runtime_ready = bool(info.get("runtime_ready"))
+        runtime_accelerator = info.get("runtime_accelerator")
+        if runtime_ready and runtime_accelerator in {"cpu", "nvidia_cuda"}:
+            self._current = "gpu" if runtime_accelerator == "nvidia_cuda" else "cpu"
+        else:
+            self._current = None
 
         if not self._has_gpu:
-            self._gpu_radio.setEnabled(False)
             self._gpu_radio.setToolTip("未检测到 NVIDIA GPU")
             self._hw_label.setText(
                 "未检测到符合 CUDA 条件的 NVIDIA GPU（文档解析 MinerU 与 VL 模型不可用）"
             )
         else:
-            # CPU 单选始终可选；GPU 单选仅在检测到 GPU 时启用。
-            self._cpu_radio.setEnabled(True)
-            self._gpu_radio.setEnabled(True)
             gpu_name = info.get("name") or "NVIDIA GPU"
             vram = info.get("vram_mb") or 0
             vram_str = f"{vram // 1024}GB" if vram >= 1024 else f"{vram}MB"
@@ -312,33 +305,39 @@ class BackendOptionsWidget(QWidget):
             cuda_str = f"CUDA {cuda}" if cuda else "CUDA 版本未知"
             self._hw_label.setText(f"GPU：{gpu_name}（{vram_str}），{cuda_str}")
 
-        name = "GPU" if self._current == "gpu" else "CPU"
-        self._current_label.setText(f"当前后端：{name}")
+        self._cpu_radio.setEnabled(not self._change_in_progress)
+        self._gpu_radio.setEnabled(
+            not self._change_in_progress and (self._has_gpu or self._current == "gpu")
+        )
 
-        # 单选反映"待切换目标"（若有）否则"当前"
-        target = self._pending or self._current
-        if target == "gpu" and self._has_gpu:
+        if self._current is None:
+            self._current_label.setText("当前后端：尚未安装")
+            self._status_label.setText(
+                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
+            )
+        else:
+            name = "GPU" if self._current == "gpu" else "CPU"
+            self._current_label.setText(f"当前后端：{name}")
+            self._status_label.setText("")
+
+        target = self._current or ("gpu" if self._has_gpu else "cpu")
+        if target == "gpu" and self._gpu_radio.isEnabled():
             self._gpu_radio.setChecked(True)
         else:
             self._cpu_radio.setChecked(True)
 
         self._update_apply_state()
-        self.gpu_capability_resolved.emit(runtime_has_gpu)
+        self.gpu_capability_resolved.emit(self._current == "gpu")
 
-    def current_backend(self) -> str:
+    def current_backend(self) -> str | None:
         return self._current
 
-    def _refresh_status(self, pending: str | None) -> None:
-        if pending:
-            name = "GPU" if pending == "gpu" else "CPU"
-            self._status_label.setText(f"⏳ 待切换到 {name}，下次重启自动下载并生效")
-        else:
-            self._status_label.setText("")
-
     def _can_apply(self) -> bool:
-        """当前单选目标是否与待切换/当前不同（即有变化可应用）"""
+        """当前单选目标是否需要安装或切换。"""
+        if self._change_in_progress:
+            return False
         target = "gpu" if self._gpu_radio.isChecked() else "cpu"
-        return target != (self._pending or self._current)
+        return target != self._current
 
     def _update_apply_state(self) -> None:
         self._apply_button.setEnabled(self._can_apply())
@@ -347,11 +346,34 @@ class BackendOptionsWidget(QWidget):
         if not self._can_apply():
             return
         target = "gpu" if self._gpu_radio.isChecked() else "cpu"
-        ok = update_cache_field(self._project_root, "pending_backend", target)
-        if ok:
-            self._pending = target
-            self._refresh_status(target)
-            self._update_apply_state()
-            self.backend_changed.emit()
+        self.set_change_in_progress(True)
+        self.backend_change_requested.emit(target)
+
+    def set_change_in_progress(self, in_progress: bool) -> None:
+        self._change_in_progress = in_progress
+        self._gpu_radio.setEnabled(
+            not in_progress and (self._has_gpu or self._current == "gpu")
+        )
+        self._cpu_radio.setEnabled(not in_progress)
+        if in_progress:
+            target = "GPU" if self._gpu_radio.isChecked() else "CPU"
+            self._status_label.setText(f"等待确认切换到 {target}…")
+        elif self._current is None:
+            self._status_label.setText(
+                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
+            )
         else:
-            self._status_label.setText("⚠ 写入缓存失败，请重试")
+            self._status_label.setText("")
+        self._update_apply_state()
+
+    def refresh_runtime_state(self) -> None:
+        """安装、取消或失败后重新读取硬件与 Runtime 权威状态。"""
+        if self._detect_worker is not None:
+            self._refresh_after_detection = True
+            if hasattr(self._detect_worker, "cancel"):
+                self._detect_worker.cancel()
+            self.set_change_in_progress(False)
+            return
+        self._change_in_progress = False
+        self._show_detecting_state()
+        self._start_gpu_detection()

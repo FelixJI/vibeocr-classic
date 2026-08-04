@@ -105,8 +105,10 @@ class BackendChoiceDialog(QDialog):
         choice_layout.addWidget(self._cpu_radio)
 
         self._hint_label = QLabel(
-            "GPU：约 1.5GB，识别更快，需 NVIDIA GPU\n"
-            "CPU：约 150MB，兼容性广，无需独立显卡"
+            "GPU：通常需下载数 GB，识别更快，需兼容的 NVIDIA GPU\n"
+            "CPU：完整 profile 通常超过 1 GB，兼容性广；"
+            "实际流量取决于已有缓存\n"
+            "点击“开始安装”后才会联网下载，安装期间可取消。"
         )
         self._hint_label.setWordWrap(True)
         choice_layout.addWidget(self._hint_label)

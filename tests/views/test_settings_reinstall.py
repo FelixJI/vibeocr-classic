@@ -5,10 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QTreeWidget, QWidget
+from PySide6.QtWidgets import QLabel, QTreeWidget, QWidget
 
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
+from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
+from vibeocr.runtime_contracts import parse_runtime_status
 
 
 class _ImmediateInvalidationEmitter(QObject):
@@ -83,6 +85,12 @@ def controller(qtbot, tmp_path):
             profile="win-x64-cpu",
             manifest_sha256="a" * 64,
             integrity="verified",
+            components=(
+                RuntimeComponentDescriptor("ocr_engine", "OCR engine", "3.7.0"),
+                RuntimeComponentDescriptor(
+                    "document_parsing", "Document parsing", "3.4.4"
+                ),
+            ),
         )
 
         ctrl = SettingsPageController(
@@ -248,6 +256,69 @@ def test_deps_status_tree_exists(controller):
     assert tree is not None, "treeDepsStatus 应存在"
 
 
+def test_backend_row_expands_functional_dependency_groups(controller):
+    """Backend 下方应展示 manifest 发布的功能分组，而非逐包解析。"""
+    _ctrl, host = controller
+    tree = host.findChild(QTreeWidget, "treeDepsStatus")
+    assert tree is not None
+    backend = tree.topLevelItem(1)
+    assert backend.text(0) == "Backend Supervisor"
+    assert backend.childCount() == 2
+    assert [backend.child(index).text(0) for index in range(2)] == [
+        "OCR engine",
+        "Document parsing",
+    ]
+    assert backend.child(0).text(2) == "3.7.0"
+
+
+def test_http_runtime_status_overrides_component_state(controller):
+    ctrl, host = controller
+    inspection = ctrl._runtime_installer.inspect.return_value
+    status = parse_runtime_status(
+        {
+            "schema_version": 2,
+            "instance_id": "runtime-1",
+            "service_state": "maintenance",
+            "backend_version": "0.9.0",
+            "profile": {
+                "profile_id": "win-x64-cpu",
+                "accelerator": "cpu",
+                "components": [
+                    {
+                        "component_id": "ocr_engine",
+                        "display_name": "OCR engine",
+                        "state": "installing",
+                        "version": "3.7.0",
+                    }
+                ],
+            },
+            "maintenance": {
+                "operation_id": "op-1",
+                "sequence": 4,
+                "operation": "repair",
+                "operation_state": "running",
+                "phase": "install_profile",
+                "profile_id": "win-x64-cpu",
+                "component_id": "ocr_engine",
+                "updated_at": "2026-08-05T00:00:00Z",
+            },
+        }
+    )
+    ctrl._env_refresh_generation += 1
+
+    ctrl._apply_env_maintenance_state(
+        ctrl._env_refresh_generation,
+        {"mode": "portable", "inspection": inspection, "runtime_status": status},
+    )
+
+    tree = host.findChild(QTreeWidget, "treeDepsStatus")
+    assert tree.topLevelItem(1).child(0).text(1) == "… 安装中"
+    assert "服务：维护中" in host.findChild(QLabel, "labelEnvStatus").text()
+    assert (
+        "install_profile · running" in host.findChild(QLabel, "labelEnvStatus").text()
+    )
+
+
 def test_reinstall_selected_button_exists(controller):
     """旧按钮保留为整个 Runtime 修复入口。"""
     _ctrl, host = controller
@@ -383,16 +454,20 @@ def test_runtime_tree_uses_installer_inspect(controller, qtbot):
     assert ctrl._runtime_installer.inspect.call_count >= 1
 
 
-def test_runtime_tree_does_not_expose_python_dependency_children(controller, qtbot):
+def test_runtime_tree_exposes_only_backend_functional_groups(controller, qtbot):
     ctrl, host = controller
     from PySide6.QtWidgets import QTreeWidget
 
     ctrl._refresh_env_maintenance_state()
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
     qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
+    assert tree.topLevelItem(0).childCount() == 0
+    assert tree.topLevelItem(1).childCount() == 2
+    assert tree.topLevelItem(2).childCount() == 0
+    assert tree.topLevelItem(3).childCount() == 0
     assert all(
-        tree.topLevelItem(index).childCount() == 0
-        for index in range(tree.topLevelItemCount())
+        "paddle" not in tree.topLevelItem(1).child(index).text(0).lower()
+        for index in range(tree.topLevelItem(1).childCount())
     )
 
 

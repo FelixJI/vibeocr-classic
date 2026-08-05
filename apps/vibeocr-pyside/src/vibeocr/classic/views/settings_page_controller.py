@@ -48,6 +48,11 @@ from vibeocr.runtime_contracts import (
     SettingsSnapshot,
 )
 
+try:
+    from vibeocr.runtime_contracts import parse_runtime_status
+except ImportError:  # Protocol 2.0/2.1 compatibility: HTTP status arrived in 2.2.
+    parse_runtime_status = None
+
 logger = logging.getLogger(__name__)
 
 # QRunnable 运行期间的进程级强引用。窗口可先于慢 WMIC/PowerShell/RPC 完成销毁；
@@ -1534,6 +1539,7 @@ class SettingsPageController:
             force_backend=force_backend,
             single_pkg=single_pkg,
             packages=packages,
+            maintenance_callback=self._status_callback,
         )
 
         def _on_finished(_result: int) -> None:
@@ -1590,7 +1596,7 @@ class SettingsPageController:
         self._open_install_dialog(packages=["runtime-profile"])
 
     def _refresh_env_maintenance_state(self) -> None:
-        """异步读取 Installer 的 Runtime 完整性快照。"""
+        """异步合并 Installer 完整性与 Supervisor HTTP 状态。"""
         label = self._ui.findChild(QLabel, "labelEnvStatus")
         tree = self._ui.findChild(QTreeWidget, "treeDepsStatus")
         if label:
@@ -1599,13 +1605,27 @@ class SettingsPageController:
             tree.clear()
         self._env_refresh_generation += 1
         generation = self._env_refresh_generation
+        adapter = self._connect_runtime_adapter()
+        status_client = (
+            getattr(adapter, "runtime_status_client", None)
+            if getattr(adapter, "is_started", False)
+            else None
+        )
 
         def operation() -> dict:
             inspection = self._runtime_installer.inspect()
-            return {
+            snapshot = {
                 "mode": "portable",
                 "inspection": inspection,
             }
+            if status_client is not None and parse_runtime_status is not None:
+                try:
+                    payload = status_client.request_json("getRuntimeStatus")
+                    snapshot["runtime_status"] = parse_runtime_status(payload)
+                except Exception as exc:
+                    logger.info("Supervisor HTTP 状态暂不可用，回退本地快照: %s", exc)
+                    snapshot["runtime_status_error"] = str(exc)
+            return snapshot
 
         self._run_cache_operation(
             operation,
@@ -1634,6 +1654,7 @@ class SettingsPageController:
 
         mode = snapshot.get("mode", "none")
         inspection = snapshot.get("inspection")
+        runtime_status = snapshot.get("runtime_status")
 
         if label:
             if mode == "portable" and inspection is not None:
@@ -1641,13 +1662,33 @@ class SettingsPageController:
                 accelerator = (
                     "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
                 )
+                service_labels = {
+                    "ready": "已就绪",
+                    "degraded": "降级",
+                    "maintenance": "维护中",
+                }
+                service = "未连接"
+                maintenance = ""
+                if runtime_status is not None:
+                    service = service_labels.get(
+                        runtime_status.service_state.value,
+                        runtime_status.service_state.value,
+                    )
+                    if runtime_status.maintenance is not None:
+                        maintenance = (
+                            "\n维护："
+                            f"{runtime_status.maintenance.phase.value} · "
+                            f"{runtime_status.maintenance.operation_state.value}"
+                        )
                 label.setText(
                     f"Runtime：{status}\n"
+                    f"服务：{service}\n"
                     f"加速方案：{accelerator}\n"
                     f"Python：{inspection.python_version}\n"
                     f"Backend：{inspection.backend_version}\n"
                     f"Protocol：{inspection.protocol_version}\n"
                     f"Manifest：{inspection.manifest_sha256[:12]}"
+                    f"{maintenance}"
                 )
             else:
                 label.setText("Runtime：未绑定")
@@ -1693,6 +1734,7 @@ class SettingsPageController:
         """显示受产品绑定的 Runtime 组件，不向 UI 泄漏逐包安装细节。"""
         snapshot = snapshot or {}
         inspection = snapshot.get("inspection")
+        runtime_status_snapshot = snapshot.get("runtime_status")
         tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         tree.clear()
         if inspection is None:
@@ -1701,14 +1743,59 @@ class SettingsPageController:
         accelerator = (
             "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
         )
-        rows = (
-            ("Python 运行时", runtime_status, inspection.python_version),
-            ("Backend Supervisor", runtime_status, inspection.backend_version),
-            ("Protocol", "✓ 已绑定", inspection.protocol_version),
-            (f"{accelerator} 推理 profile", "✓ 已选择", inspection.profile),
+        tree.addTopLevelItem(
+            QTreeWidgetItem(
+                ["Python 运行时", runtime_status, inspection.python_version]
+            )
         )
-        for row in rows:
-            tree.addTopLevelItem(QTreeWidgetItem(list(row)))
+        backend_item = QTreeWidgetItem(
+            ["Backend Supervisor", runtime_status, inspection.backend_version]
+        )
+        tree.addTopLevelItem(backend_item)
+        if runtime_status_snapshot is not None:
+            state_labels = {
+                "not_required": "— 不需要",
+                "pending": "… 等待中",
+                "installing": "… 安装中",
+                "verifying": "… 验证中",
+                "ready": "✓ 已就绪",
+                "failed": "✗ 失败",
+                "cancelled": "— 已取消",
+            }
+            components = runtime_status_snapshot.profile.components
+            for component in components:
+                backend_item.addChild(
+                    QTreeWidgetItem(
+                        [
+                            component.display_name,
+                            state_labels.get(
+                                component.state.value, component.state.value
+                            ),
+                            component.version or "—",
+                        ]
+                    )
+                )
+        else:
+            component_status = "✓ 已验证" if inspection.ready else "⚠ 未就绪"
+            for component in getattr(inspection, "components", ()):
+                backend_item.addChild(
+                    QTreeWidgetItem(
+                        [
+                            component.display_name,
+                            component_status,
+                            component.version or "—",
+                        ]
+                    )
+                )
+        backend_item.setExpanded(True)
+        tree.addTopLevelItem(
+            QTreeWidgetItem(["Protocol", "✓ 已绑定", inspection.protocol_version])
+        )
+        tree.addTopLevelItem(
+            QTreeWidgetItem(
+                [f"{accelerator} 推理 profile", "✓ 已选择", inspection.profile]
+            )
+        )
         tree.setToolTip(
             "显示产品绑定的 Python、Backend、Protocol 与推理 profile。"
             "完整 profile 由 Runtime Installer 统一校验和修复。"

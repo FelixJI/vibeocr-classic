@@ -2,31 +2,57 @@
 
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QDialog,
+    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
 )
 
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
+    RuntimeMaintenanceUpdate,
+    RuntimeProfileDescriptor,
 )
 from vibeocr.classic.utils.dialog_workers import track_dialog_worker
 
 logger = logging.getLogger(__name__)
+
+_PHASE_LABELS = {
+    "validate_binding": "验证组件绑定",
+    "wait_for_lock": "等待运行时锁",
+    "prepare_runtime": "准备 Python 运行时",
+    "install_profile": "安装运行时依赖",
+    "install_backend": "安装 Backend 服务",
+    "verify_runtime": "验证运行时",
+    "commit_runtime": "提交运行时",
+}
+
+_STATE_LABELS = {
+    "queued": "等待中",
+    "running": "进行中",
+    "succeeded": "已就绪",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
 
 
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
 
     progress = Signal(str, str)  # (stage, message)
+    profile = Signal(object)  # RuntimeProfileDescriptor
+    maintenance = Signal(object)  # RuntimeMaintenanceUpdate
     completed = Signal(bool, str)  # (success, message)
 
     def __init__(
@@ -80,6 +106,7 @@ class InstallWorker(QThread):
                 self._project_root,
                 accelerator=accelerator,
             )
+            self.profile.emit(client.profile_descriptor())
             repair = (
                 self._reinstall_python
                 or self._single_pkg is not None
@@ -91,9 +118,7 @@ class InstallWorker(QThread):
                     "逐包重装已停用，正在校验并修复完整 Runtime profile...",
                 )
                 client.repair(
-                    progress=lambda message: self._emit_progress(
-                        "Runtime Installer", message
-                    ),
+                    progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
                 )
             else:
@@ -102,9 +127,7 @@ class InstallWorker(QThread):
                     "正在确保绑定的 Runtime profile 可用...",
                 )
                 client.ensure(
-                    progress=lambda message: self._emit_progress(
-                        "Runtime Installer", message
-                    ),
+                    progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
                 )
             self.completed.emit(
@@ -117,6 +140,19 @@ class InstallWorker(QThread):
         except Exception as exc:
             logger.exception("Runtime Installer 异常")
             self.completed.emit(False, f"安装异常: {exc}")
+
+    def _emit_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        phase = _PHASE_LABELS.get(update.phase, update.phase)
+        component = update.component_id or "runtime"
+        logger.info(
+            "[Runtime Installer] %s component=%s state=%s sequence=%s code=%s",
+            phase,
+            component,
+            update.operation_state,
+            update.sequence,
+            update.message_code,
+        )
+        self.maintenance.emit(update)
 
 
 class InstallDialog(QDialog):
@@ -132,6 +168,7 @@ class InstallDialog(QDialog):
         force_backend: str | None = None,
         single_pkg: str | None = None,
         packages: list[str] | None = None,
+        maintenance_callback: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
@@ -139,6 +176,8 @@ class InstallDialog(QDialog):
         self._force_backend = force_backend
         self._single_pkg = single_pkg
         self._packages = packages
+        self._maintenance_callback = maintenance_callback
+        self._component_items: dict[str, QTreeWidgetItem] = {}
         self._setup_ui()
         self._worker: InstallWorker | None = None
 
@@ -154,7 +193,7 @@ class InstallDialog(QDialog):
         else:
             self.setWindowTitle("安装OCR依赖")
             self._title_text = "正在安装OCR依赖..."
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(620, 520)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -171,6 +210,18 @@ class InstallDialog(QDialog):
         # 当前阶段
         self._stage_label = QLabel("准备中...")
         layout.addWidget(self._stage_label)
+
+        self._components_tree = QTreeWidget()
+        self._components_tree.setObjectName("runtimeComponentsTree")
+        self._components_tree.setHeaderLabels(["Backend 组件", "状态", "版本"])
+        self._components_tree.setRootIsDecorated(False)
+        self._components_tree.setAlternatingRowColors(True)
+        self._components_tree.setMinimumHeight(150)
+        header = self._components_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self._components_tree)
 
         # 日志输出
         self._log_text = QTextEdit()
@@ -213,6 +264,8 @@ class InstallDialog(QDialog):
         )
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
+        self._worker.profile.connect(self._on_profile)
+        self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
         self._worker.start()
         # 安装开始后显示取消按钮
@@ -246,6 +299,47 @@ class InstallDialog(QDialog):
         self._stage_label.setText(f"[{stage}] {message}")
         self._log(f"[{stage}] {message}")
 
+    @Slot(object)
+    def _on_profile(self, profile: RuntimeProfileDescriptor) -> None:
+        self._components_tree.clear()
+        self._component_items.clear()
+        for component in profile.components:
+            item = QTreeWidgetItem(
+                [component.display_name, "等待中", component.version or "—"]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, component.component_id)
+            self._components_tree.addTopLevelItem(item)
+            self._component_items[component.component_id] = item
+
+    @Slot(object)
+    def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        phase = _PHASE_LABELS.get(update.phase, update.phase)
+        state = _STATE_LABELS.get(update.operation_state, update.operation_state)
+        detail = phase
+        if update.progress_current is not None and update.progress_total is not None:
+            self._progress_bar.setRange(0, update.progress_total)
+            self._progress_bar.setValue(update.progress_current)
+            detail = f"{phase} · {update.progress_current}/{update.progress_total}"
+        elif self._progress_bar.maximum() == 0:
+            self._progress_bar.setRange(0, 0)
+        self._stage_label.setText(f"{detail} · {state}")
+
+        if update.component_id:
+            item = self._component_items.get(update.component_id)
+            if item is not None:
+                item.setText(1, state)
+                self._components_tree.scrollToItem(item)
+
+        summary = f"Runtime {phase}：{state}"
+        if update.component_id:
+            item = self._component_items.get(update.component_id)
+            component_name = item.text(0) if item is not None else update.component_id
+            summary = f"Runtime {phase}：{component_name} · {state}"
+        if update.event_type != "heartbeat":
+            self._log(summary)
+        if self._maintenance_callback is not None:
+            self._maintenance_callback(summary)
+
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
@@ -253,6 +347,8 @@ class InstallDialog(QDialog):
         self._cancel_button.setVisible(False)
 
         if success:
+            for item in self._component_items.values():
+                item.setText(1, "已就绪")
             self._title_label.setText("安装成功!")
             # 单包/批量重装时 message 是具体结果（如"scipy 安装成功"/"已重装 3 个依赖包"），
             # 优先用它，避免笼统的"OCR依赖安装完成"（用户报告"单包却提示全部安装完毕"）。

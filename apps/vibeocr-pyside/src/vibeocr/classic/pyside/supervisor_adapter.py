@@ -67,7 +67,9 @@ class SupervisorClientAdapter(QObject):
     recognition_submitted = Signal(str)  # job_id
     recognition_progress = Signal(str, int, int)  # job_id, current, total
     recognition_stage = Signal(str, str)  # job_id, stage
-    recognition_result = Signal(str, list)  # job_id, ResultEntry payloads (stable order)
+    recognition_result = Signal(
+        str, list
+    )  # job_id, ResultEntry payloads (stable order)
     recognition_error = Signal(str, str)  # job_id, error message
     recognition_cancelled = Signal(str)  # job_id
 
@@ -85,6 +87,7 @@ class SupervisorClientAdapter(QObject):
         client_factory: Callable[[], SupervisorClient | _AwaitableClient],
         pdf_sync_client_factory: Callable[[], Any] | None = None,
         inference_sync_client_factory: Callable[[], Any] | None = None,
+        runtime_status_client_factory: Callable[[], Any] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -96,6 +99,8 @@ class SupervisorClientAdapter(QObject):
         self._pdf_sync_client: Any = None
         self._inference_sync_client_factory = inference_sync_client_factory
         self._inference_sync_client: Any = None
+        self._runtime_status_client_factory = runtime_status_client_factory
+        self._runtime_status_client: Any = None
         self._client: SupervisorClient | None = None
         self._handles: dict[str, JobHandle] = {}
         self._generation = 0
@@ -128,6 +133,16 @@ class SupervisorClientAdapter(QObject):
         ):
             self._inference_sync_client = self._inference_sync_client_factory()
         return self._inference_sync_client
+
+    @property
+    def runtime_status_client(self) -> Any:
+        """认证的同步 HTTP 客户端，供后台线程读取统一运行状态。"""
+        if (
+            self._runtime_status_client is None
+            and self._runtime_status_client_factory is not None
+        ):
+            self._runtime_status_client = self._runtime_status_client_factory()
+        return self._runtime_status_client
 
     # ------------------------------------------------------------------
     # Client lifecycle
@@ -226,6 +241,7 @@ class SupervisorClientAdapter(QObject):
                     pass
             self._pdf_sync_client = None
             self._inference_sync_client = None
+            self._runtime_status_client = None
             self._loop = None
             return
 
@@ -263,6 +279,7 @@ class SupervisorClientAdapter(QObject):
                 self._client = None
                 self._pdf_sync_client = None
                 self._inference_sync_client = None
+                self._runtime_status_client = None
                 self._loop = None
 
         try:
@@ -286,6 +303,7 @@ class SupervisorClientAdapter(QObject):
                     pass
             self._pdf_sync_client = None
             self._inference_sync_client = None
+            self._runtime_status_client = None
             self._loop = None
 
     @property
@@ -412,7 +430,9 @@ class SupervisorClientAdapter(QObject):
                     self.recognition_error.emit(job_id, exc.message)
                 return
             if generation == self._generation:
-                self.recognition_progress.emit(job_id, snap.progress_current, snap.progress_total)
+                self.recognition_progress.emit(
+                    job_id, snap.progress_current, snap.progress_total
+                )
                 if snap.stage:
                     self.recognition_stage.emit(job_id, snap.stage)
             events: Iterable[StageEvent] = update.events
@@ -466,6 +486,7 @@ class SupervisorClientAdapter(QObject):
     def refresh_residency(self) -> None:
         async def _refresh() -> None:
             try:
+
                 async def _request() -> Any:
                     client = await self._acquire_client()
                     return await client.residency()
@@ -488,6 +509,7 @@ class SupervisorClientAdapter(QObject):
     def release_idle(self, pipeline: str | None = None) -> None:
         async def _release() -> None:
             try:
+
                 async def _request() -> Any:
                     client = await self._acquire_client()
                     return await client.release_idle(pipeline)
@@ -508,6 +530,7 @@ class SupervisorClientAdapter(QObject):
     def preload(self, pipelines: tuple[str, ...]) -> None:
         async def _preload() -> None:
             try:
+
                 async def _request() -> Any:
                     client = await self._acquire_client()
                     return await client.preload(pipelines)
@@ -531,6 +554,7 @@ class SupervisorClientAdapter(QObject):
     def update_settings(self, snapshot: SettingsSnapshot) -> None:
         async def _update() -> None:
             try:
+
                 async def _request() -> Any:
                     client = await self._acquire_client()
                     return await client.put_settings(snapshot)
@@ -571,6 +595,7 @@ class SupervisorClientAdapter(QObject):
         overwrite: bool = False,
     ) -> None:
         """Export OCR result to file via the supervisor /v2/export endpoint."""
+
         async def _export() -> None:
             try:
                 client = await self._acquire_client()
@@ -592,6 +617,7 @@ class SupervisorClientAdapter(QObject):
 
     def decode_qrcode(self, image_bytes: bytes) -> None:
         """Decode QR/barcode via the supervisor /v2/qrcode/decode endpoint."""
+
         async def _decode() -> None:
             try:
                 client = await self._acquire_client()
@@ -605,12 +631,11 @@ class SupervisorClientAdapter(QObject):
 
     def generate_qrcode(self, data: str, fmt: str = "qrcode") -> None:
         """Generate QR/barcode via the supervisor /v2/qrcode/generate endpoint."""
+
         async def _generate() -> None:
             try:
                 client = await self._acquire_client()
-                self.qr_generated.emit(
-                    await client.generate_qrcode(data, fmt=fmt)
-                )
+                self.qr_generated.emit(await client.generate_qrcode(data, fmt=fmt))
             except InferenceClientError as exc:
                 self.qr_error.emit(exc.message)
             except Exception as exc:  # pragma: no cover
@@ -634,7 +659,9 @@ def get_supervisor_adapter() -> SupervisorClientAdapter:
     """
     global _global_adapter
     if _global_adapter is None:
-        _global_adapter = SupervisorClientAdapter(client_factory=_default_client_factory)
+        _global_adapter = SupervisorClientAdapter(
+            client_factory=_default_client_factory
+        )
     return _global_adapter
 
 

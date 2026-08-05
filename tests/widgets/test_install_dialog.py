@@ -11,6 +11,11 @@ from unittest.mock import MagicMock, patch
 from PySide6.QtWidgets import QMessageBox
 
 from vibeocr.classic.widgets.install_dialog import InstallDialog
+from vibeocr.classic.runtime_installation import (
+    RuntimeComponentDescriptor,
+    RuntimeMaintenanceUpdate,
+    RuntimeProfileDescriptor,
+)
 
 
 def _show_dialog(dlg: InstallDialog) -> None:
@@ -45,8 +50,8 @@ class TestSetupUiTitleBranches:
     def test_modal_and_minimum_size(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path)
         assert dlg.isModal()
-        assert dlg.minimumSize().width() == 500
-        assert dlg.minimumSize().height() == 400
+        assert dlg.minimumSize().width() == 620
+        assert dlg.minimumSize().height() == 520
 
     def test_close_and_cancel_buttons_initially_hidden(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path)
@@ -70,6 +75,42 @@ class TestOnProgress:
         text = dlg._log_text.toPlainText()
         assert "消息一" in text
         assert "消息二" in text
+
+    def test_maintenance_updates_component_and_status_callback(self, qapp, tmp_path):
+        summaries: list[str] = []
+        dlg = InstallDialog(tmp_path, maintenance_callback=summaries.append)
+        dlg._on_profile(
+            RuntimeProfileDescriptor(
+                "win-x64-cpu",
+                "cpu",
+                (RuntimeComponentDescriptor("ocr_engine", "OCR engine", "3.7.0"),),
+            )
+        )
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=2,
+                operation="ensure",
+                operation_state="running",
+                phase="install_profile",
+                profile_id="win-x64-cpu",
+                updated_at="2026-08-05T00:00:00Z",
+                component_id="ocr_engine",
+                progress_current=2,
+                progress_total=7,
+                progress_unit="steps",
+                message_code="runtime.installing",
+            )
+        )
+
+        item = dlg._components_tree.topLevelItem(0)
+        assert item.text(0) == "OCR engine"
+        assert item.text(1) == "进行中"
+        assert item.text(2) == "3.7.0"
+        assert dlg._progress_bar.maximum() == 7
+        assert dlg._progress_bar.value() == 2
+        assert summaries == ["Runtime 安装运行时依赖：OCR engine · 进行中"]
 
 
 class TestOnFinished:

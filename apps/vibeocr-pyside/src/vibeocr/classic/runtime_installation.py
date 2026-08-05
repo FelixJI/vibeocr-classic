@@ -20,10 +20,28 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
+from uuid import uuid4
 
 
 class RuntimeInstallerClientError(RuntimeError):
     """The installer could not complete or returned an invalid envelope."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        canonical_code: str | None = None,
+        category: str | None = None,
+        retryable: bool = False,
+        retry_after: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.canonical_code = canonical_code
+        self.category = category
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.detail = dict(detail or {})
 
 
 class RuntimeInstallerCancelled(RuntimeInstallerClientError):
@@ -35,6 +53,31 @@ class RuntimeComponentDescriptor:
     component_id: str
     display_name: str
     version: str | None = None
+    desired_state: str | None = None
+    desired_version: str | None = None
+    actual_state: str | None = None
+    actual_version: str | None = None
+    drift_reason: str | None = None
+    repairable: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSourceIdentity:
+    backend_version: str
+    backend_source_sha: str
+    runtime_manifest_sha256: str
+    protocol_version: str
+    protocol_manifest_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeCapabilityDescriptor:
+    name: str
+    lifecycle: str
+    introduced_in: str
+    deprecated_in: str | None = None
+    sunset_at: str | None = None
+    replacement: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +101,31 @@ class RuntimeMaintenanceUpdate:
     progress_current: int | None = None
     progress_total: int | None = None
     progress_unit: str | None = None
+    estimated_remaining_seconds: float | None = None
     message_code: str | None = None
+    requested_component_ids: tuple[str, ...] = ()
+    effective_component_ids: tuple[str, ...] = ()
+    source: RuntimeSourceIdentity | None = None
+
+    @property
+    def has_determinate_progress(self) -> bool:
+        return (
+            self.progress_unit in {"items", "bytes"}
+            and self.progress_current is not None
+            and self.progress_total is not None
+            and self.progress_total > 0
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMaintenancePage:
+    operation_id: str
+    events: tuple[RuntimeMaintenanceUpdate, ...]
+    oldest_sequence: int
+    through_sequence: int
+    more: bool
+    replay_expires_at: str | None = None
+    snapshot: RuntimeMaintenanceUpdate | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +140,7 @@ class RuntimeInspection:
     backend_version: str
     integrity: str
     components: tuple[RuntimeComponentDescriptor, ...] = ()
+    source: RuntimeSourceIdentity | None = None
 
     @property
     def ready(self) -> bool:
@@ -89,6 +157,25 @@ class RuntimeLaunch:
 
 
 ProgressCallback = Callable[[RuntimeMaintenanceUpdate], None]
+
+
+def _source_identity(value: object) -> RuntimeSourceIdentity | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise RuntimeInstallerClientError("Runtime 来源身份无效")
+    fields = (
+        "backend_version",
+        "backend_source_sha",
+        "runtime_manifest_sha256",
+        "protocol_version",
+        "protocol_manifest_sha256",
+    )
+    if any(
+        not isinstance(value.get(field), str) or not value[field] for field in fields
+    ):
+        raise RuntimeInstallerClientError("Runtime 来源身份字段无效")
+    return RuntimeSourceIdentity(**{field: value[field] for field in fields})
 
 
 def _profile_descriptor(value: object) -> RuntimeProfileDescriptor:
@@ -113,8 +200,21 @@ def _profile_descriptor(value: object) -> RuntimeProfileDescriptor:
             or (version is not None and not isinstance(version, str))
         ):
             raise RuntimeInstallerClientError("Runtime profile 组件字段无效")
+        repairable = item.get("repairable")
+        if repairable is not None and not isinstance(repairable, bool):
+            raise RuntimeInstallerClientError("Runtime profile repairable 字段无效")
         components.append(
-            RuntimeComponentDescriptor(component_id, display_name, version)
+            RuntimeComponentDescriptor(
+                component_id,
+                display_name,
+                version,
+                desired_state=item.get("desired_state"),
+                desired_version=item.get("desired_version"),
+                actual_state=item.get("actual_state"),
+                actual_version=item.get("actual_version"),
+                drift_reason=item.get("drift_reason"),
+                repairable=repairable,
+            )
         )
     profile_id = wire.get("profile_id")
     accelerator = wire.get("accelerator")
@@ -151,12 +251,18 @@ def _maintenance_update(
     if any(not isinstance(snapshot.get(field), str) for field in required_strings):
         raise RuntimeInstallerClientError("Runtime maintenance 快照字段无效")
     sequence = snapshot.get("sequence")
-    if not isinstance(sequence, int) or sequence < 0:
+    event_sequence = wire.get("sequence", sequence)
+    if (
+        type(sequence) is not int
+        or sequence < 1
+        or type(event_sequence) is not int
+        or event_sequence != sequence
+    ):
         raise RuntimeInstallerClientError("Runtime maintenance sequence 无效")
     component_id = snapshot.get("component_id")
     if component_id is not None and not isinstance(component_id, str):
         raise RuntimeInstallerClientError("Runtime maintenance component_id 无效")
-    current = total = None
+    current = total = estimated_remaining_seconds = None
     unit = None
     progress = snapshot.get("progress")
     if progress is not None:
@@ -165,13 +271,33 @@ def _maintenance_update(
         current = progress.get("current")
         total = progress.get("total")
         unit = progress.get("unit")
+        estimated_remaining_seconds = progress.get("estimated_remaining_seconds")
         if (
             not isinstance(current, int)
             or current < 0
             or (total is not None and (not isinstance(total, int) or total < 0))
             or not isinstance(unit, str)
+            or (
+                estimated_remaining_seconds is not None
+                and (
+                    isinstance(estimated_remaining_seconds, bool)
+                    or not isinstance(estimated_remaining_seconds, (int, float))
+                    or estimated_remaining_seconds < 0
+                    or unit not in {"items", "bytes"}
+                    or total is None
+                    or total <= 0
+                )
+            )
         ):
             raise RuntimeInstallerClientError("Runtime maintenance progress 字段无效")
+    requested = snapshot.get("requested_component_ids", [])
+    effective = snapshot.get("effective_component_ids", [])
+    if any(
+        not isinstance(items, list)
+        or any(not isinstance(item, str) or not item for item in items)
+        for items in (requested, effective)
+    ):
+        raise RuntimeInstallerClientError("Runtime maintenance component scope 无效")
     event_type = wire.get("event_type")
     message_code = wire.get("message_code")
     if not isinstance(event_type, str) or not isinstance(message_code, str):
@@ -189,7 +315,15 @@ def _maintenance_update(
         progress_current=current,
         progress_total=total,
         progress_unit=unit,
+        estimated_remaining_seconds=(
+            float(estimated_remaining_seconds)
+            if estimated_remaining_seconds is not None
+            else None
+        ),
         message_code=message_code,
+        requested_component_ids=tuple(requested),
+        effective_component_ids=tuple(effective),
+        source=_source_identity(snapshot.get("source")),
     )
 
 
@@ -278,22 +412,118 @@ class RuntimeInstallerClient:
                 "-m",
                 "vibeocr.backend.runtime_installer",
             )
+        self._last_operation_id: str | None = None
+        self._negotiated_capabilities: tuple[str, ...] = ()
+        self._capability_descriptors: tuple[RuntimeCapabilityDescriptor, ...] = ()
 
-    def _arguments(self, operation: str) -> list[str]:
+    @property
+    def last_operation_id(self) -> str | None:
+        return self._last_operation_id
+
+    @property
+    def negotiated_capabilities(self) -> tuple[str, ...]:
+        return self._negotiated_capabilities
+
+    @property
+    def capability_descriptors(self) -> tuple[RuntimeCapabilityDescriptor, ...]:
+        return self._capability_descriptors
+
+    def _record_negotiation(
+        self,
+        envelope: dict[str, Any],
+        required_capabilities: tuple[str, ...],
+    ) -> None:
+        raw_negotiated = envelope.get("negotiated_capabilities", [])
+        if not isinstance(raw_negotiated, list) or any(
+            not isinstance(item, str) or not item for item in raw_negotiated
+        ):
+            raise RuntimeInstallerClientError("Runtime negotiated_capabilities 无效")
+        negotiated = tuple(raw_negotiated)
+        missing = sorted(set(required_capabilities).difference(negotiated))
+        if missing:
+            raise RuntimeInstallerClientError(
+                "Runtime 未协商必需 capability: " + ", ".join(missing)
+            )
+
+        raw_descriptors = envelope.get("capability_descriptors", [])
+        if not isinstance(raw_descriptors, list):
+            raise RuntimeInstallerClientError("Runtime capability_descriptors 无效")
+        descriptors: list[RuntimeCapabilityDescriptor] = []
+        for item in raw_descriptors:
+            nullable_fields = ("deprecated_in", "sunset_at", "replacement")
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not item["name"]
+                or item.get("lifecycle") not in {"active", "deprecated"}
+                or not isinstance(item.get("introduced_in"), str)
+                or not item["introduced_in"]
+                or any(
+                    item.get(field) is not None and not isinstance(item.get(field), str)
+                    for field in nullable_fields
+                )
+            ):
+                raise RuntimeInstallerClientError(
+                    "Runtime capability descriptor 字段无效"
+                )
+            descriptors.append(
+                RuntimeCapabilityDescriptor(
+                    name=item["name"],
+                    lifecycle=item["lifecycle"],
+                    introduced_in=item["introduced_in"],
+                    deprecated_in=item.get("deprecated_in"),
+                    sunset_at=item.get("sunset_at"),
+                    replacement=item.get("replacement"),
+                )
+            )
+        self._negotiated_capabilities = negotiated
+        self._capability_descriptors = tuple(descriptors)
+
+    def _binding_request(self) -> dict[str, Any]:
         request = {
             "protocol_version": 2,
-            "operation": operation,
             "product_root": str(self.product_root),
             "component_lock": str(self.component_lock),
             "runtime_manifest": str(self.runtime_manifest),
-            "accelerator": self.accelerator,
         }
-        if self._supports_maintenance_events():
-            request["accepted_event_streams"] = ["ndjson.v1"]
         if self.layout_manifest is not None:
             request["layout_manifest"] = str(self.layout_manifest)
             request["product_id"] = self.product_id
+        return request
+
+    def _request_arguments(self, request: dict[str, Any]) -> list[str]:
         return [*self.command, "--request-json", json.dumps(request)]
+
+    def _arguments(
+        self,
+        operation: str,
+        *,
+        operation_id: str | None = None,
+        component_ids: tuple[str, ...] = (),
+        required_capabilities: tuple[str, ...] = (),
+    ) -> list[str]:
+        request = {
+            **self._binding_request(),
+            "operation": operation,
+            "accelerator": self.accelerator,
+        }
+        if self._supports_capability("runtime.maintenance.v2"):
+            request["accepted_event_streams"] = ["ndjson.v2"]
+            if operation_id is not None:
+                request["operation_id"] = operation_id
+            if component_ids:
+                if not self._supports_capability("runtime.component-repair.v1"):
+                    raise RuntimeInstallerClientError("Runtime 不支持按组件 repair")
+                request["component_ids"] = list(component_ids)
+            if required_capabilities:
+                if not self._supports_capability("runtime.capability-metadata.v1"):
+                    raise RuntimeInstallerClientError(
+                        "Runtime 不支持 capability negotiation metadata"
+                    )
+                request["required_capabilities"] = list(required_capabilities)
+        elif self._supports_maintenance_events():
+            request["accepted_event_streams"] = ["ndjson.v1"]
+        return self._request_arguments(request)
 
     def _manifest(self) -> dict[str, Any]:
         try:
@@ -305,12 +535,183 @@ class RuntimeInstallerClient:
         return value
 
     def _supports_maintenance_events(self) -> bool:
+        return self._supports_capability("runtime.maintenance.v1")
+
+    def _supports_capability(self, capability: str) -> bool:
         try:
             capabilities = self._manifest().get("capabilities", [])
         except RuntimeInstallerClientError:
             return False
-        return (
-            isinstance(capabilities, list) and "runtime.maintenance.v1" in capabilities
+        return isinstance(capabilities, list) and capability in capabilities
+
+    def _invoke_control(
+        self, request: dict[str, Any], *, timeout: float = 30
+    ) -> dict[str, Any]:
+        self._verify_installer_executable()
+        try:
+            result = subprocess.run(
+                self._request_arguments({**self._binding_request(), **request}),
+                cwd=self.product_root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeInstallerClientError("Runtime 控制命令执行失败") from exc
+        envelopes: list[dict[str, Any]] = []
+        for line in result.stdout.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(value, dict) and value.get("event_version") != 1:
+                envelopes.append(value)
+        envelope = envelopes[-1] if envelopes else None
+        if result.returncode != 0 or envelope is None or envelope.get("ok") is not True:
+            error = envelope.get("error") if isinstance(envelope, dict) else None
+            raise self._error_from_wire(
+                error,
+                fallback=result.stderr.strip() or "Runtime 控制命令失败",
+            )
+        return envelope
+
+    @staticmethod
+    def _error_from_wire(
+        error: object, *, fallback: str
+    ) -> RuntimeInstallerClientError:
+        if not isinstance(error, dict):
+            return RuntimeInstallerClientError(fallback)
+        retry_after = error.get("retry_after")
+        return RuntimeInstallerClientError(
+            str(error.get("message") or error.get("code") or fallback),
+            canonical_code=(
+                str(error["canonical_code"])
+                if isinstance(error.get("canonical_code"), str)
+                else None
+            ),
+            category=(
+                str(error["category"])
+                if isinstance(error.get("category"), str)
+                else None
+            ),
+            retryable=error.get("retryable") is True,
+            retry_after=(
+                retry_after
+                if isinstance(retry_after, int) and retry_after >= 0
+                else None
+            ),
+            detail=(
+                error.get("detail") if isinstance(error.get("detail"), dict) else None
+            ),
+        )
+
+    def observe(
+        self, operation_id: str, *, after_sequence: int = 0, limit: int = 128
+    ) -> RuntimeMaintenancePage:
+        envelope = self._invoke_control(
+            {
+                "request_kind": "observe",
+                "operation_id": operation_id,
+                "after_sequence": after_sequence,
+                "limit": limit,
+            }
+        )
+        snapshot = envelope.get("snapshot")
+        if not isinstance(snapshot, dict) or not isinstance(
+            snapshot.get("operation"), str
+        ):
+            raise RuntimeInstallerClientError("Runtime observe 响应缺少 operation")
+        events = envelope.get("events")
+        if not isinstance(events, list):
+            raise RuntimeInstallerClientError("Runtime observe 响应缺少 events")
+        updates = tuple(
+            _maintenance_update(event, expected_operation=snapshot["operation"])
+            for event in events
+        )
+        snapshot_update = _maintenance_update(
+            {
+                "protocol_version": 2,
+                "event_version": 1,
+                "event_type": "snapshot",
+                "operation": snapshot["operation"],
+                "snapshot": snapshot,
+                "message_code": "runtime.observe_snapshot",
+            },
+            expected_operation=snapshot["operation"],
+        )
+        oldest = envelope.get("oldest_sequence")
+        through = envelope.get("through_sequence")
+        more = envelope.get("more")
+        replay_expires_at = envelope.get("replay_expires_at")
+        if (
+            type(oldest) is not int
+            or oldest < 1
+            or type(through) is not int
+            or through < 0
+            or type(more) is not bool
+            or (
+                replay_expires_at is not None and not isinstance(replay_expires_at, str)
+            )
+            or (updates and updates[-1].sequence != through)
+            or (updates and updates[0].sequence != after_sequence + 1)
+            or any(
+                right.sequence != left.sequence + 1
+                for left, right in zip(updates, updates[1:])
+            )
+            or (not updates and through > after_sequence)
+            or (not updates and more)
+            or any(update.operation_id != operation_id for update in updates)
+            or snapshot_update.operation_id != operation_id
+            or snapshot_update.sequence < through
+        ):
+            raise RuntimeInstallerClientError("Runtime observe cursor 响应无效")
+        return RuntimeMaintenancePage(
+            operation_id=operation_id,
+            events=updates,
+            oldest_sequence=oldest,
+            through_sequence=through,
+            more=more,
+            replay_expires_at=replay_expires_at,
+            snapshot=snapshot_update,
+        )
+
+    def cancel(
+        self,
+        operation_id: str,
+        *,
+        command_id: str | None = None,
+        expected_sequence: int | None = None,
+    ) -> dict[str, Any]:
+        request: dict[str, Any] = {
+            "request_kind": "command",
+            "command_id": command_id or str(uuid4()),
+            "command": "cancel",
+            "target_operation_id": operation_id,
+        }
+        if expected_sequence is not None:
+            request["expected_sequence"] = expected_sequence
+        return self._invoke_control(request)
+
+    def retry(
+        self,
+        operation_id: str,
+        *,
+        command_id: str | None = None,
+        new_operation_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._invoke_control(
+            {
+                "request_kind": "command",
+                "command_id": command_id or str(uuid4()),
+                "command": "retry",
+                "target_operation_id": operation_id,
+                "new_operation_id": new_operation_id or str(uuid4()),
+            },
+            timeout=3600,
         )
 
     def profile_descriptor(self) -> RuntimeProfileDescriptor:
@@ -352,6 +753,9 @@ class RuntimeInstallerClient:
         progress: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
         timeout: float = 3600,
+        operation_id: str | None = None,
+        component_ids: tuple[str, ...] = (),
+        required_capabilities: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         self._verify_installer_executable()
         smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
@@ -382,9 +786,18 @@ class RuntimeInstallerClient:
                 },
                 "launch": None,
             }
+        supports_v2 = self._supports_capability("runtime.maintenance.v2")
+        if supports_v2:
+            operation_id = operation_id or str(uuid4())
+            self._last_operation_id = operation_id
         try:
             process = subprocess.Popen(
-                self._arguments(operation),
+                self._arguments(
+                    operation,
+                    operation_id=operation_id,
+                    component_ids=component_ids,
+                    required_capabilities=required_capabilities,
+                ),
                 cwd=self.product_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -428,12 +841,27 @@ class RuntimeInstallerClient:
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         envelopes: list[dict[str, Any]] = []
+        last_sequences: dict[str, int] = {}
+        latest_states: dict[str, str] = {}
+        cancel_sent = False
+        cancellation_deadline: float | None = None
         while len(completed_channels) < 2:
             if cancel_event is not None and cancel_event.is_set():
-                _terminate_process_tree(process)
-                raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")
+                if supports_v2 and operation_id is not None and not cancel_sent:
+                    self.cancel(
+                        operation_id,
+                        expected_sequence=last_sequences.get(operation_id),
+                    )
+                    cancel_sent = True
+                    cancellation_deadline = time.monotonic() + 15
+                    deadline = min(deadline, cancellation_deadline)
+                elif not supports_v2:
+                    _terminate_process_tree(process)
+                    raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if cancel_sent:
+                    raise RuntimeInstallerClientError("Runtime 取消未由终态快照确认")
                 _terminate_process_tree(process)
                 raise RuntimeInstallerClientError(f"Runtime Installer {operation} 超时")
             try:
@@ -456,6 +884,49 @@ class RuntimeInstallerClient:
             try:
                 if value.get("event_version") == 1:
                     update = _maintenance_update(value, expected_operation=operation)
+                    last_sequence = last_sequences.get(update.operation_id, 0)
+                    if update.sequence <= last_sequence:
+                        continue
+                    if supports_v2 and update.sequence != last_sequence + 1:
+                        while update.sequence > last_sequence + 1:
+                            page = self.observe(
+                                update.operation_id,
+                                after_sequence=last_sequence,
+                            )
+                            for replay in page.events:
+                                replay_cursor = last_sequences.get(
+                                    replay.operation_id, 0
+                                )
+                                if replay.sequence <= replay_cursor:
+                                    continue
+                                if replay.sequence != replay_cursor + 1:
+                                    raise RuntimeInstallerClientError(
+                                        "Runtime maintenance replay sequence 不连续"
+                                    )
+                                last_sequences[replay.operation_id] = replay.sequence
+                                if progress is not None:
+                                    progress(replay)
+                            next_sequence = last_sequences.get(update.operation_id, 0)
+                            if next_sequence <= last_sequence:
+                                raise RuntimeInstallerClientError(
+                                    "Runtime maintenance replay cursor 未推进"
+                                )
+                            last_sequence = next_sequence
+                            if not page.more:
+                                break
+                        if update.sequence <= last_sequences.get(
+                            update.operation_id, 0
+                        ):
+                            continue
+                        if (
+                            update.sequence
+                            != last_sequences.get(update.operation_id, 0) + 1
+                        ):
+                            raise RuntimeInstallerClientError(
+                                "Runtime maintenance sequence 缺口未能重放"
+                            )
+                    last_sequences[update.operation_id] = update.sequence
+                    latest_states[update.operation_id] = update.operation_state
                     if progress is not None:
                         progress(update)
                 else:
@@ -473,6 +944,36 @@ class RuntimeInstallerClient:
         stdout = "\n".join(stdout_lines)
         stderr = "\n".join(stderr_lines)
         envelope = envelopes[-1] if envelopes else None
+        if cancel_sent:
+            assert operation_id is not None
+            terminal_state = latest_states.get(operation_id)
+            while terminal_state not in {"succeeded", "failed", "cancelled"}:
+                if (
+                    cancellation_deadline is None
+                    or time.monotonic() >= cancellation_deadline
+                ):
+                    raise RuntimeInstallerClientError("Runtime 取消未由终态快照确认")
+                page = self.observe(
+                    operation_id,
+                    after_sequence=last_sequences.get(operation_id, 0),
+                )
+                for replay in page.events:
+                    if replay.sequence > last_sequences.get(operation_id, 0):
+                        last_sequences[operation_id] = replay.sequence
+                        latest_states[operation_id] = replay.operation_state
+                        if progress is not None:
+                            progress(replay)
+                if (
+                    not page.more
+                    and page.snapshot is not None
+                    and last_sequences.get(operation_id, 0) >= page.snapshot.sequence
+                ):
+                    terminal_state = page.snapshot.operation_state
+                    latest_states[operation_id] = terminal_state
+                if terminal_state not in {"succeeded", "failed", "cancelled"}:
+                    time.sleep(0.05)
+            if terminal_state == "cancelled":
+                raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")
         if (
             process.returncode != 0
             or envelope is None
@@ -481,13 +982,16 @@ class RuntimeInstallerClient:
             or envelope.get("ok") is not True
         ):
             detail = ""
+            error = None
             if envelope is not None:
                 error = envelope.get("error")
                 if isinstance(error, dict):
                     detail = str(error.get("message") or error.get("code") or "")
             if not detail:
                 detail = stderr.strip() or stdout.strip() or "未知错误"
-            raise RuntimeInstallerClientError(detail)
+            raise self._error_from_wire(error, fallback=detail)
+        if supports_v2:
+            self._record_negotiation(envelope, required_capabilities)
         return envelope
 
     def _verify_installer_executable(self) -> None:
@@ -568,6 +1072,7 @@ class RuntimeInstallerClient:
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
                 components=descriptor.components,
+                source=_source_identity(value.get("source")),
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise RuntimeInstallerClientError(
@@ -579,12 +1084,20 @@ class RuntimeInstallerClient:
         *,
         progress: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
+        operation_id: str | None = None,
+        required_capabilities: tuple[str, ...] = (),
     ) -> RuntimeLaunch:
+        if not required_capabilities and self._supports_capability(
+            "runtime.maintenance.v2"
+        ):
+            required_capabilities = ("runtime.maintenance.v2",)
         return self._launch_from(
             self._invoke(
                 "ensure",
                 progress=progress,
                 cancel_event=cancel_event,
+                operation_id=operation_id,
+                required_capabilities=required_capabilities,
             )
         )
 
@@ -593,12 +1106,25 @@ class RuntimeInstallerClient:
         *,
         progress: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
+        operation_id: str | None = None,
+        component_ids: tuple[str, ...] = (),
+        required_capabilities: tuple[str, ...] = (),
     ) -> RuntimeLaunch:
+        if not required_capabilities and self._supports_capability(
+            "runtime.maintenance.v2"
+        ):
+            required_capabilities = (
+                "runtime.maintenance.v2",
+                *(("runtime.component-repair.v1",) if component_ids else ()),
+            )
         return self._launch_from(
             self._invoke(
                 "repair",
                 progress=progress,
                 cancel_event=cancel_event,
+                operation_id=operation_id,
+                component_ids=component_ids,
+                required_capabilities=required_capabilities,
             )
         )
 
@@ -629,11 +1155,14 @@ class RuntimeInstallerClient:
 
 __all__ = [
     "RuntimeComponentDescriptor",
+    "RuntimeCapabilityDescriptor",
     "RuntimeInspection",
     "RuntimeInstallerCancelled",
     "RuntimeInstallerClient",
     "RuntimeInstallerClientError",
     "RuntimeLaunch",
+    "RuntimeMaintenancePage",
     "RuntimeMaintenanceUpdate",
     "RuntimeProfileDescriptor",
+    "RuntimeSourceIdentity",
 ]

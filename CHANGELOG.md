@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+### Features
+
+- **runtime:** 展示安装进度与 Backend 依赖状态 (#26) (cc964cf)
+
 ## 0.8.1
 
 ### Bug Fixes

@@ -61,7 +61,9 @@ class _FakeJob:
     ``finish()`` from the first ``status()`` probe (``auto_finish=True``).
     """
 
-    def __init__(self, job_id: str, items: list[JobItem], *, auto_finish: bool = True) -> None:
+    def __init__(
+        self, job_id: str, items: list[JobItem], *, auto_finish: bool = True
+    ) -> None:
         self.job_id = job_id
         self.items = items
         self._auto_finish = auto_finish
@@ -73,7 +75,9 @@ class _FakeJob:
             self._state = JobState.COMPLETED
         state = self._state
         succeeded = len(self.items) if state is JobState.COMPLETED else 0
-        item_state = ItemState.SUCCEEDED if state is JobState.COMPLETED else ItemState.CANCELLED
+        item_state = (
+            ItemState.SUCCEEDED if state is JobState.COMPLETED else ItemState.CANCELLED
+        )
         return JobSnapshot(
             job_id=self.job_id,
             kind=JobKind.RECOGNITION,
@@ -81,9 +85,13 @@ class _FakeJob:
             state=state,
             progress_current=succeeded,
             progress_total=len(self.items),
-            stage="done" if state in (JobState.COMPLETED, JobState.CANCELLED) else "running",
+            stage="done"
+            if state in (JobState.COMPLETED, JobState.CANCELLED)
+            else "running",
             items=tuple(
-                JobItem(item_id=it.item_id, display_name=it.display_name, state=item_state)
+                JobItem(
+                    item_id=it.item_id, display_name=it.display_name, state=item_state
+                )
                 for it in self.items
             ),
             summary=JobSummary(succeeded=succeeded, total=len(self.items)),
@@ -123,9 +131,7 @@ class FakeSupervisorClient:
         self.jobs[job_id] = _FakeJob(job_id, items, auto_finish=not self.hold_running)
         return JobRef(job_id=job_id, items=tuple(items))
 
-    async def observe(
-        self, job_id: str, *, after_sequence: int = 0
-    ) -> JobUpdate:
+    async def observe(self, job_id: str, *, after_sequence: int = 0) -> JobUpdate:
         job = self.jobs[job_id]
         snapshot = job.snapshot()
         events = tuple(
@@ -175,7 +181,11 @@ class FakeSupervisorClient:
     async def result(self, job_id: str) -> list[ResultEntry]:
         job = self.jobs[job_id]
         return [
-            ResultEntry(item_id=it.item_id, display_name=it.display_name, payload={"text": f"ocr-{it.display_name}"})
+            ResultEntry(
+                item_id=it.item_id,
+                display_name=it.display_name,
+                payload={"text": f"ocr-{it.display_name}"},
+            )
             for it in job.items
         ]
 
@@ -214,7 +224,9 @@ class FakeSupervisorClient:
 # ---------------------------------------------------------------------------
 
 
-def _drive(loop: asyncio.AbstractEventLoop, predicate: Any, *, timeout: float = 2.0) -> None:
+def _drive(
+    loop: asyncio.AbstractEventLoop, predicate: Any, *, timeout: float = 2.0
+) -> None:
     """Step the (non-running) loop until ``predicate()`` is true or timeout."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -243,13 +255,19 @@ def adapter(qasync_loop) -> SupervisorClientAdapter:
     set_supervisor_adapter(None)
 
 
-def test_submit_recognition_emits_submitted_progress_result(adapter, qasync_loop) -> None:
+def test_submit_recognition_emits_submitted_progress_result(
+    adapter, qasync_loop
+) -> None:
     submitted: list[str] = []
     results: list[tuple[str, list]] = []
     adapter.recognition_submitted.connect(lambda jid: submitted.append(jid))
-    adapter.recognition_result.connect(lambda jid, payload: results.append((jid, payload)))
+    adapter.recognition_result.connect(
+        lambda jid, payload: results.append((jid, payload))
+    )
 
-    gen = adapter.submit_recognition([("a.png", None, b"alpha"), ("b.png", None, b"beta")])
+    gen = adapter.submit_recognition(
+        [("a.png", None, b"alpha"), ("b.png", None, b"beta")]
+    )
 
     _drive(
         qasync_loop,
@@ -265,7 +283,9 @@ def test_submit_recognition_emits_submitted_progress_result(adapter, qasync_loop
 
 def test_second_submit_discards_first_signals(adapter, qasync_loop) -> None:
     results: list[tuple[str, list]] = []
-    adapter.recognition_result.connect(lambda jid, payload: results.append((jid, payload)))
+    adapter.recognition_result.connect(
+        lambda jid, payload: results.append((jid, payload))
+    )
 
     adapter.submit_recognition([("first.png", None, b"1")])
     # Immediately submit a second before the first completes; the first's
@@ -314,17 +334,11 @@ def test_preload_emits_completed_status(adapter, qasync_loop) -> None:
 
 def test_preload_error_prefers_backend_reason(qasync_loop) -> None:
     class MissingDependencyClient(FakeSupervisorClient):
-        async def preload(
-            self, pipelines: tuple[str, ...]
-        ) -> ResidencyStatus:
+        async def preload(self, pipelines: tuple[str, ...]) -> ResidencyStatus:
             raise InferenceClientError(
                 ErrorCode.INTERNAL_ERROR,
                 "internal error",
-                detail={
-                    "reason": (
-                        "表格识别缺少 PaddleX[ocr] 依赖：beautifulsoup4"
-                    )
-                },
+                detail={"reason": ("表格识别缺少 PaddleX[ocr] 依赖：beautifulsoup4")},
             )
 
     runtime_adapter = SupervisorClientAdapter(
@@ -369,7 +383,9 @@ def test_refresh_residency_timeout_emits_error(qasync_loop, monkeypatch) -> None
 def test_update_settings_emits_snapshot(adapter, qasync_loop) -> None:
     updated: list[SettingsSnapshot] = []
     adapter.settings_updated.connect(lambda s: updated.append(s))
-    snap = SettingsSnapshot(default_ttl_seconds=600, pipelines=(PipelineSpec(name="OCR"),))
+    snap = SettingsSnapshot(
+        default_ttl_seconds=600, pipelines=(PipelineSpec(name="OCR"),)
+    )
     adapter.update_settings(snap)
     _drive(qasync_loop, lambda: len(updated) == 1)
     assert updated[0].default_ttl_seconds == 600
@@ -441,3 +457,17 @@ def test_get_supervisor_adapter_singleton_roundtrip(qasync_loop) -> None:
     default_adapter = get_supervisor_adapter()
     assert default_adapter is get_supervisor_adapter()
     set_supervisor_adapter(None)
+
+
+def test_runtime_status_http_client_is_built_lazily() -> None:
+    calls: list[str] = []
+    status_client = object()
+    adapter = SupervisorClientAdapter(
+        client_factory=FakeSupervisorClient,
+        runtime_status_client_factory=lambda: calls.append("created") or status_client,
+    )
+
+    assert calls == []
+    assert adapter.runtime_status_client is status_client
+    assert adapter.runtime_status_client is status_client
+    assert calls == ["created"]

@@ -11,6 +11,7 @@ import pytest
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerClient,
     RuntimeInstallerClientError,
+    RuntimeMaintenanceUpdate,
 )
 
 
@@ -252,3 +253,74 @@ print(json.dumps({
     value = client._invoke("ensure", timeout=3)
 
     assert value["state"]["accelerator"] == "cpu"
+
+
+def test_maintenance_capability_opts_into_ndjson(tmp_path: Path) -> None:
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps({"capabilities": ["runtime.maintenance.v1"]}),
+        encoding="utf-8",
+    )
+    client = RuntimeInstallerClient(
+        tmp_path,
+        runtime_manifest=manifest,
+        command=(sys.executable, "-c", "pass"),
+    )
+
+    arguments = client._arguments("ensure")
+    request = json.loads(arguments[arguments.index("--request-json") + 1])
+
+    assert request["accepted_event_streams"] == ["ndjson.v1"]
+
+
+def test_ndjson_maintenance_event_is_delivered_before_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps({"capabilities": ["runtime.maintenance.v1"]}),
+        encoding="utf-8",
+    )
+    script = r"""
+import json
+print(json.dumps({
+    "protocol_version": 2,
+    "event_version": 1,
+    "event_type": "progress",
+    "operation": "ensure",
+    "snapshot": {
+        "operation_id": "op-1",
+        "sequence": 3,
+        "operation": "ensure",
+        "operation_state": "running",
+        "phase": "install_profile",
+        "profile_id": "win-x64-cpu",
+        "component_id": "ocr_engine",
+        "updated_at": "2026-08-05T00:00:00Z",
+        "progress": {"unit": "steps", "current": 2, "total": 7},
+    },
+    "message_code": "runtime.installing",
+}), flush=True)
+print(json.dumps({
+    "protocol_version": 2,
+    "ok": True,
+    "operation": "ensure",
+    "state": {},
+    "launch": {},
+}), flush=True)
+"""
+    client = RuntimeInstallerClient(
+        tmp_path,
+        runtime_manifest=manifest,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+    updates: list[RuntimeMaintenanceUpdate] = []
+
+    client._invoke("ensure", progress=updates.append, timeout=3)
+
+    assert len(updates) == 1
+    assert updates[0].component_id == "ocr_engine"
+    assert updates[0].progress_current == 2
+    assert updates[0].progress_total == 7

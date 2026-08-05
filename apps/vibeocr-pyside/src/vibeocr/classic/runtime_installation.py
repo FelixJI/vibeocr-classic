@@ -10,17 +10,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    import threading
+from typing import Any, TextIO
 
 
 class RuntimeInstallerClientError(RuntimeError):
@@ -29,6 +28,37 @@ class RuntimeInstallerClientError(RuntimeError):
 
 class RuntimeInstallerCancelled(RuntimeInstallerClientError):
     """The caller cancelled an in-progress installer operation."""
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeComponentDescriptor:
+    component_id: str
+    display_name: str
+    version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProfileDescriptor:
+    profile_id: str
+    accelerator: str
+    components: tuple[RuntimeComponentDescriptor, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeMaintenanceUpdate:
+    event_type: str
+    operation_id: str
+    sequence: int
+    operation: str
+    operation_state: str
+    phase: str
+    profile_id: str
+    updated_at: str
+    component_id: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
+    progress_unit: str | None = None
+    message_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +72,7 @@ class RuntimeInspection:
     manifest_sha256: str
     backend_version: str
     integrity: str
+    components: tuple[RuntimeComponentDescriptor, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -57,7 +88,129 @@ class RuntimeLaunch:
     environment: dict[str, str]
 
 
-ProgressCallback = Callable[[str], None]
+ProgressCallback = Callable[[RuntimeMaintenanceUpdate], None]
+
+
+def _profile_descriptor(value: object) -> RuntimeProfileDescriptor:
+    if not isinstance(value, dict):
+        raise RuntimeInstallerClientError("Runtime profile 响应不完整")
+    wire = value
+    components_value = wire.get("components")
+    if not isinstance(components_value, list):
+        raise RuntimeInstallerClientError("Runtime profile 组件列表无效")
+    components: list[RuntimeComponentDescriptor] = []
+    for item in components_value:
+        if not isinstance(item, dict):
+            raise RuntimeInstallerClientError("Runtime profile 组件无效")
+        component_id = item.get("component_id")
+        display_name = item.get("display_name")
+        version = item.get("version")
+        if (
+            not isinstance(component_id, str)
+            or not component_id
+            or not isinstance(display_name, str)
+            or not display_name
+            or (version is not None and not isinstance(version, str))
+        ):
+            raise RuntimeInstallerClientError("Runtime profile 组件字段无效")
+        components.append(
+            RuntimeComponentDescriptor(component_id, display_name, version)
+        )
+    profile_id = wire.get("profile_id")
+    accelerator = wire.get("accelerator")
+    if not isinstance(profile_id, str) or not isinstance(accelerator, str):
+        raise RuntimeInstallerClientError("Runtime profile 响应不完整")
+    return RuntimeProfileDescriptor(profile_id, accelerator, tuple(components))
+
+
+def _maintenance_update(
+    value: object,
+    *,
+    expected_operation: str,
+) -> RuntimeMaintenanceUpdate:
+    if not isinstance(value, dict):
+        raise RuntimeInstallerClientError("Runtime maintenance 事件不是对象")
+    wire = value
+    if (
+        wire.get("protocol_version") != 2
+        or wire.get("event_version") != 1
+        or wire.get("operation") != expected_operation
+    ):
+        raise RuntimeInstallerClientError("Runtime maintenance 事件版本不兼容")
+    snapshot = wire.get("snapshot")
+    if not isinstance(snapshot, dict):
+        raise RuntimeInstallerClientError("Runtime maintenance 快照缺失")
+    required_strings = (
+        "operation_id",
+        "operation",
+        "operation_state",
+        "phase",
+        "profile_id",
+        "updated_at",
+    )
+    if any(not isinstance(snapshot.get(field), str) for field in required_strings):
+        raise RuntimeInstallerClientError("Runtime maintenance 快照字段无效")
+    sequence = snapshot.get("sequence")
+    if not isinstance(sequence, int) or sequence < 0:
+        raise RuntimeInstallerClientError("Runtime maintenance sequence 无效")
+    component_id = snapshot.get("component_id")
+    if component_id is not None and not isinstance(component_id, str):
+        raise RuntimeInstallerClientError("Runtime maintenance component_id 无效")
+    current = total = None
+    unit = None
+    progress = snapshot.get("progress")
+    if progress is not None:
+        if not isinstance(progress, dict):
+            raise RuntimeInstallerClientError("Runtime maintenance progress 无效")
+        current = progress.get("current")
+        total = progress.get("total")
+        unit = progress.get("unit")
+        if (
+            not isinstance(current, int)
+            or current < 0
+            or (total is not None and (not isinstance(total, int) or total < 0))
+            or not isinstance(unit, str)
+        ):
+            raise RuntimeInstallerClientError("Runtime maintenance progress 字段无效")
+    event_type = wire.get("event_type")
+    message_code = wire.get("message_code")
+    if not isinstance(event_type, str) or not isinstance(message_code, str):
+        raise RuntimeInstallerClientError("Runtime maintenance 事件字段无效")
+    return RuntimeMaintenanceUpdate(
+        event_type=event_type,
+        operation_id=str(snapshot["operation_id"]),
+        sequence=sequence,
+        operation=str(snapshot["operation"]),
+        operation_state=str(snapshot["operation_state"]),
+        phase=str(snapshot["phase"]),
+        profile_id=str(snapshot["profile_id"]),
+        updated_at=str(snapshot["updated_at"]),
+        component_id=component_id,
+        progress_current=current,
+        progress_total=total,
+        progress_unit=unit,
+        message_code=message_code,
+    )
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
 class RuntimeInstallerClient:
@@ -135,10 +288,62 @@ class RuntimeInstallerClient:
             "runtime_manifest": str(self.runtime_manifest),
             "accelerator": self.accelerator,
         }
+        if self._supports_maintenance_events():
+            request["accepted_event_streams"] = ["ndjson.v1"]
         if self.layout_manifest is not None:
             request["layout_manifest"] = str(self.layout_manifest)
             request["product_id"] = self.product_id
         return [*self.command, "--request-json", json.dumps(request)]
+
+    def _manifest(self) -> dict[str, Any]:
+        try:
+            value: Any = json.loads(self.runtime_manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise RuntimeInstallerClientError("Runtime manifest 无法读取") from exc
+        if not isinstance(value, dict):
+            raise RuntimeInstallerClientError("Runtime manifest 无效")
+        return value
+
+    def _supports_maintenance_events(self) -> bool:
+        try:
+            capabilities = self._manifest().get("capabilities", [])
+        except RuntimeInstallerClientError:
+            return False
+        return (
+            isinstance(capabilities, list) and "runtime.maintenance.v1" in capabilities
+        )
+
+    def profile_descriptor(self) -> RuntimeProfileDescriptor:
+        manifest = self._manifest()
+        accelerator = self.accelerator
+        if accelerator is None:
+            try:
+                lock = json.loads(self.component_lock.read_text(encoding="utf-8"))
+                accelerator = str(lock["backend"]["accelerator"])
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                raise RuntimeInstallerClientError("组件锁缺少加速方案") from exc
+        profile_id = {
+            "cpu": "win-x64-cpu",
+            "nvidia_cuda": "win-x64-cu126",
+        }.get(accelerator)
+        if profile_id is None:
+            raise RuntimeInstallerClientError("Runtime 加速方案不受支持")
+        profiles = manifest.get("profiles")
+        if not isinstance(profiles, dict):
+            raise RuntimeInstallerClientError("Runtime manifest 缺少 profiles")
+        record = profiles.get(profile_id)
+        if not isinstance(record, dict):
+            raise RuntimeInstallerClientError("Runtime profile 未绑定")
+        components = record.get("components")
+        if components is None:
+            components = []
+        return _profile_descriptor(
+            {
+                "profile_id": profile_id,
+                "accelerator": accelerator,
+                "components": components,
+            }
+        )
 
     def _invoke(
         self,
@@ -148,8 +353,6 @@ class RuntimeInstallerClient:
         cancel_event: threading.Event | None = None,
         timeout: float = 3600,
     ) -> dict[str, Any]:
-        if progress is not None:
-            progress(f"Runtime Installer: {operation}")
         self._verify_installer_executable()
         smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
         if (
@@ -195,32 +398,80 @@ class RuntimeInstallerClient:
                 f"无法启动 Runtime Installer: {exc}"
             ) from exc
 
+        output_queue: queue.Queue[tuple[str, str | None]] = queue.Queue()
+
+        def drain(channel: str, stream: TextIO) -> None:
+            try:
+                for line in stream:
+                    output_queue.put((channel, line.rstrip("\r\n")))
+            finally:
+                output_queue.put((channel, None))
+
+        assert process.stdout is not None
+        assert process.stderr is not None
+        readers = [
+            threading.Thread(
+                target=drain,
+                args=("stdout", process.stdout),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=drain,
+                args=("stderr", process.stderr),
+                daemon=True,
+            ),
+        ]
+        for reader in readers:
+            reader.start()
         deadline = time.monotonic() + timeout
-        while True:
+        completed_channels: set[str] = set()
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        envelopes: list[dict[str, Any]] = []
+        while len(completed_channels) < 2:
             if cancel_event is not None and cancel_event.is_set():
-                process.kill()
-                process.communicate()
+                _terminate_process_tree(process)
                 raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                process.kill()
-                process.communicate()
+                _terminate_process_tree(process)
                 raise RuntimeInstallerClientError(f"Runtime Installer {operation} 超时")
             try:
-                stdout, stderr = process.communicate(timeout=min(0.05, remaining))
-                break
-            except subprocess.TimeoutExpired:
+                channel, line = output_queue.get(timeout=min(0.05, remaining))
+            except queue.Empty:
                 continue
-        envelopes: list[dict[str, Any]] = []
-        for line in stdout.splitlines():
+            if line is None:
+                completed_channels.add(channel)
+                continue
+            if channel == "stderr":
+                stderr_lines.append(line)
+                continue
+            stdout_lines.append(line)
             try:
                 value: Any = json.loads(line)
             except ValueError:
-                if progress is not None and line.strip():
-                    progress(line.strip())
                 continue
-            if isinstance(value, dict):
-                envelopes.append(value)
+            if not isinstance(value, dict):
+                continue
+            try:
+                if value.get("event_version") == 1:
+                    update = _maintenance_update(value, expected_operation=operation)
+                    if progress is not None:
+                        progress(update)
+                else:
+                    envelopes.append(value)
+            except Exception:
+                _terminate_process_tree(process)
+                raise
+        try:
+            process.wait(timeout=max(0.001, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired as exc:
+            _terminate_process_tree(process)
+            raise RuntimeInstallerClientError(
+                f"Runtime Installer {operation} 超时"
+            ) from exc
+        stdout = "\n".join(stdout_lines)
+        stderr = "\n".join(stderr_lines)
         envelope = envelopes[-1] if envelopes else None
         if (
             process.returncode != 0
@@ -255,7 +506,7 @@ class RuntimeInstallerClient:
                 or actual_manifest != expected_manifest
             ):
                 raise ValueError("runtime manifest hash mismatch")
-            manifest = json.loads(self.runtime_manifest.read_text(encoding="utf-8"))
+            manifest = self._manifest()
             installer = manifest["installer"]
             expected = installer["executable_sha256"]
             cached_hash = (
@@ -300,6 +551,12 @@ class RuntimeInstallerClient:
             profiles = manifest["profiles"]
             if not isinstance(profiles[profile], dict):
                 raise TypeError("invalid runtime profile")
+            descriptor_value = envelope.get("profile")
+            descriptor = (
+                _profile_descriptor(descriptor_value)
+                if descriptor_value is not None
+                else self.profile_descriptor()
+            )
             return RuntimeInspection(
                 status=str(value["status"]),
                 runtime_root=str(value["runtime_root"]),
@@ -310,6 +567,7 @@ class RuntimeInstallerClient:
                 manifest_sha256=str(value["manifest_sha256"]),
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
+                components=descriptor.components,
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise RuntimeInstallerClientError(
@@ -370,9 +628,12 @@ class RuntimeInstallerClient:
 
 
 __all__ = [
+    "RuntimeComponentDescriptor",
     "RuntimeInspection",
     "RuntimeInstallerCancelled",
     "RuntimeInstallerClient",
     "RuntimeInstallerClientError",
     "RuntimeLaunch",
+    "RuntimeMaintenanceUpdate",
+    "RuntimeProfileDescriptor",
 ]

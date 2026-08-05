@@ -205,6 +205,7 @@ class SubprocessManager(QObject):
             set_supervisor_adapter,
         )
         from vibeocr.runtime_client.client import SupervisorClient
+        from vibeocr.runtime_client.client import RuntimeHttpClient
         from vibeocr.runtime_client.sync_client import SyncSupervisorClient
 
         def pdf_factory() -> SyncPdfSupervisorClient:
@@ -221,6 +222,13 @@ class SubprocessManager(QObject):
                 instance_id=proc.ready.instance_id,
             )
 
+        def runtime_status_factory() -> RuntimeHttpClient:
+            return RuntimeHttpClient(
+                base_url=proc.base_url,
+                session_token=proc.session_token,
+                timeout=10.0,
+            )
+
         client = SupervisorClient(
             base_url=proc.base_url,
             session_token=proc.session_token,
@@ -230,6 +238,7 @@ class SubprocessManager(QObject):
             client_factory=lambda: client,
             pdf_sync_client_factory=pdf_factory,
             inference_sync_client_factory=inference_factory,
+            runtime_status_client_factory=runtime_status_factory,
         )
         set_supervisor_adapter(adapter)
         adapter.start()

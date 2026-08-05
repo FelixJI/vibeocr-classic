@@ -876,7 +876,11 @@ class MainWindow(QMainWindow):
 
         from vibeocr.classic.widgets.install_dialog import InstallDialog
 
-        dialog = InstallDialog(self._project_root, self)
+        dialog = InstallDialog(
+            self._project_root,
+            self,
+            maintenance_callback=self._statusbar.showMessage,
+        )
         dialog.setWindowTitle("同步 OCR 依赖更新")
 
         title_lines = [f"检测到新版本依赖（{version}），正在同步更新："]
@@ -1081,6 +1085,7 @@ class MainWindow(QMainWindow):
             self._project_root,
             parent=self,
             force_backend=current_backend,
+            maintenance_callback=self._statusbar.showMessage,
         )
         dialog.setWindowTitle("更新 OCR 依赖")
         dialog._title_label.setText("正在更新 OCR 依赖...")

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
 from vibeocr.classic.pyside.batch_budget import (
     BatchBudget,
     BatchEntry,
@@ -698,20 +698,9 @@ class BatchRecognitionTab(BaseOcrTab):
             self._finish_supervisor_batch()
             return
 
-        from vibeocr.runtime_contracts import JobPriority, PipelineSelection
-        from vibeocr.runtime_contracts.contracts.pipelines import (
-            get_pipeline_supported_options,
-        )
+        from vibeocr.runtime_contracts import JobPriority
 
-        option_payload = options.to_dict()
-        pipeline = options.pipeline
-        pipeline_id = pipeline.value if hasattr(pipeline, "value") else str(pipeline)
-        allowed = set(get_pipeline_supported_options(pipeline))
-        semantic_options = {
-            name: value
-            for name, value in option_payload.items()
-            if name in allowed and value is not None
-        }
+        pipeline_selection = options.to_pipeline_selection()
         self._supervisor_files = [file_info for file_info, _data in loaded]
         uploads = [
             (Path(file_info["path"]).name, None, data) for file_info, data in loaded
@@ -722,10 +711,7 @@ class BatchRecognitionTab(BaseOcrTab):
             adapter.submit_recognition(
                 uploads,
                 priority=JobPriority.BACKGROUND,
-                pipeline=PipelineSelection(
-                    pipeline_id=pipeline_id,
-                    options=semantic_options,
-                ),
+                pipeline=pipeline_selection,
             )
         except Exception as exc:
             self._fail_supervisor_submission(generation, str(exc))

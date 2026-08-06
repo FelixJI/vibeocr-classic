@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.export_settings import ExportSettings
+from vibeocr.classic.recognition_settings import ExportSettings
 
 logger = logging.getLogger(__name__)
 

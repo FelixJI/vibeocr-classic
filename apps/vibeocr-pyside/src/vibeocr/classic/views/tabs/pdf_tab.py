@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.classic.pyside.pdf_session_manager import PdfSessionManager
+from vibeocr.classic.recognition_settings import OCROptions, PdfGlobalSettings
 from vibeocr.classic.ui.theme import Colors
 from vibeocr.classic.utils.thumbnail_lru_cache import ThumbnailLruCache
 from vibeocr.classic.views.pdf_preview_window import PdfPreviewWindow
@@ -51,8 +52,6 @@ from vibeocr.runtime_contracts.contracts.frontend import (
 )
 
 if TYPE_CHECKING:
-    from vibeocr.backend.models.ocr_options import OCROptions
-    from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
     from vibeocr.classic.pdf_workspace import PdfSession
     from vibeocr.classic.pyside.pdf_render_thumb_worker import ThumbnailIpcWorker
 
@@ -2402,8 +2401,6 @@ class PdfTab(QWidget):
             prefs = OCRPreferences.instance()
             return prefs.get_pdf_settings(), prefs.get_pdf_pipeline_options()
         except RuntimeError:
-            from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-
             return PdfGlobalSettings(), None
 
     def _begin_ocr_ui(self, indices: list[int]) -> None:

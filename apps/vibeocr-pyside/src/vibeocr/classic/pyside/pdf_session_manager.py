@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -43,6 +43,7 @@ from vibeocr.classic.pdf_workspace import (
     page_from_mirror,
     text_layer_from_mirror,
 )
+from vibeocr.classic.recognition_settings import OCROptions, PdfGlobalSettings
 from vibeocr.classic.pyside.pdf_ipc_worker import (
     MinerUPreflightWorker,
     PdfIpcCancelWorker,
@@ -56,10 +57,6 @@ from vibeocr.runtime_contracts.pdf import (
     PdfModelDiff,
     PdfPageInfoMirror,
 )
-
-if TYPE_CHECKING:
-    from vibeocr.backend.models.ocr_options import OCROptions
-    from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
 
 logger = logging.getLogger(__name__)
 
@@ -259,7 +256,7 @@ class PdfSessionManager(QObject):
     def _recognize_images_via_job(
         self,
         images: list[bytes],
-        ocr_options: Any,
+        ocr_options: OCROptions,
         *,
         cancel_requested,
     ) -> list[Any | None]:
@@ -275,31 +272,11 @@ class PdfSessionManager(QObject):
             JobCommandKind,
             JobKind,
             JobPriority,
-            PipelineSelection,
             SubmitItem,
             SubmitRequest,
         )
-        from vibeocr.runtime_contracts.contracts.pipelines import (
-            OCRPipeline,
-            get_pipeline_supported_options,
-        )
 
-        pipeline_value = getattr(
-            getattr(ocr_options, "pipeline", OCRPipeline.OCR),
-            "value",
-            getattr(ocr_options, "pipeline", OCRPipeline.OCR),
-        )
-        pipeline_id = str(pipeline_value)
-        try:
-            allowed = set(get_pipeline_supported_options(OCRPipeline(pipeline_id)))
-        except ValueError:
-            allowed = set()
-        raw_options = ocr_options.to_dict() if hasattr(ocr_options, "to_dict") else {}
-        options = {
-            key: value
-            for key, value in raw_options.items()
-            if key in allowed and value is not None
-        }
+        pipeline_selection = ocr_options.to_pipeline_selection()
         request_id = str(uuid4())
         submit_items = tuple(
             SubmitItem(
@@ -317,7 +294,7 @@ class PdfSessionManager(QObject):
             request_id=request_id,
             kind=JobKind.RECOGNITION,
             priority=JobPriority.BACKGROUND,
-            pipeline=PipelineSelection(pipeline_id, options=options),
+            pipeline=pipeline_selection,
             items=submit_items,
         )
         attachments = {
@@ -1035,8 +1012,6 @@ class PdfSessionManager(QObject):
         旧实现逐页串行：渲染 → 主进程 PIL+numpy 解码 → 单页 recognize（N 次 IPC
         往返）→ rotate。重构后复用 OCR 的批量化路径，省去主进程解码与逐页 IPC。
         """
-        from vibeocr.backend.models.ocr_options import OCROptions
-
         session = self._sessions.get(self._active_path or "")
         if session is None or session.session_id != session_id:
             return
@@ -1395,8 +1370,6 @@ class PdfSessionManager(QObject):
         *,
         _preflight_complete: bool = False,
     ) -> bool:
-        from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-
         if pdf_settings is None:
             pdf_settings = PdfGlobalSettings()
         session = self.active_session
@@ -1602,7 +1575,7 @@ class PdfSessionManager(QObject):
         runner,
         session_id: str,
         pages: list[int],
-        ocr_options,
+        ocr_options: OCROptions | None,
         settings_dict: dict,
         overwrite: bool,
     ) -> None:
@@ -1615,9 +1588,6 @@ class PdfSessionManager(QObject):
         - 流水:当前批 OCR 时预取下一批渲染，重叠 PDF 栅格/PNG 与 GPU 计算。
         - 写层:整批 add_text_layer_batch，共享字体并一次增量落盘。
         """
-        from vibeocr.backend.models.ocr_options import OCROptions
-        from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-
         session = self._sessions.get(self._active_path or "")
         if session is None or session.session_id != session_id:
             return
@@ -2244,7 +2214,7 @@ class PdfSessionManager(QObject):
         if ocr_options is None:
             return False
         try:
-            from vibeocr.backend.core.pipelines import OCRPipeline
+            from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
             if ocr_options.pipeline != OCRPipeline.DOCUMENT_PARSING:
                 return False

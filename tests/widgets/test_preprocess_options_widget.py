@@ -4,8 +4,8 @@
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from vibeocr.backend.core.pipelines import OCRPipeline
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.widgets.preprocess_options_widget import PreprocessOptionsWidget
 
 

@@ -12,7 +12,7 @@ content_list 逐块渲染成独立 <div class="ocr-block">，永远不走 raw_te
 """
 
 from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
-from vibeocr.backend.models.text_block_options import (
+from vibeocr.classic.recognition_settings import (
     LINE_MODE_KEEP,
     LINE_MODE_MERGE,
     LINE_MODE_SMART,

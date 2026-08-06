@@ -23,7 +23,7 @@ from vibeocr.classic.views.batch_recognition_tab import BatchRecognitionWorker
 def _make_worker(service, files, options=None, *, batch_budget=None) -> Any:
     """构造 worker（正常 __init__ 以激活 Qt 信号，但不 start 线程）。"""
     if options is None:
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         options = OCROptions()
     # 传 mock service；files 用真实 file_info；parent=None 避免线程归属问题。

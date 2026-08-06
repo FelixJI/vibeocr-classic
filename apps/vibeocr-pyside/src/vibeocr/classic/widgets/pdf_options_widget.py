@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
+from vibeocr.classic.recognition_settings import PdfGlobalSettings
 from vibeocr.classic.widgets.preprocess_options_widget import PreprocessOptionsWidget
 
 

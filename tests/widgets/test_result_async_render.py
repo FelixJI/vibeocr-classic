@@ -373,7 +373,7 @@ def test_50k_result_submissions_stay_under_combined_gui_budget(
 ):
     module = import_module("vibeocr.classic.widgets.result_view_widget")
     from vibeocr.backend.models.ocr_result import TextBlock
-    from vibeocr.backend.models.text_block_options import TextBlockOptions
+    from vibeocr.classic.recognition_settings import TextBlockOptions
 
     widget = module.ResultViewWidget()
     qtbot.addWidget(widget)
@@ -516,7 +516,7 @@ def _layout_result(marker: str, count: int = 1):
 
 def test_large_text_layout_build_keeps_qt_responsive(qapp, qtbot, monkeypatch):
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.text_block_options import TextBlockOptions
+    from vibeocr.classic.recognition_settings import TextBlockOptions
 
     widget = module.ResultViewWidget()
     qtbot.addWidget(widget)
@@ -542,7 +542,7 @@ def test_large_text_layout_build_keeps_qt_responsive(qapp, qtbot, monkeypatch):
 
 def test_text_layout_uses_snapshot_and_latest_generation(qapp, qtbot, monkeypatch):
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.text_block_options import TextBlockOptions
+    from vibeocr.classic.recognition_settings import TextBlockOptions
 
     widget = module.ResultViewWidget()
     qtbot.addWidget(widget)
@@ -578,7 +578,7 @@ def test_text_layout_uses_snapshot_and_latest_generation(qapp, qtbot, monkeypatc
 
 def test_close_drops_late_text_layout(qapp, qtbot, monkeypatch):
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.text_block_options import TextBlockOptions
+    from vibeocr.classic.recognition_settings import TextBlockOptions
 
     widget = module.ResultViewWidget()
     qtbot.addWidget(widget)

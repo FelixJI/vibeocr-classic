@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
 from vibeocr.classic.ui import theme
 from vibeocr.runtime_contracts.contracts.pipelines import (
     OCRPipeline,

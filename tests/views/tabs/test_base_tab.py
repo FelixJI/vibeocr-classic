@@ -128,8 +128,8 @@ class TestBaseOcrTabServiceRouting:
     """管道路由测试"""
 
     def test_get_service_for_pipeline_parsing(self, qapp):
-        from vibeocr.backend.core.pipelines import OCRPipeline
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
         tab = ConcreteTab()
         mineru_mock = Mock()
@@ -140,8 +140,8 @@ class TestBaseOcrTabServiceRouting:
         assert tab._get_service_for_pipeline(options) is mineru_mock
 
     def test_get_service_for_pipeline_ocr(self, qapp):
-        from vibeocr.backend.core.pipelines import OCRPipeline
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
         tab = ConcreteTab()
         mineru_mock = Mock()

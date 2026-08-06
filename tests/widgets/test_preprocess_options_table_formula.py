@@ -5,8 +5,8 @@ import sys
 
 import pytest
 
-from vibeocr.backend.core.pipelines import OCRPipeline
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
 # PySide6 可能在 CI 中不可用，需要跳过
 pyside6 = pytest.importorskip("PySide6")
@@ -109,7 +109,6 @@ class TestGetOptions:
         _select_pipeline(widget, OCRPipeline.TABLE_RECOGNITION)
         opts = widget.get_options()
         assert opts.pipeline == OCRPipeline.TABLE_RECOGNITION
-        assert opts.use_wireless_table is True
         assert opts.use_table_orientation_classify is True
         assert opts.use_ocr_results_with_table_cells is True
         assert opts.use_doc_orientation_classify is True
@@ -257,13 +256,11 @@ class TestOCROptionsSerialization:
         """表格识别选项序列化为字典"""
         opts = OCROptions(
             pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_wireless_table=False,
             use_table_orientation_classify=False,
             use_ocr_results_with_table_cells=False,
         )
         d = opts.to_dict()
         assert d["pipeline"] == "TABLE_RECOGNITION"
-        assert d["use_wireless_table"] is False
         assert d["use_table_orientation_classify"] is False
         assert d["use_ocr_results_with_table_cells"] is False
 
@@ -281,13 +278,11 @@ class TestOCROptionsSerialization:
         """从字典反序列化表格识别选项"""
         d = {
             "pipeline": "TABLE_RECOGNITION",
-            "use_wireless_table": False,
             "use_table_orientation_classify": False,
             "use_ocr_results_with_table_cells": False,
         }
         opts = OCROptions.from_dict(d)
         assert opts.pipeline == OCRPipeline.TABLE_RECOGNITION
-        assert opts.use_wireless_table is False
         assert opts.use_table_orientation_classify is False
         assert opts.use_ocr_results_with_table_cells is False
 
@@ -305,13 +300,11 @@ class TestOCROptionsSerialization:
         """表格识别选项 to_dict -> from_dict 往返"""
         original = OCROptions(
             pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_wireless_table=False,
             use_table_orientation_classify=False,
             use_ocr_results_with_table_cells=False,
         )
         restored = OCROptions.from_dict(original.to_dict())
         assert restored.pipeline == original.pipeline
-        assert restored.use_wireless_table == original.use_wireless_table
         assert (
             restored.use_table_orientation_classify
             == original.use_table_orientation_classify

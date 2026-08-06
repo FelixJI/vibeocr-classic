@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.backend.utils.text_layout import TextBlockProcessor
+from vibeocr.classic.recognition_settings import OCROptions
 from vibeocr.classic.ui import theme
 from vibeocr.classic.utils.image_jobs import (
     GenerationImageJobs,
@@ -75,7 +76,7 @@ class SingleRecognitionTab(BaseOcrTab):
         # 没有识别在进行。忙时状态同时由基类 _is_processing 反映（驱动按钮禁用）。
         self._recognize_task: asyncio.Task | None = None
         self._recognition_started_at: float | None = None
-        self._active_ocr_options: Any = None
+        self._active_ocr_options: OCROptions | None = None
         self._native_call_events: set[threading.Event] = set()
         self._native_call_events_lock = threading.Lock()
         self._image_load_jobs = GenerationImageJobs(self)
@@ -655,31 +656,14 @@ class SingleRecognitionTab(BaseOcrTab):
 
         from vibeocr.backend.models import ocr_result_from_payload
         from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
-        from vibeocr.runtime_contracts import PipelineSelection
-        from vibeocr.runtime_contracts.contracts.pipelines import (
-            OCRPipeline,
-            get_pipeline_supported_options,
-        )
-
-        pipeline_id = "MinerU" if pipeline_val == "DOCUMENT_PARSING" else pipeline_val
-        try:
-            pipeline = OCRPipeline(pipeline_id)
-            allowed = set(get_pipeline_supported_options(pipeline))
-        except ValueError:
-            allowed = set()
-        raw_options = (
-            self._active_ocr_options.to_dict()
+        recognition_options = (
+            self._active_ocr_options.copy(pipeline=pipeline_val)
             if self._active_ocr_options is not None
-            else {}
+            else OCROptions.from_dict({"pipeline": pipeline_val})
         )
-        options = {
-            key: value
-            for key, value in raw_options.items()
-            if key in allowed and value is not None
-        }
         entries = await get_supervisor_adapter().recognize(
             [("input", None, payload)],
-            pipeline=PipelineSelection(pipeline_id, options=options),
+            pipeline=recognition_options.to_pipeline_selection(),
         )
         if not entries or entries[0].error_code:
             raise RuntimeError(entries[0].error_code if entries else "识别结果缺失")

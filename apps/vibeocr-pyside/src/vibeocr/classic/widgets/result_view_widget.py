@@ -319,7 +319,7 @@ def _build_text_layout_html(
     块间加空格 → 段内块之间插入一个空格文本节点；中文缩进 → 每段首块前置
     两个全角空格。keep 模式每块独立成行（block 级）。
     """
-    from vibeocr.backend.models.text_block_options import (
+    from vibeocr.classic.recognition_settings import (
         LINE_MODE_KEEP,
         LINE_MODE_MERGE,
         LINE_MODE_SMART,
@@ -1825,7 +1825,7 @@ class ResultViewWidget(QWidget):
         """
         if self._closing:
             return
-        from vibeocr.backend.models.text_block_options import TextBlockOptions
+        from vibeocr.classic.recognition_settings import TextBlockOptions
 
         self._cancel_copy()
         self._invalidate_render_jobs()

@@ -521,7 +521,7 @@ class TestOcrFinishedEmitsBringToFront:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         observed: list[bool] = []
@@ -565,7 +565,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         finished_calls: list = []
@@ -610,7 +610,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -654,7 +654,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -693,7 +693,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         error_calls: list[str] = []
@@ -728,7 +728,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -792,7 +792,7 @@ class TestRecognitionPreparationAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         gui_thread = threading.get_ident()

@@ -8,7 +8,7 @@ PaddleOCR-VL 两个重管道；门控与上下文锁定正交、不被 unlock_pi
 import pytest
 from PySide6.QtWidgets import QApplication
 
-from vibeocr.backend.core.pipelines import OCRPipeline
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.widgets.preprocess_options_widget import PreprocessOptionsWidget
 
 

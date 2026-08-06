@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
-from vibeocr.backend.core.pipelines import OCRPipeline
-from vibeocr.backend.models.ocr_options import OCROptions
-from vibeocr.backend.models.text_block_options import TextBlockOptions
+from vibeocr.classic.recognition_settings import (
+    OCROptions,
+    PdfGlobalSettings,
+    TextBlockOptions,
+)
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
 if TYPE_CHECKING:
-    from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
     from vibeocr.classic.managers.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -258,8 +260,6 @@ class OCRPreferences(QObject):
 
     def get_pdf_settings(self) -> PdfGlobalSettings:
         """获取 PDF 全局设置。"""
-        from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-
         return PdfGlobalSettings.from_dict(self._pdf_settings)
 
     def set_pdf_settings(self, settings: PdfGlobalSettings) -> None:

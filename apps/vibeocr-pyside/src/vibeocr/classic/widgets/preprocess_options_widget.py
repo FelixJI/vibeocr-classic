@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
 from vibeocr.classic.ui import theme
 from vibeocr.classic.widgets.collapsible_group_box import CollapsibleGroupBox
 from vibeocr.runtime_contracts.contracts.mineru import (

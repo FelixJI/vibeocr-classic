@@ -989,7 +989,7 @@ class TestResultViewExportButtons:
         回调带旧 token A 触发 toast。
         """
         from vibeocr.backend.models.ocr_result import TextBlock
-        from vibeocr.backend.models.text_block_options import TextBlockOptions
+        from vibeocr.classic.recognition_settings import TextBlockOptions
 
         class FakePage:
             def __init__(self, widget_ref):

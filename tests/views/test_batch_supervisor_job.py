@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
 from vibeocr.classic.views.batch_recognition_tab import BatchRecognitionTab
 
 

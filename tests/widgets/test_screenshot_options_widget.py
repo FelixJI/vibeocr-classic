@@ -12,7 +12,7 @@
 import pytest
 from PySide6.QtWidgets import QComboBox
 
-from vibeocr.backend.core.pipelines import OCRPipeline
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.utils.ocr_preferences import OCRPreferences
 from vibeocr.classic.widgets.screenshot_options_widget import ScreenshotOptionsWidget
 
@@ -116,7 +116,7 @@ class TestPersistence:
     def test_load_populates_from_persisted(self, tmp_path, monkeypatch):
         """构造后各块回填 screenshot 源已存的参数"""
         import vibeocr.backend.env_manager as em
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         monkeypatch.setattr(em, "_runtime_gpu_capability_cache", None)
         OCRPreferences.reset_instance()

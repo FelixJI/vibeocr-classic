@@ -10,6 +10,7 @@ from typing import Any
 from PySide6.QtCore import QTimer, Slot
 from PySide6.QtWidgets import QWidget
 
+from vibeocr.classic.recognition_result import normalize_bbox
 from vibeocr.classic.utils.image_jobs import GenerationImageJobs
 
 logger = logging.getLogger(__name__)
@@ -109,8 +110,6 @@ class BaseOcrTab(QWidget):
 
     def _build_content_list(self, result, cancel_event=None) -> list[dict]:
         """从 OCRResult 构建 content_list（含归一化 bbox）"""
-        from vibeocr.backend.models.ocr_result import normalize_bbox
-
         # Never normalize the live dictionaries from a worker.  A detached list
         # is assigned to the model later on the GUI thread.
         content_list = [dict(item) for item in getattr(result, "content_list", [])]
@@ -452,13 +451,17 @@ class BaseOcrTab(QWidget):
 
     @staticmethod
     def _requires_async_result_rebuild(result) -> bool:
-        return max(
-            len(getattr(result, "text_blocks", ()) or ()),
-            len(getattr(result, "content_list", ()) or ()),
-        ) > _ASYNC_CONTENT_THRESHOLD
+        return (
+            max(
+                len(getattr(result, "text_blocks", ()) or ()),
+                len(getattr(result, "content_list", ()) or ()),
+            )
+            > _ASYNC_CONTENT_THRESHOLD
+        )
 
     def _schedule_table_result_rebuild(self, result) -> None:
         """Rebuild large table Markdown/HTML aggregates in a worker."""
+
         def rebuild(cancel_event):
             from vibeocr.backend.tables.reducer import build_result_projections
 
@@ -620,9 +623,7 @@ class BaseOcrTab(QWidget):
 
         old_table = table_model_from_block(
             cl_block,
-            fallback_table_id=str(
-                cl_block.get("block_id") or f"table-{content_index}"
-            ),
+            fallback_table_id=str(cl_block.get("block_id") or f"table-{content_index}"),
             strict_canonical=False,
         )
         edited_table = table_model_from_html(new_html, table_id=old_table.table_id)
@@ -664,9 +665,8 @@ class BaseOcrTab(QWidget):
         if matched_block is not None:
             matched_block.text = plain_text
             matched_block.is_manually_edited = True
-            if (
-                matched_text_index is not None
-                and matched_text_index < len(result.text_with_scores)
+            if matched_text_index is not None and matched_text_index < len(
+                result.text_with_scores
             ):
                 score = result.text_with_scores[matched_text_index][1]
                 result.text_with_scores[matched_text_index] = (plain_text, score)
@@ -692,9 +692,7 @@ class BaseOcrTab(QWidget):
             self._result_widget.display_result(result)
 
     @Slot(str, str, str)
-    def _on_table_cell_edited(
-        self, table_id: str, cell_id: str, new_text: str
-    ) -> None:
+    def _on_table_cell_edited(self, table_id: str, cell_id: str, new_text: str) -> None:
         """Apply one canonical table edit by stable IDs and refresh projections."""
 
         if not self._current_ocr_result:

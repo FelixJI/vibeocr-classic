@@ -654,8 +654,9 @@ class SingleRecognitionTab(BaseOcrTab):
                 self._call_backend_recognize, payload, pipeline_val
             )
 
-        from vibeocr.backend.models import ocr_result_from_payload
         from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
+        from vibeocr.classic.recognition_result import ocr_result_from_payload
+
         recognition_options = (
             self._active_ocr_options.copy(pipeline=pipeline_val)
             if self._active_ocr_options is not None
@@ -667,7 +668,7 @@ class SingleRecognitionTab(BaseOcrTab):
         )
         if not entries or entries[0].error_code:
             raise RuntimeError(entries[0].error_code if entries else "识别结果缺失")
-        return ocr_result_from_payload(entries[0].payload)
+        return ocr_result_from_payload(entries[0].payload_type, entries[0].payload)
 
     async def _run_tracked_native_async(self, operation, *args):
         """追踪无法随 asyncio Task 取消的 ``to_thread`` 原生调用。"""

@@ -90,7 +90,7 @@ def test_update_table_cell_rejects_wrong_table_or_cell_id():
 
 
 def test_result_reducer_finds_reordered_table_by_ids_and_rebuilds_projections():
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
     from vibeocr.backend.tables.reducer import update_result_table_cell
 
     table = TableModelV1(
@@ -160,7 +160,7 @@ def test_result_reducer_finds_reordered_table_by_ids_and_rebuilds_projections():
 
 
 def test_result_reducer_preserves_structured_non_table_projections():
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
     from vibeocr.backend.tables.reducer import update_result_table_cell
 
     table = TableModelV1(
@@ -223,7 +223,7 @@ def test_result_reducer_preserves_structured_non_table_projections():
 
 
 def test_result_reducer_keeps_table_raw_projection_without_a_text_block():
-    from vibeocr.backend.models.ocr_result import OCRResult
+    from vibeocr.classic.recognition_result import OCRResult
     from vibeocr.backend.tables.reducer import update_result_table_cell
 
     table = TableModelV1(
@@ -278,7 +278,9 @@ class TestReducerErrorPathsAndCancellation:
         from vibeocr.backend.tables.reducer import update_result_table_cell
 
         result = SimpleNamespace(
-            content_list=[{"type": "table", "table_body": "<table><tr><td>A</td></tr></table>"}],
+            content_list=[
+                {"type": "table", "table_body": "<table><tr><td>A</td></tr></table>"}
+            ],
             text_blocks=[],
         )
         with pytest.raises(KeyError, match="unknown table_id"):
@@ -297,7 +299,9 @@ class TestReducerErrorPathsAndCancellation:
                 self.text = text
                 self.label = label
 
-        result = SimpleNamespace(content_list=None, text_blocks=[_Block("hello"), _Block("world")])
+        result = SimpleNamespace(
+            content_list=None, text_blocks=[_Block("hello"), _Block("world")]
+        )
         projections = build_result_projections(result)
         assert projections is not None
         assert "hello" in projections[0]

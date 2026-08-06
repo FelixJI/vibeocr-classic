@@ -2433,7 +2433,7 @@ def test_run_ocr_happy_path_writes_layer_and_emits(manager, monkeypatch):
 
     覆盖主循环、写层成功、sidecar mark_pages_saved/mark_completed、终态 all_done。
     """
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     session = manager.active_session
     runner = MagicMock()
@@ -2494,7 +2494,7 @@ def test_run_ocr_empty_result_page_counted_as_fail(manager, monkeypatch):
 
     注：空结果页只更新 ocr_stats(skipped)，不计入 all_done 的 success/fail 计数。
     """
-    from vibeocr.backend.models.ocr_result import OCRResult
+    from vibeocr.classic.recognition_result import OCRResult
 
     session = manager.active_session
     runner = MagicMock()
@@ -2551,7 +2551,7 @@ def test_run_ocr_render_failure_marks_page_failed(manager, monkeypatch):
 
 def test_run_ocr_write_layer_failure_triggers_final_save(manager, monkeypatch):
     """写层失败(saved=False) + 有 success → 末尾全量 save。"""
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     session = manager.active_session
     runner = MagicMock()

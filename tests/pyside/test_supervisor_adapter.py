@@ -278,6 +278,7 @@ def test_submit_recognition_emits_submitted_progress_result(
     assert job_id == "job-1"
     # Two result entries, in input order.
     assert [p["display_name"] for p in payload] == ["a.png", "b.png"]
+    assert [p["payload_type"] for p in payload] == ["ocr.v1", "ocr.v1"]
     assert gen == 1
 
 

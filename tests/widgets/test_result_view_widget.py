@@ -712,10 +712,12 @@ class TestResultViewExportButtons:
         self, widget, qtbot, monkeypatch
     ):
         """A pending aggregate rebuild must not expose the pre-edit copy payload."""
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
         from vibeocr.classic.utils.export_jobs import snapshot_ocr_result
 
-        result = self._make_result(markdown_text="old aggregate", raw_text="old aggregate")
+        result = self._make_result(
+            markdown_text="old aggregate", raw_text="old aggregate"
+        )
         result.text_blocks = [TextBlock("old block", 1.0, None)]
         result.content_list = [{"type": "text", "text": "old block"}]
         widget._current_result = result
@@ -742,7 +744,9 @@ class TestResultViewExportButtons:
         """Rich HTML and plain table payloads both reflect the accepted edit."""
         from vibeocr.classic.utils.export_jobs import snapshot_ocr_result
 
-        result = self._make_result(markdown_text="old aggregate", raw_text="old aggregate")
+        result = self._make_result(
+            markdown_text="old aggregate", raw_text="old aggregate"
+        )
         result.content_list = [
             {
                 "type": "table",
@@ -772,7 +776,9 @@ class TestResultViewExportButtons:
         from tests.qt_responsiveness import assert_qt_event_loop_responsive
         from vibeocr.classic.utils.export_jobs import snapshot_ocr_result
 
-        result = self._make_result(markdown_text="old aggregate", raw_text="old aggregate")
+        result = self._make_result(
+            markdown_text="old aggregate", raw_text="old aggregate"
+        )
         result.content_list = [
             {"type": "text", "text": f"line-{index}"} for index in range(50_000)
         ]
@@ -863,7 +869,9 @@ class TestResultViewExportButtons:
         fake = self._fake_clipboard(monkeypatch)
         fake.setText("SENTINEL")
         toasts: list[str] = []
-        monkeypatch.setattr(widget, "_show_copy_toast", lambda msg="x": toasts.append(msg))
+        monkeypatch.setattr(
+            widget, "_show_copy_toast", lambda msg="x": toasts.append(msg)
+        )
 
         widget._on_copy_text()
         callback = web.fake_page.callbacks.pop()
@@ -876,9 +884,7 @@ class TestResultViewExportButtons:
         # 但给出重试提示
         assert any("重新复制" in t for t in toasts)
 
-    def test_copy_text_empty_payload_shows_no_content_toast(
-        self, widget, monkeypatch
-    ):
+    def test_copy_text_empty_payload_shows_no_content_toast(self, widget, monkeypatch):
         """结果无文本无表格时（如纯图片），「复制文本」给出「无可复制内容」提示。"""
 
         class FakePage:
@@ -902,7 +908,9 @@ class TestResultViewExportButtons:
         widget._rendered_document_token = "doc-1"
         self._fake_clipboard(monkeypatch)
         toasts: list[str] = []
-        monkeypatch.setattr(widget, "_show_copy_toast", lambda msg="x": toasts.append(msg))
+        monkeypatch.setattr(
+            widget, "_show_copy_toast", lambda msg="x": toasts.append(msg)
+        )
 
         widget._on_copy_text()
         callback = web.fake_page.callbacks.pop()
@@ -916,7 +924,9 @@ class TestResultViewExportButtons:
         widget._current_result = result
         self._fake_clipboard(monkeypatch)
         toasts: list[str] = []
-        monkeypatch.setattr(widget, "_show_copy_toast", lambda msg="x": toasts.append(msg))
+        monkeypatch.setattr(
+            widget, "_show_copy_toast", lambda msg="x": toasts.append(msg)
+        )
 
         widget._on_copy_markdown()
         qtbot.waitUntil(lambda: widget._copy_job is None, timeout=2000)
@@ -988,7 +998,7 @@ class TestResultViewExportButtons:
         修复前会先 display_result（token A）再 display_text_layout（token B），
         回调带旧 token A 触发 toast。
         """
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
         from vibeocr.classic.recognition_settings import TextBlockOptions
 
         class FakePage:
@@ -1315,9 +1325,7 @@ class TestResultViewPrewarmWebEngine:
         验证 prewarm 在关闭期间根本不触发创建路径。
         """
         calls = []
-        monkeypatch.setattr(
-            widget, "_ensure_web_view", lambda: calls.append(1) or None
-        )
+        monkeypatch.setattr(widget, "_ensure_web_view", lambda: calls.append(1) or None)
 
         widget.set_closing(True)
         widget.prewarm_webengine()

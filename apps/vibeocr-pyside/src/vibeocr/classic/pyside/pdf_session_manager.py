@@ -264,7 +264,7 @@ class PdfSessionManager(QObject):
         import time
         from uuid import uuid4
 
-        from vibeocr.backend.models import ocr_result_from_payload
+        from vibeocr.classic.recognition_result import ocr_result_from_payload
         from vibeocr.runtime_contracts import (
             TERMINAL_JOB_STATES,
             ItemState,
@@ -334,7 +334,9 @@ class PdfSessionManager(QObject):
             ):
                 results.append(None)
             else:
-                results.append(ocr_result_from_payload(outcome.payload))
+                results.append(
+                    ocr_result_from_payload(outcome.payload_type, outcome.payload)
+                )
         return results
 
     def get_modified_sessions(self) -> list[tuple[str, PdfSession]]:

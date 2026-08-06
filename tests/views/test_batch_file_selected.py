@@ -11,7 +11,7 @@ result.markdown_text → AttributeError: 'dict' object has no attribute 'markdow
 
 from unittest.mock import MagicMock
 
-from vibeocr.backend.models.ocr_result import OCRResult
+from vibeocr.classic.recognition_result import OCRResult
 from vibeocr.classic.views.batch_recognition_tab import BatchRecognitionTab
 
 

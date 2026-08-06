@@ -243,7 +243,7 @@ def test_stable_compare_is_structural_and_does_not_pickle():
     import inspect
 
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.ocr_result import TextBlock
+    from vibeocr.classic.recognition_result import TextBlock
     from vibeocr.classic.utils.export_jobs import snapshot_ocr_result
 
     source = SimpleNamespace(
@@ -335,7 +335,7 @@ def test_stable_compare_rejects_unknown_dict_keys_without_calling_eq():
 
 def test_copy_rebuild_cancels_during_large_field_loop():
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.ocr_result import TextBlock
+    from vibeocr.classic.recognition_result import TextBlock
     from vibeocr.classic.utils.export_jobs import (
         ExportJobCancelled,
         snapshot_ocr_result,
@@ -372,7 +372,7 @@ def test_50k_result_submissions_stay_under_combined_gui_budget(
     qapp, qtbot, monkeypatch
 ):
     module = import_module("vibeocr.classic.widgets.result_view_widget")
-    from vibeocr.backend.models.ocr_result import TextBlock
+    from vibeocr.classic.recognition_result import TextBlock
     from vibeocr.classic.recognition_settings import TextBlockOptions
 
     widget = module.ResultViewWidget()
@@ -438,18 +438,14 @@ def test_stable_table_cell_bridge_rejects_stale_document(qapp):
     )
     bridge.set_active_document("current")
 
-    bridge.onTableCellEditedForDocument(
-        "stale", "table-a", "cell-a", "wrong"
-    )
-    bridge.onTableCellEditedForDocument(
-        "current", "table-a", "cell-a", "right"
-    )
+    bridge.onTableCellEditedForDocument("stale", "table-a", "cell-a", "wrong")
+    bridge.onTableCellEditedForDocument("current", "table-a", "cell-a", "right")
 
     assert edits == [("table-a", "cell-a", "right")]
 
 
 def test_snapshot_detaches_and_validates_canonical_table():
-    from vibeocr.backend.models.ocr_result import OCRResult
+    from vibeocr.classic.recognition_result import OCRResult
     from vibeocr.classic.utils.export_jobs import snapshot_ocr_result
     from vibeocr.runtime_contracts.contracts.tables import TableCellV1, TableModelV1
 
@@ -459,9 +455,7 @@ def test_snapshot_detaches_and_validates_canonical_table():
         column_count=1,
         cells=(TableCellV1(cell_id="cell", row=0, column=0, text="before"),),
     )
-    result = OCRResult(
-        content_list=[{"type": "table", "table": table.to_payload()}]
-    )
+    result = OCRResult(content_list=[{"type": "table", "table": table.to_payload()}])
 
     snapshot = snapshot_ocr_result(result)
     result.content_list[0]["table"]["cells"][0]["text"] = "after"
@@ -503,7 +497,7 @@ def test_rendered_token_waits_for_loaded_document_confirmation(
 
 
 def _layout_result(marker: str, count: int = 1):
-    from vibeocr.backend.models.ocr_result import TextBlock
+    from vibeocr.classic.recognition_result import TextBlock
 
     return SimpleNamespace(
         raw_text=marker,

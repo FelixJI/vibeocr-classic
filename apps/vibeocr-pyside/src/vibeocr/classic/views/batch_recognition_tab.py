@@ -40,6 +40,7 @@ from vibeocr.classic.widgets.export_settings_widget import ExportSettingsWidget
 from vibeocr.classic.widgets.preprocess_options_widget import PreprocessOptionsWidget
 from vibeocr.classic.widgets.preview_widget import PreviewWidget
 from vibeocr.classic.widgets.result_view_widget import ResultViewWidget
+from vibeocr.runtime_contracts import ContractError
 
 # 向后兼容别名
 PreprocessOptions = OCROptions
@@ -740,7 +741,7 @@ class BatchRecognitionTab(BaseOcrTab):
     def _on_supervisor_result(self, job_id: str, entries: list) -> None:
         if job_id != self._supervisor_job_id or self._shutting_down:
             return
-        from vibeocr.backend.models import ocr_result_from_payload
+        from vibeocr.classic.recognition_result import ocr_result_from_payload
 
         for index, file_info in enumerate(self._supervisor_files):
             path = file_info["path"]
@@ -757,7 +758,18 @@ class BatchRecognitionTab(BaseOcrTab):
                     "error": error,
                 }
                 continue
-            result = ocr_result_from_payload(payload)
+            try:
+                result = ocr_result_from_payload(entry.get("payload_type"), payload)
+            except ContractError as exc:
+                error = f"识别结果协议不兼容: {exc}"
+                self._file_list_widget.update_file_status(
+                    path, "failed", {"error": error}
+                )
+                self._supervisor_results[path] = {
+                    "file_path": path,
+                    "error": error,
+                }
+                continue
             self._result_snapshots[path] = snapshot_ocr_result(
                 result,
                 include_content_list=True,

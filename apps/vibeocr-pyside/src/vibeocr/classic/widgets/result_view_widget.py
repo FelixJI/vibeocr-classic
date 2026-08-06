@@ -30,13 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_result import DISCARDED_BLOCK_TYPES
 from vibeocr.backend.utils.html_tables import (
     html_tables_to_cell_grid,
     normalize_table_html,
     tables_from_result,
 )
 from vibeocr.classic.app_paths import get_bundled_resources_dir
+from vibeocr.classic.recognition_result import DISCARDED_BLOCK_TYPES
 from vibeocr.classic.utils.export_jobs import (
     ExportJobCancelled,
     ExportSaveJob,

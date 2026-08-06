@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_result import DISCARDED_BLOCK_TYPES, TextBlock
+from vibeocr.classic.recognition_result import DISCARDED_BLOCK_TYPES, TextBlock
 from vibeocr.classic.ui import theme
 from vibeocr.classic.utils.image_jobs import GenerationImageJobs, decode_image_file
 
@@ -50,6 +50,7 @@ def _render_pdf_page(
         return file_path, page_index, page_count, image
     finally:
         document.close()
+
 
 # 无真实文本置信度的块类型：结构识别（表格/图片/图表/印章）与公式管道
 # 在 pipeline 里 score 是占位值（0.9 / 1.0），不应在 tooltip 里显示为
@@ -994,11 +995,7 @@ class PreviewWidget(QWidget):
         content_lookup: dict[int, int] = {}
         block_count = len(blocks) if limit is None else min(len(blocks), limit)
         for index in range(block_count):
-            if (
-                cancel_event is not None
-                and index % 256 == 0
-                and cancel_event.is_set()
-            ):
+            if cancel_event is not None and index % 256 == 0 and cancel_event.is_set():
                 return {}, {}
             block = blocks[index]
             page_indices.setdefault(getattr(block, "page_idx", None) or 0, []).append(
@@ -1123,9 +1120,7 @@ class PreviewWidget(QWidget):
             f"正在加载 PDF: {Path(file_path).name} 第 {page_index + 1} 页..."
         )
         self._pdf_jobs.submit(
-            lambda cancel_event: _render_pdf_page(
-                file_path, page_index, cancel_event
-            )
+            lambda cancel_event: _render_pdf_page(file_path, page_index, cancel_event)
         )
 
     @Slot(int, object)
@@ -1231,11 +1226,7 @@ class PreviewWidget(QWidget):
             len(content_list) if limit is None else min(len(content_list), limit)
         )
         for index in range(block_count):
-            if (
-                cancel_event is not None
-                and index % 256 == 0
-                and cancel_event.is_set()
-            ):
+            if cancel_event is not None and index % 256 == 0 and cancel_event.is_set():
                 return {}
             block = content_list[index]
             if block.get("type", "") in DISCARDED_BLOCK_TYPES:

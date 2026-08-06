@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from scripts.bind_component_releases import bind_product_releases
+from scripts.bind_component_releases import bind_product_releases, bind_protocol_release
 from scripts.package_product_release import package_product_release
 
 if TYPE_CHECKING:
@@ -92,8 +92,34 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
     return protocol, backend
 
 
+def _frontend_release(tmp_path: Path) -> tuple[Path, Path]:
+    release = tmp_path / "protocol-sdk"
+    release.mkdir()
+    artifacts: dict[str, dict[str, object]] = {}
+    for distribution in ("vibeocr_runtime_contracts", "vibeocr_runtime_client"):
+        wheel = release / f"{distribution}-2.4.0-py3-none-any.whl"
+        wheel.write_bytes(distribution.encode())
+        artifacts[wheel.name] = {
+            "sha256": _sha(wheel.read_bytes()),
+            "size": wheel.stat().st_size,
+        }
+    (release / "release-manifest.json").write_text(
+        json.dumps({"protocol_version": "2.4.0", "artifacts": artifacts}),
+        encoding="utf-8",
+    )
+    lock = tmp_path / "frontend-protocol-lock.json"
+    bind_protocol_release(
+        release_dir=release,
+        repository="FelixJI/vibeocr-protocol",
+        version="2.4.0",
+        output=lock,
+    )
+    return release, lock
+
+
 def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> None:
     protocol, backend = _releases(tmp_path)
+    frontend_protocol, frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
     bind_product_releases(
         protocol_release_dir=protocol,
@@ -119,6 +145,8 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
                 frontend_version="0.7.0",
                 source_commit="a" * 40,
                 component_lock=component_lock,
+                frontend_protocol_lock=frontend_lock,
+                frontend_protocol_release_dir=frontend_protocol,
                 protocol_release_dir=protocol,
                 backend_release_dir=backend,
                 output=output,
@@ -130,6 +158,7 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
         version = json.loads(archive.read("VibeOCR/version.json"))
         manifest = json.loads(archive.read("VibeOCR/product-release-manifest.json"))
     assert "VibeOCR/component-lock.json" in members
+    assert "VibeOCR/frontend-protocol-lock.json" in members
     assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" not in members
     assert "VibeOCR/backend/installer.zip" in members
     assert "VibeOCR/backend/python.tar.gz" in members
@@ -139,12 +168,18 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     assert version == {"version": "0.7.0"}
     assert manifest["shared_root"] == "data"
     assert manifest["products"] == {
-        "classic": {"component_lock": "component-lock.json", "root": "."}
+        "classic": {
+            "component_lock": "component-lock.json",
+            "frontend_protocol_lock": "frontend-protocol-lock.json",
+            "root": ".",
+        }
     }
+    assert manifest["frontend_protocol_lock_sha256"] == _sha(frontend_lock.read_bytes())
 
 
 def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> None:
     protocol, backend = _releases(tmp_path)
+    frontend_protocol, frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
     bind_product_releases(
         protocol_release_dir=protocol,
@@ -169,6 +204,8 @@ def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> N
             frontend_version="0.7.0",
             source_commit="a" * 40,
             component_lock=component_lock,
+            frontend_protocol_lock=frontend_lock,
+            frontend_protocol_release_dir=frontend_protocol,
             protocol_release_dir=protocol,
             backend_release_dir=backend,
             output=tmp_path / "product.zip",
@@ -179,6 +216,7 @@ def test_product_package_accepts_equivalent_crlf_component_lock(
     tmp_path: Path,
 ) -> None:
     protocol, backend = _releases(tmp_path)
+    frontend_protocol, frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
     bind_product_releases(
         protocol_release_dir=protocol,
@@ -204,9 +242,45 @@ def test_product_package_accepts_equivalent_crlf_component_lock(
         frontend_version="0.7.0",
         source_commit="a" * 40,
         component_lock=component_lock,
+        frontend_protocol_lock=frontend_lock,
+        frontend_protocol_release_dir=frontend_protocol,
         protocol_release_dir=protocol,
         backend_release_dir=backend,
         output=tmp_path / "product.zip",
     )
 
     assert output.is_file()
+
+
+def test_product_package_rejects_interchanged_frontend_lock(tmp_path: Path) -> None:
+    protocol, backend = _releases(tmp_path)
+    frontend_protocol, _frontend_lock = _frontend_release(tmp_path)
+    component_lock = tmp_path / "component-lock.json"
+    bind_product_releases(
+        protocol_release_dir=protocol,
+        backend_release_dir=backend,
+        protocol_repository="FelixJI/vibeocr-protocol",
+        protocol_version="2.0.0",
+        backend_repository="FelixJI/vibeocr-backend",
+        backend_version="0.7.0",
+        accelerator="cpu",
+        required_capabilities=("ocr.recognition.v2",),
+        output=component_lock,
+    )
+    product = tmp_path / "product" / "VibeOCR"
+    product.mkdir(parents=True)
+    (product / "VibeOCR.exe").write_bytes(b"app")
+
+    with pytest.raises(ValueError, match="frontend Protocol lock is incomplete"):
+        package_product_release(
+            product_root=product,
+            frontend="classic",
+            frontend_version="0.7.0",
+            source_commit="a" * 40,
+            component_lock=component_lock,
+            frontend_protocol_lock=component_lock,
+            frontend_protocol_release_dir=frontend_protocol,
+            protocol_release_dir=protocol,
+            backend_release_dir=backend,
+            output=tmp_path / "product.zip",
+        )

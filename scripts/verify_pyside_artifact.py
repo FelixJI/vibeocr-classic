@@ -62,6 +62,30 @@ def _verify_product_file_closure(root: Path, records: dict[str, object]) -> None
         )
 
 
+def _verify_frontend_protocol_lock(
+    root: Path,
+    product_manifest: dict[str, object],
+    component_lock: dict[str, object],
+) -> dict[str, object]:
+    path = root / "frontend-protocol-lock.json"
+    actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual_hash != product_manifest.get("frontend_protocol_lock_sha256"):
+        raise RuntimeError("embedded frontend Protocol lock hash mismatch")
+    frontend_lock = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(frontend_lock, dict):
+        raise RuntimeError("embedded frontend Protocol lock is invalid")
+    frontend_version = frontend_lock.get("version")
+    runtime = component_lock.get("protocol")
+    runtime_version = runtime.get("version") if isinstance(runtime, dict) else None
+    if (
+        not isinstance(frontend_version, str)
+        or not isinstance(runtime_version, str)
+        or frontend_version.split(".", 1)[0] != runtime_version.split(".", 1)[0]
+    ):
+        raise RuntimeError("frontend and Runtime Protocol majors differ")
+    return frontend_lock
+
+
 def _verify_reduced_layout(root: Path) -> None:
     prohibited = []
     for path in root.rglob("*"):
@@ -517,6 +541,7 @@ def main() -> int:
             root / "VibeOCR.exe",
             root / "updater.exe",
             root / "component-lock.json",
+            root / "frontend-protocol-lock.json",
             root / "product-release-manifest.json",
             root / "backend" / "runtime-manifest.json",
         ]
@@ -564,6 +589,7 @@ def main() -> int:
         if lock_hash != manifest.get("component_lock_sha256"):
             raise RuntimeError("embedded component lock hash mismatch")
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        _verify_frontend_protocol_lock(root, manifest, lock)
         backend = lock.get("backend", {})
         required_capabilities = set(lock.get("required_capabilities", []))
         expected_capabilities = {

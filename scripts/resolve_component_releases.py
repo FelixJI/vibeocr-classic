@@ -13,11 +13,16 @@ from pathlib import Path
 
 if __package__:
     from .bind_component_releases import (
+        bind_protocol_release,
         bind_product_releases,
         protocol_manifest_version,
     )
 else:
-    from bind_component_releases import bind_product_releases, protocol_manifest_version
+    from bind_component_releases import (
+        bind_protocol_release,
+        bind_product_releases,
+        protocol_manifest_version,
+    )
 
 _STABLE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _RANGE_PART = re.compile(r"^(>=|<=|==|>|<)(\d+)\.(\d+)\.(\d+)$")
@@ -31,6 +36,7 @@ class InvalidReleaseError(ValueError):
 class ComponentPolicy:
     protocol_repository: str
     protocol_version: str
+    protocol_sdk_version: str
     backend_repository: str
     accelerator: str
     required_capabilities: frozenset[str]
@@ -55,10 +61,16 @@ class ComponentPolicy:
             isinstance(item, str) and item for item in capabilities
         ):
             raise ValueError("component policy capabilities must be strings")
-        _parse_version(str(protocol["version"]))
+        protocol_version = str(protocol["version"])
+        protocol_sdk_version = str(protocol["sdk_version"])
+        _parse_version(protocol_version)
+        _parse_version(protocol_sdk_version)
+        if protocol_sdk_version.split(".", 1)[0] != protocol_version.split(".", 1)[0]:
+            raise ValueError("frontend Protocol SDK must use the supported major")
         return cls(
             protocol_repository=str(protocol["repository"]),
-            protocol_version=str(protocol["version"]),
+            protocol_version=protocol_version,
+            protocol_sdk_version=protocol_sdk_version,
             backend_repository=str(backend["repository"]),
             accelerator=str(backend["accelerator"]),
             required_capabilities=frozenset(capabilities),
@@ -179,6 +191,20 @@ def validate_bound_protocol(
         raise InvalidReleaseError(
             "Backend bound Protocol is outside its declared runtime range: "
             f"{protocol_version}"
+        )
+
+
+def validate_frontend_protocol_sdk(
+    policy: ComponentPolicy,
+    protocol_version: str,
+) -> None:
+    """Require the frontend SDK to use a supported major, not a Runtime minor."""
+    supported_major = policy.protocol_version.split(".", 1)[0]
+    actual_major = protocol_version.split(".", 1)[0]
+    _parse_version(protocol_version)
+    if actual_major != supported_major:
+        raise InvalidReleaseError(
+            f"frontend Protocol SDK uses unsupported major: {protocol_version}"
         )
 
 
@@ -351,6 +377,20 @@ def resolve_component_releases(
         f"v{protocol_version}",
         protocol_root,
     )
+    sdk_version = policy.protocol_sdk_version
+    validate_frontend_protocol_sdk(policy, sdk_version)
+    sdk_root = output_root / "protocol-sdk"
+    github.download_release(
+        policy.protocol_repository,
+        f"v{sdk_version}",
+        sdk_root,
+    )
+    bind_protocol_release(
+        release_dir=sdk_root,
+        repository=policy.protocol_repository,
+        version=sdk_version,
+        output=output_root / "frontend-protocol-lock.json",
+    )
     return bind_product_releases(
         protocol_release_dir=protocol_root,
         backend_release_dir=backend_root,
@@ -374,9 +414,13 @@ def main(argv: list[str] | None = None) -> int:
         output_root=args.output_root,
     )
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    frontend_lock = json.loads(
+        (args.output_root / "frontend-protocol-lock.json").read_text(encoding="utf-8")
+    )
     print(
         f"Resolved Backend v{lock['backend']['version']} for "
-        f"Protocol v{lock['protocol']['version']}"
+        f"Runtime Protocol v{lock['protocol']['version']} and frontend SDK "
+        f"v{frontend_lock['version']}"
     )
     print(lock_path)
     return 0

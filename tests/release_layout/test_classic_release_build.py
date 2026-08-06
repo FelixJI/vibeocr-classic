@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -12,6 +13,7 @@ from scripts.verify_pyside_artifact import (
     _verify_archive_size,
     _verify_bound_python_archive,
     _verify_embedded_app_icon,
+    _verify_frontend_protocol_lock,
     _verify_product_file_closure,
     _verify_reduced_layout,
     _verify_runtime_layout,
@@ -126,6 +128,11 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "--phase finalize" in workflow
     assert "name: required" in workflow
     assert "[string]$ReleaseInput" in script
+    assert "Join-Path $inputs 'protocol-sdk'" in script
+    assert "frontend-protocol-lock.json" in script
+    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_contracts'" in script
+    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'" in script
+    assert "Get-ChildItem $protocolSdk -Filter" not in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow
     assert "vibeocr-backend" in project["project"]["dependencies"]
@@ -149,6 +156,35 @@ def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
     assert compatibility == {"supported_majors": [2], "minor_compatible": True}
     assert "vibeocr-runtime-contracts>=2.0.0,<3.0.0" in dependencies
     assert "vibeocr-runtime-client>=2.0.0,<3.0.0" in dependencies
+
+
+def test_artifact_frontend_protocol_lock_requires_hash_and_same_major(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "frontend-protocol-lock.json"
+    lock_path.write_text('{"version":"2.4.0"}', encoding="utf-8")
+    digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+    assert _verify_frontend_protocol_lock(
+        tmp_path,
+        {"frontend_protocol_lock_sha256": digest},
+        {"protocol": {"version": "2.3.0"}},
+    ) == {"version": "2.4.0"}
+
+    with pytest.raises(RuntimeError, match="majors differ"):
+        _verify_frontend_protocol_lock(
+            tmp_path,
+            {"frontend_protocol_lock_sha256": digest},
+            {"protocol": {"version": "3.0.0"}},
+        )
+
+    lock_path.write_text('{"version":"2.4.1"}', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        _verify_frontend_protocol_lock(
+            tmp_path,
+            {"frontend_protocol_lock_sha256": digest},
+            {"protocol": {"version": "2.3.0"}},
+        )
 
 
 def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None:

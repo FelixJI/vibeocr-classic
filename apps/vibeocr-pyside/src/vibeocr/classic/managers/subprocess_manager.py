@@ -199,46 +199,15 @@ class SubprocessManager(QObject):
         if proc is None:
             raise RuntimeError("Supervisor ready 但进程句柄为空")
 
-        from vibeocr.classic.pdf_client import SyncPdfSupervisorClient
         from vibeocr.classic.pyside.supervisor_adapter import (
             SupervisorClientAdapter,
             set_supervisor_adapter,
         )
-        from vibeocr.runtime_client.client import SupervisorClient
-        from vibeocr.runtime_client.client import RuntimeHttpClient
-        from vibeocr.runtime_client.sync_client import SyncSupervisorClient
 
-        def pdf_factory() -> SyncPdfSupervisorClient:
-            return SyncPdfSupervisorClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                instance_id=proc.ready.instance_id,
-            )
-
-        def inference_factory() -> SyncSupervisorClient:
-            return SyncSupervisorClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                instance_id=proc.ready.instance_id,
-            )
-
-        def runtime_status_factory() -> RuntimeHttpClient:
-            return RuntimeHttpClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                timeout=10.0,
-            )
-
-        client = SupervisorClient(
+        adapter = SupervisorClientAdapter.from_runtime_endpoint(
             base_url=proc.base_url,
             session_token=proc.session_token,
             instance_id=proc.ready.instance_id,
-        )
-        adapter = SupervisorClientAdapter(
-            client_factory=lambda: client,
-            pdf_sync_client_factory=pdf_factory,
-            inference_sync_client_factory=inference_factory,
-            runtime_status_client_factory=runtime_status_factory,
         )
         set_supervisor_adapter(adapter)
         adapter.start()

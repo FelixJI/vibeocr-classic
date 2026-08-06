@@ -16,7 +16,7 @@
     "quality": [["python", "-m", "pytest"]],
     "e2e": [["python", "scripts/verify_component_release_input.py", "--release-input", "build/automation/release-input"]],
     "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ReleaseInput", "build/automation/release-input", "-ArtifactsDir", "{artifacts_dir}"]],
-    "release_smoke": [["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--require", "component-lock.json", "--require", "SBOM.spdx.json", "--require-one", "VibeOCR-Classic-v*-win64.zip", "--require-one", "VibeOCR-Classic-v*-win64.zip.sha256"]]
+    "release_smoke": [["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--require", "component-lock.json", "--require", "frontend-protocol-lock.json", "--require", "SBOM.spdx.json", "--require-one", "VibeOCR-Classic-v*-win64.zip", "--require-one", "VibeOCR-Classic-v*-win64.zip.sha256"]]
   },
   "release": {
     "version_sources": [
@@ -27,7 +27,7 @@
     ],
     "generated_commands": [],
     "identity_asset": "component-lock.json",
-    "required_assets": ["component-lock.json", "SBOM.spdx.json", "VibeOCR-Classic-v*-win64.zip", "VibeOCR-Classic-v*-win64.zip.sha256"],
+    "required_assets": ["component-lock.json", "frontend-protocol-lock.json", "SBOM.spdx.json", "VibeOCR-Classic-v*-win64.zip", "VibeOCR-Classic-v*-win64.zip.sha256"],
     "mirrors": [
       {"name": "gitee", "url_env": "GITEE_URL", "user_env": "GITEE_USER", "token_env": "GITEE_TOKEN"},
       {"name": "cnb", "url_env": "CNB_URL", "token_env": "CNB_TOKEN", "user": "cnb"}

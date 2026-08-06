@@ -187,6 +187,32 @@ def test_on_started_transfers_process_owner(
     assert manager._start_task is None
 
 
+def test_runtime_adapter_receives_only_ready_endpoint_identity(monkeypatch) -> None:
+    from vibeocr.classic.pyside.supervisor_adapter import SupervisorClientAdapter
+
+    process = SimpleNamespace(
+        base_url="http://127.0.0.1:43210",
+        session_token="token",
+        ready=SimpleNamespace(instance_id="runtime-1"),
+    )
+    adapter = Mock()
+    factory = Mock(return_value=adapter)
+    monkeypatch.setattr(
+        SupervisorClientAdapter,
+        "from_runtime_endpoint",
+        factory,
+    )
+
+    SubprocessManager._install_runtime_adapter(process)
+
+    factory.assert_called_once_with(
+        base_url=process.base_url,
+        session_token=process.session_token,
+        instance_id=process.ready.instance_id,
+    )
+    adapter.start.assert_called_once_with()
+
+
 def test_on_started_failure_clears_task(manager: SubprocessManager) -> None:
     manager._start_task = SupervisorStartTask("python")
     manager._on_started(False)

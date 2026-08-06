@@ -18,6 +18,9 @@ _DEFAULTS = {
     "auto_hide_toolbar": True,
     "minimize_to_tray": False,
     "auto_start": False,
+    # 仅 Windows 用于一次性迁移旧版注册表自启到启动文件夹 .lnk；
+    # 其它平台不读取，仅随配置文件持久化保持跨平台兼容。
+    "autostart_migrated_to_lnk": False,
     "hide_delay_ms": 500,
     "toolbar_pos": None,
 }
@@ -153,6 +156,14 @@ class AppSettings:
     @auto_start.setter
     def auto_start(self, value: bool) -> None:
         self._data["auto_start"] = value
+
+    @property
+    def autostart_migrated_to_lnk(self) -> bool:
+        return bool(self._data.get("autostart_migrated_to_lnk", False))
+
+    @autostart_migrated_to_lnk.setter
+    def autostart_migrated_to_lnk(self, value: bool) -> None:
+        self._data["autostart_migrated_to_lnk"] = value
 
     @property
     def hide_delay_ms(self) -> int:

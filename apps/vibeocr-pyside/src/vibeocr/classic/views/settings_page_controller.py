@@ -5,7 +5,6 @@
 
 import logging
 import os
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -71,46 +70,6 @@ def _resolve_shortcut_icon_path() -> str:
 
     icon = env_manager.get_bundled_resources_dir() / "app_icon.ico"
     return str(icon) if icon.exists() else ""
-
-
-def _create_windows_shortcut(
-    target: str,
-    shortcut_path: str,
-    description: str = "VibeOCR",
-    icon_path: str = "",
-    working_dir: str = "",
-) -> bool:
-    """在 Windows 上通过 PowerShell COM 创建 .lnk 快捷方式。"""
-    # 确保目标目录存在
-    try:
-        Path(shortcut_path).parent.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-
-    ps_lines = [
-        "$WshShell = New-Object -ComObject WScript.Shell",
-        f"$Shortcut = $WshShell.CreateShortcut('{shortcut_path}')",
-        f"$Shortcut.TargetPath = '{target}'",
-        f"$Shortcut.Description = '{description}'",
-    ]
-    if icon_path:
-        ps_lines.append(f"$Shortcut.IconLocation = '{icon_path}'")
-    if working_dir:
-        ps_lines.append(f"$Shortcut.WorkingDirectory = '{working_dir}'")
-    ps_lines.append("$Shortcut.Save()")
-
-    script = "; ".join(ps_lines)
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        return result.returncode == 0
-    except Exception:
-        logger.exception("PowerShell 创建快捷方式失败")
-        return False
 
 
 class SettingsPageController:
@@ -523,7 +482,9 @@ class SettingsPageController:
         self._set_shortcut_buttons_enabled(False)
 
         def operation() -> bool:
-            return _create_windows_shortcut(
+            from vibeocr.classic.utils.shortcuts import create_windows_shortcut
+
+            return create_windows_shortcut(
                 target, shortcut_path, "VibeOCR", icon, working_dir
             )
 

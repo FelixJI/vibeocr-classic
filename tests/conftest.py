@@ -42,6 +42,20 @@ if existing_pythonpath:
 os.environ["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def isolate_application_log_root(tmp_path_factory):
+    """Route process-wide application logs outside the repository during tests."""
+    from vibeocr.classic.services import log_service
+
+    original_get_install_root = log_service.get_install_root
+    test_install_root = tmp_path_factory.mktemp("vibeocr-test-install-root")
+    log_service.get_install_root = lambda: test_install_root
+    try:
+        yield
+    finally:
+        log_service.get_install_root = original_get_install_root
+
+
 @pytest.fixture(scope="session")
 def qapp():
     """提供 QApplication 实例（GUI 测试必需）。"""

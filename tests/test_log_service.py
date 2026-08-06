@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from vibeocr.classic import app_paths
+from vibeocr.classic.services import log_service
 from vibeocr.classic.services.log_service import setup_logging
 
 
@@ -16,7 +16,7 @@ def test_application_log_is_written_under_data_directory(
     root_logger = logging.getLogger()
     original_handlers = root_logger.handlers[:]
     original_level = root_logger.level
-    monkeypatch.setattr(app_paths, "get_install_root", lambda: tmp_path)
+    monkeypatch.setattr(log_service, "get_install_root", lambda: tmp_path)
 
     try:
         setup_logging()

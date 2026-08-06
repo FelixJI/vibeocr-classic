@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
+from vibeocr.classic.app_paths import get_install_root
+
 from vibeocr.classic.logging_context import LOG_CONTEXT_FIELDS, ui_status_extra
 
 if TYPE_CHECKING:
@@ -170,8 +172,6 @@ def setup_logging(level: int | str = logging.INFO) -> QtLogHandler:
     # 落盘为人可读文本（HumanReadableFormatter）——历史排查时直接打开阅读，
     # 不再有 JSON 解析开销与可读性损失。worker 转发链路仍用 stderr JSONL，
     # 由 forward_worker_output_line 解析后转成普通 LogRecord，经此 formatter 输出。
-    from vibeocr.classic.app_paths import get_install_root
-
     log_dir = get_install_root() / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     _cleanup_old_logs(log_dir)

@@ -134,10 +134,6 @@ class TestMainWindow:
             request_shutdown=lambda: calls.append("dependency:request"),
             is_drained=lambda: calls.append("dependency:probe") or True,
         )
-        window._dependency_update_task = SimpleNamespace(
-            close=lambda: calls.append("dependency-update:request"),
-            is_drained=lambda: calls.append("dependency-update:probe") or True,
-        )
         monkeypatch.setattr(window, "_save_layout", lambda: calls.append("layout:save"))
         monkeypatch.setattr(
             "vibeocr.classic.client.shutdown_backend_client",
@@ -696,9 +692,7 @@ class TestPrewarmResultWebEngine:
     def test_prewarm_result_webengine_invokes_single_tab_prewarm_once(self):
         """非 closing 状态下应调用 _single_tab._result_widget.prewarm_webengine 一次。"""
         calls = []
-        window = self._make_window_with_single_tab(
-            prewarm=lambda: calls.append(1)
-        )
+        window = self._make_window_with_single_tab(prewarm=lambda: calls.append(1))
 
         window.prewarm_result_webengine()
 
@@ -707,9 +701,7 @@ class TestPrewarmResultWebEngine:
     def test_prewarm_result_webengine_respects_closing_guard(self):
         """_closing 为真时不应调用 prewarm_webengine。"""
         calls = []
-        window = self._make_window_with_single_tab(
-            prewarm=lambda: calls.append(1)
-        )
+        window = self._make_window_with_single_tab(prewarm=lambda: calls.append(1))
         window._closing = True
 
         window.prewarm_result_webengine()

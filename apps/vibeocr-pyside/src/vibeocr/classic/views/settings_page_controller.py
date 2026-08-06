@@ -36,10 +36,7 @@ from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.pyside import settings_runtime
 from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
-from vibeocr.classic.views.background_tasks import (
-    DependencyUpdateCheckTask,
-    FunctionTask,
-)
+from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
 from vibeocr.runtime_contracts import (
     PipelineSpec,
@@ -86,7 +83,6 @@ class SettingsPageController:
         subprocess_manager,
         install_succeeded_callback: Callable[[], None] | None = None,
         gpu_capability_callback: Callable[[bool], None] | None = None,
-        dependency_update_task: DependencyUpdateCheckTask | None = None,
         defer_backend_initialization: bool = False,
         defer_machine_cache_status: bool = False,
         runtime_status_callback: Callable[[str], None] | None = None,
@@ -109,15 +105,9 @@ class SettingsPageController:
         # 设 _ocr_ready + 启动 Worker + 消费 pending_backend）。
         self._install_succeeded_callback = install_succeeded_callback
         self._gpu_capability_callback = gpu_capability_callback
-        self._dependency_update_task = (
-            dependency_update_task or DependencyUpdateCheckTask(project_root, ui)
-        )
-        self._owns_dependency_update_task = dependency_update_task is None
         self._runtime_has_gpu: bool | None = None
         self._defer_backend_initialization = defer_backend_initialization
         self._defer_machine_cache_status = defer_machine_cache_status
-        self._pending_update_install = False
-        self._manual_dependency_update_waiting = False
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._runtime_adapter = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
@@ -148,13 +138,6 @@ class SettingsPageController:
         # 宿主 widget 销毁时先冻结后台回调，避免迟到结果访问已释放的 Qt 对象。
         ui.destroyed.connect(self.request_shutdown)
 
-        self._dependency_update_task.completed.connect(
-            self._on_dependency_update_check_completed
-        )
-        self._dependency_update_task.failed.connect(
-            self._on_dependency_update_check_failed
-        )
-
     def request_shutdown(self) -> None:
         """Release background workers owned by settings-page widgets.
 
@@ -163,8 +146,6 @@ class SettingsPageController:
         """
         self._closing = True
         self._cancel_pending_maintenance_dialog()
-        if self._owns_dependency_update_task:
-            self._dependency_update_task.close()
         self._preload_poll_timer.stop()
         self._preload_selected = ()
         self._preload_loaded_count = 0
@@ -213,14 +194,10 @@ class SettingsPageController:
         # The completion callback removes each task on the GUI thread.  Waiting
         # for the set to become empty also drains queued callbacks that capture UI.
         cache_drained = not self._cache_tasks
-        update_drained = (
-            not self._owns_dependency_update_task
-            or self._dependency_update_task.is_drained()
-        )
         from vibeocr.classic.utils.dialog_workers import are_dialog_workers_drained
 
         dialogs_drained = are_dialog_workers_drained()
-        return gpu_drained and cache_drained and update_drained and dialogs_drained
+        return gpu_drained and cache_drained and dialogs_drained
 
     def shutdown(self, timeout_ms: int = 3000) -> bool:
         """Compatibility entry point for callers outside MainWindow."""
@@ -654,12 +631,6 @@ class SettingsPageController:
         self._runtime_has_gpu = bool(has_gpu)
         if self._gpu_capability_callback is not None:
             self._gpu_capability_callback(bool(has_gpu))
-        if self._pending_update_install:
-            self._pending_update_install = False
-            self._open_install_dialog(
-                missing_only=False,
-                force_backend="gpu" if has_gpu else "cpu",
-            )
 
     def _on_backend_change_requested(self, target: str) -> None:
         """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
@@ -1394,67 +1365,6 @@ class SettingsPageController:
         """组件只能随产品 component-lock 整组升级；此处只刷新完整性。"""
         self._show_settings_toast("Runtime 版本由产品更新统一管理")
         self._refresh_env_maintenance_state()
-
-    def _on_dependency_update_check_completed(
-        self, source: str, result: object
-    ) -> None:
-        if self._closing:
-            return
-        if self._manual_dependency_update_waiting:
-            self._manual_dependency_update_waiting = False
-            button = self._ui.findChild(QPushButton, "btnUpdateDeps")
-            if button:
-                button.setEnabled(True)
-                button.setText("更新依赖")
-        if source != "settings":
-            return
-        updates = dict(result) if isinstance(result, dict) else {}
-        logger.info("[依赖更新] 检测完成，待更新包数=%d：%s", len(updates), updates)
-        if not updates:
-            self._show_settings_toast("依赖已是最新")
-            return
-
-        # 列出待更新包让用户确认
-        lines = []
-        for pkg, (installed, required) in updates.items():
-            lines.append(f"  • {pkg}：{installed or '（未安装）'} → {required}")
-        detail = "\n".join(lines)
-        reply = QMessageBox.question(
-            None,
-            "确认更新依赖",
-            f"检测到以下依赖有新版本可用：\n\n{detail}\n\n"
-            "将下载并升级（使用当前推理后端）。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            logger.info("[依赖更新] 用户在确认对话框选择 No，已取消")
-            return
-
-        # 走全量安装（install_embedded_dependencies），后端用当前值
-        current_backend = self._runtime_backend_or_none()
-        if current_backend is None:
-            self._pending_update_install = True
-            self._show_settings_toast("等待后台 GPU 探测完成后开始更新")
-            return
-        logger.info(
-            "[依赖更新] 用户确认，开始打开安装对话框（后端=%s）", current_backend
-        )
-        self._open_install_dialog(missing_only=False, force_backend=current_backend)
-
-    def _on_dependency_update_check_failed(self, source: str, error: str) -> None:
-        if self._closing:
-            return
-        if self._manual_dependency_update_waiting:
-            self._manual_dependency_update_waiting = False
-            button = self._ui.findChild(QPushButton, "btnUpdateDeps")
-            if button:
-                button.setEnabled(True)
-                button.setText("更新依赖")
-        if source != "settings":
-            return
-        logger.warning("[依赖更新] 检测失败: %s", error)
-        QMessageBox.warning(None, "检测失败", f"检测依赖更新时出错：\n{error}")
 
     def _runtime_backend_or_none(self) -> str | None:
         """只消费后台 Installer inspect 已回填的后端，不在 GUI 线程探测。"""

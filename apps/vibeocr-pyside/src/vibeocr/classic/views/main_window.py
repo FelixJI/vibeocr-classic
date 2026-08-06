@@ -41,10 +41,7 @@ from vibeocr.classic.services.log_service import setup_logging
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.utils.image_jobs import GenerationImageJobs, decode_image_file
 from vibeocr.classic.utils.shutdown_jobs import ExternalShutdownJob
-from vibeocr.classic.views.background_tasks import (
-    DependencyUpdateCheckTask,
-    FunctionTask,
-)
+from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
 from vibeocr.classic.views.tabs.single_recognition_tab import SingleRecognitionTab
 from vibeocr.classic.widgets.runtime_status_bar import RuntimeStatusBar
@@ -81,21 +78,9 @@ class MainWindow(QMainWindow):
         self._machine_cache_generation = 0
         self._machine_cache_running = False
         self._machine_cache_pending_startup = False
-        self._dependency_update_install_pending = False
-        self._startup_update_check_complete = False
         self._image_load_jobs = GenerationImageJobs(self)
         self._image_load_jobs.completed.connect(self._on_image_file_loaded)
         self._image_load_jobs.failed.connect(self._on_image_file_load_failed)
-
-        self._dependency_update_task = DependencyUpdateCheckTask(
-            self._project_root, self
-        )
-        self._dependency_update_task.completed.connect(
-            self._on_dependency_update_check_completed
-        )
-        self._dependency_update_task.failed.connect(
-            self._on_dependency_update_check_failed
-        )
 
         # 懒加载 Tab：批量/二维码/PDF 在启动期仅插占位空页，首次切换时才真正构造，
         # 把 MainWindow 构造耗时从 ~1.5s 砍到 <0.5s（首屏仅需单次识别 Tab）。
@@ -204,10 +189,6 @@ class MainWindow(QMainWindow):
             return
         self._runtime_gpu_capability = bool(has_gpu)
         self._apply_gpu_gating_to_all(bool(has_gpu))
-
-        if self._dependency_update_install_pending:
-            self._dependency_update_install_pending = False
-            self._open_dependency_update_dialog()
 
         if self._worker_start_pending:
             self._worker_start_pending = False
@@ -667,7 +648,6 @@ class MainWindow(QMainWindow):
             # 启动子进程 Worker、消费 pending_backend，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
             gpu_capability_callback=self._on_gpu_capability_resolved,
-            dependency_update_task=self._dependency_update_task,
             defer_backend_initialization=True,
             defer_machine_cache_status=True,
         )
@@ -807,9 +787,6 @@ class MainWindow(QMainWindow):
         if self._closing or not self._ocr_ready:
             return
 
-        if not self._startup_update_check_complete:
-            self._maybe_prompt_dependency_updates()
-            return
         needs_switch, target = self._check_pending_backend(self._machine_cache_data)
         if needs_switch and target:
             self._show_switch_dialog(target)
@@ -834,104 +811,6 @@ class MainWindow(QMainWindow):
                 pending_path.unlink(missing_ok=True)
             except Exception as e:
                 logging.warning("[依赖同步] 删除 %s 失败: %s", pending_path, e)
-
-    def _maybe_prompt_dependency_updates(self) -> None:
-        """请求共享后台任务检测 OCR 依赖更新。
-
-        覆盖安装场景（用户直接覆盖文件升级 app，无 pending_sync.json）下，
-        version.json 的 dep_versions 可能比便携 Python 里已装的版本新。
-        本方法在环境就绪后检测，发现可更新包时弹 QMessageBox 让用户选择是否升级。
-
-        开发态（.venv）不触发（detect_dependency_updates 仅便携模式生效，
-        开发态由 uv 管理环境）。
-        每个进程生命周期内只提示一次（_deps_update_prompted 标志）。
-        """
-        if self._closing or getattr(self, "_deps_update_requested", False):
-            return
-        self._deps_update_requested = True
-        started = self._dependency_update_task.request("startup")
-        if not started and self._dependency_update_task.is_running:
-            # 设置页已占用共享 single-flight：该入口负责展示结果。启动流程
-            # 不再等待一个 source="startup" 的完成信号，否则会永久停住；
-            # 同时不重复提示，直接用当前已验证环境继续启动。
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-
-    @Slot(str, object)
-    def _on_dependency_update_check_completed(
-        self, source: str, result: object
-    ) -> None:
-        if source != "startup" or self._closing:
-            return
-        updates = dict(result) if isinstance(result, dict) else {}
-        if not updates:
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-            return
-        self._deps_update_prompted = True
-        lines = []
-        for pkg, (installed, required) in updates.items():
-            lines.append(f"  • {pkg}：{installed or '（未安装）'} → {required}")
-        detail = "\n".join(lines)
-
-        from PySide6.QtWidgets import QMessageBox
-
-        reply = QMessageBox.question(
-            self,
-            "检测到依赖更新",
-            f"检测到以下 OCR 依赖有新版本可用：\n\n{detail}\n\n"
-            "是否立即更新？（将使用当前推理后端下载升级）",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-            return
-
-        if self._runtime_gpu_capability is None:
-            self._dependency_update_install_pending = True
-            self._statusbar.showMessage("等待后台 GPU 探测完成后更新 OCR 依赖...")
-            return
-        self._open_dependency_update_dialog()
-
-    @Slot(str, str)
-    def _on_dependency_update_check_failed(self, source: str, error: str) -> None:
-        if source == "startup" and not self._closing:
-            logging.warning("[依赖更新] 启动检测失败: %s", error)
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-
-    def _open_dependency_update_dialog(self) -> None:
-        """使用后台已解析的运行时后端打开更新对话框。"""
-        if self._closing or self._runtime_gpu_capability is None:
-            return
-        current_backend = "gpu" if self._runtime_gpu_capability else "cpu"
-        from vibeocr.classic.widgets.install_dialog import InstallDialog
-
-        dialog = InstallDialog(
-            self._project_root,
-            parent=self,
-            force_backend=current_backend,
-            maintenance_callback=self._statusbar.showMessage,
-        )
-        dialog.setWindowTitle("更新 OCR 依赖")
-        dialog._title_label.setText("正在更新 OCR 依赖...")
-        dialog.finished.connect(self._on_deps_update_finished)
-        dialog.exec()
-
-    @Slot(int)
-    def _on_deps_update_finished(self, result: int) -> None:
-        """依赖更新对话框完成：刷新设置页状态 + 重新检测依赖。"""
-        self._refresh_settings_env_state()
-        if result == 1:
-            # Runtime Installer 是组件状态单一事实源；成功后直接重新 inspect。
-            self._startup_update_check_complete = True
-            self._dependency_manager.check_dependencies()
-        else:
-            # 用户取消/更新失败时仍允许用当前已验证环境启动。
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
 
     def _check_pending_backend(
         self, cached_data: dict | None = None
@@ -1563,9 +1442,6 @@ class MainWindow(QMainWindow):
         image_load_jobs = getattr(self, "_image_load_jobs", None)
         if image_load_jobs is not None:
             image_load_jobs.close()
-        dependency_update_task = getattr(self, "_dependency_update_task", None)
-        if dependency_update_task is not None:
-            dependency_update_task.close()
         dependency_manager = getattr(self, "_dependency_manager", None)
         if dependency_manager is not None and hasattr(
             dependency_manager, "request_shutdown"
@@ -1662,11 +1538,6 @@ class MainWindow(QMainWindow):
         add_method(
             "dependency_manager",
             getattr(self, "_dependency_manager", None),
-            "is_drained",
-        )
-        add_method(
-            "dependency_update",
-            getattr(self, "_dependency_update_task", None),
             "is_drained",
         )
         add_method(

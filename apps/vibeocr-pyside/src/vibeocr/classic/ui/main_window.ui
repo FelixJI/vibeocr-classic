@@ -521,7 +521,7 @@
           <item>
            <widget class="QGroupBox" name="groupCache">
             <property name="title">
-              <string>环境检测缓存</string>
+              <string>Runtime 与应用缓存</string>
              </property>
              <layout class="QVBoxLayout" name="cacheLayout">
               <property name="spacing">
@@ -535,20 +535,20 @@
                 <item>
                  <widget class="QPushButton" name="btnRefreshCache">
                  <property name="toolTip">
-                   <string>重新检测 Python、依赖和硬件环境并更新缓存</string>
+                   <string>重新验证产品绑定的 Runtime manifest、组件完整性与 accelerator</string>
                   </property>
                  <property name="text">
-                   <string>重新检测环境</string>
+                   <string>验证 Runtime 状态</string>
                   </property>
                  </widget>
                 </item>
                 <item>
                  <widget class="QPushButton" name="btnClearCache">
                   <property name="toolTip">
-                   <string>清除依赖检测缓存（不影响已下载的模型）</string>
+                   <string>清除 Classic 启动诊断缓存（不影响 Runtime 与已下载模型）</string>
                   </property>
                  <property name="text">
-                   <string>清除检测缓存</string>
+                   <string>清除应用缓存</string>
                   </property>
                  </widget>
                 </item>
@@ -570,7 +570,7 @@
               <item>
                <widget class="QLabel" name="labelCacheStatus">
                 <property name="text">
-                 <string>缓存状态: 未知</string>
+                 <string>Runtime 状态：尚未验证</string>
                 </property>
                 <property name="foregroundRole">
                  <enum>QPalette::PlaceholderText</enum>

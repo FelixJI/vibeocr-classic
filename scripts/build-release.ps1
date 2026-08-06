@@ -104,7 +104,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Classic wheel build failed' }
 python -m pip install --force-reinstall --no-deps `
   (Get-ChildItem $build -Filter "vibeocr_classic-$Version-*.whl" | Select-Object -First 1).FullName
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel install failed' }
-python -m pip install pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1
+python -m pip install `
+  pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1 `
+  httpx==0.28.1 pillow==12.3.0
 if ($LASTEXITCODE -ne 0) { throw 'Classic runtime dependency install failed' }
 $dist = Join-Path $build 'dist'
 $pyinstallerArgs = @(

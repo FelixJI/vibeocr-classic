@@ -77,7 +77,6 @@ class MainWindow(QMainWindow):
         self._machine_cache_tasks: set[FunctionTask] = set()
         self._machine_cache_generation = 0
         self._machine_cache_running = False
-        self._machine_cache_pending_startup = False
         self._image_load_jobs = GenerationImageJobs(self)
         self._image_load_jobs.completed.connect(self._on_image_file_loaded)
         self._image_load_jobs.failed.connect(self._on_image_file_load_failed)
@@ -672,19 +671,14 @@ class MainWindow(QMainWindow):
         self._dependency_manager.check_dependencies()
 
     def _try_load_cache(self) -> None:
-        """在线程池校验机器缓存；WMIC 永不进入 MainWindow 构造线程。"""
-        self._request_machine_cache_load(after_dependency=False)
+        """后台读取 Classic 诊断缓存；结果不参与 Runtime readiness。"""
+        self._request_machine_cache_load()
 
-    def _request_machine_cache_load(self, *, after_dependency: bool) -> None:
-        """读取一份经过机器码校验的缓存快照。
-
-        依赖检查可能重建缓存；若初始校验尚未完成，记录一次 pending 并在其
-        完成后重跑，保证后端切换消费的是依赖检查之后的快照。
-        """
+    def _request_machine_cache_load(self) -> None:
+        """读取一份经过机器码校验、仅供设置页展示的诊断快照。"""
         if self._closing:
             return
         if self._machine_cache_running:
-            self._machine_cache_pending_startup |= after_dependency
             return
 
         self._machine_cache_running = True
@@ -707,15 +701,6 @@ class MainWindow(QMainWindow):
                 controller.initialize_deferred_backend_options()
                 controller.apply_deferred_machine_cache_status(bool(valid))
 
-            if not after_dependency and not self._dependency_check_complete:
-                self._apply_provisional_machine_cache()
-
-            if self._machine_cache_pending_startup:
-                self._machine_cache_pending_startup = False
-                self._request_machine_cache_load(after_dependency=True)
-            elif after_dependency:
-                self._continue_ready_startup()
-
         def failed(error: str) -> None:
             logging.warning("[缓存] 后台机器缓存校验失败: %s", error)
             finished((False, None))
@@ -723,20 +708,6 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(finished)
         task.signals.error.connect(failed)
         QThreadPool.globalInstance().start(task)
-
-    def _apply_provisional_machine_cache(self) -> None:
-        cached_data = self._machine_cache_data
-        if not cached_data:
-            return
-        dependencies = cached_data.get("dependencies", {})
-        if all(
-            dependencies.get(name, False)
-            for name in ("paddlepaddle", "paddleocr", "mineru")
-        ):
-            self._ocr_ready = True
-            self._statusbar.set_service("环境缓存可用 · 复核中")
-            self._statusbar.showMessage("后台复核运行环境")
-            logging.info("OCR 运行环境缓存可用（等待后台复核）")
 
     def _check_embedded_dependencies(self) -> None:
         """异步检查嵌入式OCR依赖"""
@@ -764,9 +735,9 @@ class MainWindow(QMainWindow):
                 self._statusbar.showMessage("准备 Supervisor")
             logging.info("OCR 运行环境可用")
 
-            # 依赖检测可能刚重建缓存。后台重新校验并回填后，再继续启动；
-            # 避免初始缓存读取与依赖检查写缓存竞态。
-            self._request_machine_cache_load(after_dependency=True)
+            # Runtime Installer inspect 是唯一 readiness 权威；Classic 诊断缓存
+            # 即使仍在后台加载，也不得阻塞或提前放行 Supervisor 启动。
+            self._continue_ready_startup()
         else:
             self._ocr_ready = False
             missing_str = ", ".join(missing)
@@ -783,7 +754,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(300, self._start_install)
 
     def _continue_ready_startup(self) -> None:
-        """缓存复核完成后的启动编排（仅在 GUI 线程应用结果）。"""
+        """Runtime inspect 成功后的启动编排（仅在 GUI 线程应用结果）。"""
         if self._closing or not self._ocr_ready:
             return
 

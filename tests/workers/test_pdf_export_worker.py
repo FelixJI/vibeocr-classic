@@ -11,9 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-from vibeocr.backend.models.pdf_session import PdfSession
 from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
+from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo, PdfSession
 
 
 def _make_session(path, modified=True):
@@ -41,7 +40,8 @@ class TestPdfExportAllModified:
 
         saved_paths: list[str] = []
         with patch.object(
-            manager._client, "save",
+            manager._client,
+            "save",
             lambda sid, path=None, pdf_settings=None: saved_paths.append(path or ""),
         ):
             exported = manager.export_all_modified(str(out))
@@ -57,7 +57,8 @@ class TestPdfExportAllModified:
         out = tmp_path / "out"
 
         with patch.object(
-            manager._client, "save",
+            manager._client,
+            "save",
             lambda sid, path=None, pdf_settings=None: None,
         ):
             exported = manager.export_all_modified(str(out))

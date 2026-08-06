@@ -428,6 +428,21 @@ class RuntimeInstallerClient:
     def capability_descriptors(self) -> tuple[RuntimeCapabilityDescriptor, ...]:
         return self._capability_descriptors
 
+    def required_capabilities(self) -> tuple[str, ...]:
+        """Return the product capabilities pinned by ``component-lock.json``."""
+        try:
+            value: Any = json.loads(self.component_lock.read_text(encoding="utf-8"))
+            required = value["required_capabilities"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise RuntimeInstallerClientError("组件锁缺少 required_capabilities") from exc
+        if (
+            not isinstance(required, list)
+            or any(not isinstance(item, str) or not item for item in required)
+            or len(set(required)) != len(required)
+        ):
+            raise RuntimeInstallerClientError("组件锁 required_capabilities 无效")
+        return tuple(required)
+
     def _record_negotiation(
         self,
         envelope: dict[str, Any],

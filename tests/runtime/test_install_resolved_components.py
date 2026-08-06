@@ -61,15 +61,12 @@ def test_install_selects_frontend_sdk_wheels_not_runtime_protocol(
     assert all("contracts-2.3.0" not in item for item in wheel_command)
     assert all("vibeocr_backend" not in item for item in wheel_command)
 
-    backend_fixture_command = commands[1]
-    assert backend_fixture_command[:5] == [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--no-deps",
-    ]
-    assert "vibeocr_backend-0.10.0" in backend_fixture_command[-1]
+    assert all(
+        "vibeocr_backend" not in argument
+        for command in commands
+        for argument in command
+    )
+    assert "pymupdf==1.28.0" in commands[1]
 
 
 def test_sdk_wheel_selection_requires_exact_locked_pair(tmp_path: Path) -> None:

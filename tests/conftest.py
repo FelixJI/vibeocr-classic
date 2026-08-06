@@ -29,7 +29,6 @@ repo_root = Path(__file__).parent.parent
 source_paths = [
     repo_root / "packages/vibeocr-contracts-py/src",
     repo_root / "packages/vibeocr-runtime-client-py/src",
-    repo_root / "packages/vibeocr-backend/src",
     repo_root / "apps/vibeocr-pyside/src",
 ]
 for source_path in reversed(source_paths):

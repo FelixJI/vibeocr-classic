@@ -139,6 +139,10 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         dependency.startswith("vibeocr-backend")
         for dependency in project["project"]["dependencies"]
     )
+    assert "httpx>=0.28.1" in project["project"]["dependencies"]
+    assert "pillow>=12.3.0" in project["project"]["dependencies"]
+    assert "httpx==0.28.1" in script
+    assert "pillow==12.3.0" in script
     assert "'--collect-submodules', 'vibeocr.backend'" not in script
     assert "'--collect-data', 'vibeocr.backend'" not in script
     assert "pip install --no-deps" not in script

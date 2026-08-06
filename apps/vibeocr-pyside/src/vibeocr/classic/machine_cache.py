@@ -16,9 +16,10 @@ from pathlib import Path
 # v3：paddlex[ocr] leaf 包（einops/scipy/.../tokenizers 等 10 个）纳入
 # OCR_CHECK_LEAF_MODULES 检测，旧缓存（无这些 leaf key）必须失效重建，
 # 否则会被判为"已装"，掩盖便携安装中途失败导致的漏装（表格识别爆炸的根因）。
-# v4：补充 PaddleX[ocr] 当前必需的 beautifulsoup4（import 名 bs4）；
-# 旧 v3 缓存未检测该包，必须失效。
-CACHE_VERSION = 4
+# v4：补充 PaddleX[ocr] 当前必需的 beautifulsoup4（import 名 bs4）。
+# v5：旧依赖/硬件快照降级为 Classic 诊断信息，禁止再作为 Runtime readiness
+# 判据；Runtime 是否就绪只由 Runtime Installer inspect 与 ready capability 决定。
+CACHE_VERSION = 5
 
 # =============================================================================
 # cache.json Schema（权威定义——所有读写方必须遵守）
@@ -30,15 +31,12 @@ CACHE_VERSION = 4
 #   version: int                    schema 版本号，= CACHE_VERSION。bump 即失效
 #                                   全部旧缓存（machine_id 校验之外的第二道防线）。
 #   machine_id: str                 SHA256(CPU ID | 主板序列号 | MAC)，跨机器失效。
-#   last_check_time: ISO 8601 str   依赖检测时间戳。CACHE_TTL_DAYS 据此判断是否
-#                                   需要对缓存里 true 的依赖做周期性复核。
+#   last_check_time: ISO 8601 str   历史诊断快照的检测时间戳（展示用）。
 #   python_version: str             检测时的嵌入式 Python 版本（展示用）。
-#   dependencies: {pkg: bool}       OCR 依赖存在性。键来自 OCR_CHECK_MODULES.values()
-#                                   （paddlepaddle/paddleocr/mineru/torch/markdown）。
-#                                   写入方：env_manager（create_cache_entry /
-#                                   update_cache_field）。
+#   dependencies: {pkg: bool}       迁移前的依赖诊断快照，仅用于兼容旧缓存工具；
+#                                   任何启动、识别或安装决策都不得读取它。
 #   hardware_info: {has_gpu: bool, cuda_version: str|None}
-#                                   GPU 检测结果。写入方：env_manager。
+#                                   历史 GPU 展示快照，不决定 Runtime accelerator。
 #   preload_pipelines: [str]        历史字段。已迁移至 app_settings.json，
 #                                   config_manager.get_preload_pipelines 仅做
 #                                   一次性读迁移（只读，不再写入此文件）。
@@ -50,9 +48,7 @@ CACHE_VERSION = 4
 #   3. 写入的数据必须包含 version + machine_id（create_cache_entry 自动补）。
 # =============================================================================
 
-# 缓存有效期（天）。超过此期限，env_manager.check_embedded_environment_dependencies
-# 会对缓存里 true 的依赖也做一次实时复核，防止"用户手动删了 site-packages 但缓存仍
-# 报已装"的假阳性。TTL 仅作用于 true 项——false 项每次都复核（已有逻辑）。
+# 历史诊断快照的展示有效期。不得据此推导 Runtime readiness。
 CACHE_TTL_DAYS = 7
 
 
@@ -363,10 +359,9 @@ def update_cache_field(project_root: Path, key: str, value: object) -> bool:
 
 
 def reset_cache_to_empty(project_root: Path) -> bool:
-    """重置缓存为空壳（仅清 deps/hardware_info，不重新检测）。
+    """重置历史诊断快照，不触碰产品绑定的 Runtime 状态。
 
-    供测试和迁移使用。UI 的"刷新缓存"按钮应调用 env_manager 路径做真重检测
-    （见 SettingsPageController._refresh_machine_cache_operation）。
+    UI 的“验证 Runtime 状态”按钮直接调用 Runtime Installer ``inspect``。
 
     Args:
         project_root: 项目根目录

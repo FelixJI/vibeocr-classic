@@ -61,10 +61,6 @@ def _make_files(tmp_path, count: int) -> list[str]:
 def _make_tab(
     qtbot, monkeypatch, service, paths: list[str], *, register: bool = True
 ) -> BatchRecognitionTab:
-    monkeypatch.setattr(
-        "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-        lambda *args, **kwargs: True,
-    )
     tab = BatchRecognitionTab(backend=MagicMock())
     if register:
         qtbot.addWidget(tab)

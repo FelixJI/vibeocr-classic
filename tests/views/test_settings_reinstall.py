@@ -57,10 +57,6 @@ def controller(qtbot, tmp_path):
         ),
         patch("vibeocr.classic.managers.config_manager.ConfigManager") as mock_cm,
         patch(
-            "vibeocr.backend.core.pipelines.get_preloadable_pipelines",
-            return_value=[],
-        ),
-        patch(
             "vibeocr.classic.views.settings_page_controller.RuntimeInstallerClient"
         ) as runtime_client,
     ):

@@ -8,19 +8,13 @@
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
-    QMetaObject, QObject, QPoint, QRect,
-    QSize, QTime, QUrl, Qt)
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
-    QFont, QFontDatabase, QGradient, QIcon,
-    QImage, QKeySequence, QLinearGradient, QPainter,
-    QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFrame,
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+from PySide6.QtCore import (QCoreApplication, QMetaObject, QSize, Qt)
+from PySide6.QtGui import (QPalette)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFrame,
+    QGroupBox, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QProgressBar, QPushButton,
     QSizePolicy, QSpacerItem, QSpinBox, QSplitter,
-    QStackedWidget, QTabWidget, QTreeWidget, QTreeWidgetItem,
-    QVBoxLayout, QWidget)
+    QStackedWidget, QTabWidget, QTreeWidget, QVBoxLayout, QWidget)
 
 from vibeocr.classic.widgets.preview_widget import PreviewWidget
 
@@ -537,16 +531,16 @@ class Ui_MainWindowWidget(object):
         self.btnReleaseHeavy.setText(QCoreApplication.translate("MainWindowWidget", u"\u91ca\u653e\u91cd\u6a21\u578b", None))
         self.btnReleaseAll.setText(QCoreApplication.translate("MainWindowWidget", u"\u91ca\u653e\u5168\u90e8\u6a21\u578b", None))
         self.labelReleaseStatus.setText(QCoreApplication.translate("MainWindowWidget", u"\u8fd0\u884c\u65f6\u7f13\u5b58\u72b6\u6001\uff1a\u670d\u52a1\u672a\u8fde\u63a5", None))
-        self.groupCache.setTitle(QCoreApplication.translate("MainWindowWidget", u"\u73af\u5883\u68c0\u6d4b\u7f13\u5b58", None))
+        self.groupCache.setTitle(QCoreApplication.translate("MainWindowWidget", u"Runtime \u4e0e\u5e94\u7528\u7f13\u5b58", None))
 #if QT_CONFIG(tooltip)
-        self.btnRefreshCache.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u91cd\u65b0\u68c0\u6d4b Python\u3001\u4f9d\u8d56\u548c\u786c\u4ef6\u73af\u5883\u5e76\u66f4\u65b0\u7f13\u5b58", None))
+        self.btnRefreshCache.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u91cd\u65b0\u9a8c\u8bc1\u4ea7\u54c1\u7ed1\u5b9a\u7684 Runtime manifest\u3001\u7ec4\u4ef6\u5b8c\u6574\u6027\u4e0e accelerator", None))
 #endif // QT_CONFIG(tooltip)
-        self.btnRefreshCache.setText(QCoreApplication.translate("MainWindowWidget", u"\u91cd\u65b0\u68c0\u6d4b\u73af\u5883", None))
+        self.btnRefreshCache.setText(QCoreApplication.translate("MainWindowWidget", u"\u9a8c\u8bc1 Runtime \u72b6\u6001", None))
 #if QT_CONFIG(tooltip)
-        self.btnClearCache.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u6e05\u9664\u4f9d\u8d56\u68c0\u6d4b\u7f13\u5b58\uff08\u4e0d\u5f71\u54cd\u5df2\u4e0b\u8f7d\u7684\u6a21\u578b\uff09", None))
+        self.btnClearCache.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u6e05\u9664 Classic \u542f\u52a8\u8bca\u65ad\u7f13\u5b58\uff08\u4e0d\u5f71\u54cd Runtime \u4e0e\u5df2\u4e0b\u8f7d\u6a21\u578b\uff09", None))
 #endif // QT_CONFIG(tooltip)
-        self.btnClearCache.setText(QCoreApplication.translate("MainWindowWidget", u"\u6e05\u9664\u68c0\u6d4b\u7f13\u5b58", None))
-        self.labelCacheStatus.setText(QCoreApplication.translate("MainWindowWidget", u"\u7f13\u5b58\u72b6\u6001: \u672a\u77e5", None))
+        self.btnClearCache.setText(QCoreApplication.translate("MainWindowWidget", u"\u6e05\u9664\u5e94\u7528\u7f13\u5b58", None))
+        self.labelCacheStatus.setText(QCoreApplication.translate("MainWindowWidget", u"Runtime \u72b6\u6001\uff1a\u5c1a\u672a\u9a8c\u8bc1", None))
         self.groupAppSettings.setTitle(QCoreApplication.translate("MainWindowWidget", u"\u5e94\u7528\u8bbe\u7f6e", None))
         self.labelToolbarDesc.setText(QCoreApplication.translate("MainWindowWidget", u"\u8fb9\u7f18\u5de5\u5177\u680f\uff1a\u60ac\u6d6e\u5728\u5c4f\u5e55\u8fb9\u7f18\u7684\u5feb\u6377\u5de5\u5177\u6761\uff0c\u63d0\u4f9b\u4e00\u952e\u622a\u56fe\u548c\u547c\u51fa\u4e3b\u7a97\u53e3\u3002\u53ef\u62d6\u52a8\u5230\u5c4f\u5e55\u4efb\u610f\u8fb9\u7f18\uff0c\u505c\u9760\u540e\u81ea\u52a8\u9690\u85cf\uff0c\u9f20\u6807\u9760\u8fd1\u65f6\u5f39\u51fa\u3002", None))
 #if QT_CONFIG(tooltip)

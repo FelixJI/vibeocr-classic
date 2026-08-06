@@ -46,6 +46,10 @@ def test_start_task_reports_process_and_handshake_stage(monkeypatch) -> None:
 
 @pytest.fixture()
 def manager(qapp, tmp_path):
+    (tmp_path / "component-lock.json").write_text(
+        '{"required_capabilities":["ocr.recognition.v2"]}',
+        encoding="utf-8",
+    )
     instance = SubprocessManager(tmp_path)
     yield instance
     instance.shutdown(timeout_ms=100)
@@ -120,7 +124,10 @@ def test_worker_start_keeps_qt_event_loop_responsive(
     fake_process = Mock(
         base_url="http://127.0.0.1:54321",
         session_token="test-token",
-        ready=SimpleNamespace(instance_id="sup-test"),
+        ready=SimpleNamespace(
+            instance_id="sup-test",
+            capabilities=("ocr.recognition.v2", "future.feature.v3"),
+        ),
     )
     manager._installer_client.ensure = Mock(
         return_value=SimpleNamespace(
@@ -163,6 +170,9 @@ def test_worker_start_keeps_qt_event_loop_responsive(
     assert launch_kwargs["extra_env"]["VIBEOCR_RUNTIME_ROOT"] == str(
         expected_python.parent
     )
+    assert manager._installer_client.ensure.call_args.kwargs[
+        "required_capabilities"
+    ] == ("ocr.recognition.v2",)
     from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 
     assert get_supervisor_adapter().thread() is qapp.thread()
@@ -172,7 +182,10 @@ def test_on_started_transfers_process_owner(
     manager: SubprocessManager, monkeypatch
 ) -> None:
     process = Mock()
-    task = SupervisorStartTask("python")
+    task = SupervisorStartTask(
+        "python",
+        required_capabilities=("ocr.recognition.v2",),
+    )
     task.supervisor_proc = process
     manager._start_task = task
     install_adapter = Mock()
@@ -180,7 +193,10 @@ def test_on_started_transfers_process_owner(
 
     manager._on_started(True)
 
-    install_adapter.assert_called_once_with(process)
+    install_adapter.assert_called_once_with(
+        process,
+        required_capabilities=("ocr.recognition.v2",),
+    )
     assert manager.is_ready is True
     assert manager._supervisor_process is process
     assert task.supervisor_proc is None
@@ -193,7 +209,10 @@ def test_runtime_adapter_receives_only_ready_endpoint_identity(monkeypatch) -> N
     process = SimpleNamespace(
         base_url="http://127.0.0.1:43210",
         session_token="token",
-        ready=SimpleNamespace(instance_id="runtime-1"),
+        ready=SimpleNamespace(
+            instance_id="runtime-1",
+            capabilities=("ocr.recognition.v2", "future.feature.v3"),
+        ),
     )
     adapter = Mock()
     factory = Mock(return_value=adapter)
@@ -203,7 +222,10 @@ def test_runtime_adapter_receives_only_ready_endpoint_identity(monkeypatch) -> N
         factory,
     )
 
-    SubprocessManager._install_runtime_adapter(process)
+    SubprocessManager._install_runtime_adapter(
+        process,
+        required_capabilities=("ocr.recognition.v2",),
+    )
 
     factory.assert_called_once_with(
         base_url=process.base_url,
@@ -211,6 +233,57 @@ def test_runtime_adapter_receives_only_ready_endpoint_identity(monkeypatch) -> N
         instance_id=process.ready.instance_id,
     )
     adapter.start.assert_called_once_with()
+
+
+def test_runtime_adapter_rejects_missing_product_capability(monkeypatch) -> None:
+    from vibeocr.classic.pyside.supervisor_adapter import SupervisorClientAdapter
+
+    process = SimpleNamespace(
+        base_url="http://127.0.0.1:43210",
+        session_token="token",
+        ready=SimpleNamespace(
+            instance_id="runtime-1",
+            capabilities=("ocr.recognition.v2",),
+        ),
+    )
+    factory = Mock()
+    monkeypatch.setattr(
+        SupervisorClientAdapter,
+        "from_runtime_endpoint",
+        factory,
+    )
+
+    with pytest.raises(RuntimeError, match="pdf.edit.v2"):
+        SubprocessManager._install_runtime_adapter(
+            process,
+            required_capabilities=("ocr.recognition.v2", "pdf.edit.v2"),
+        )
+
+    factory.assert_not_called()
+
+
+def test_on_started_missing_capability_shuts_down_process(
+    manager: SubprocessManager,
+) -> None:
+    process = SimpleNamespace(
+        base_url="http://127.0.0.1:43210",
+        session_token="token",
+        ready=SimpleNamespace(instance_id="runtime-1", capabilities=()),
+        shutdown=Mock(),
+    )
+    task = SupervisorStartTask(
+        "python",
+        required_capabilities=("ocr.recognition.v2",),
+    )
+    task.supervisor_proc = process
+    manager._start_task = task
+
+    manager._on_started(True)
+
+    process.shutdown.assert_called_once_with()
+    assert manager.is_ready is False
+    assert manager._supervisor_process is None
+    assert manager._start_task is None
 
 
 def test_on_started_failure_clears_task(manager: SubprocessManager) -> None:

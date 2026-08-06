@@ -83,7 +83,6 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     window._project_root = tmp_path
     window._closing = False
     window._machine_cache_running = False
-    window._machine_cache_pending_startup = False
     window._machine_cache_generation = 0
     window._machine_cache_tasks = set()
     window._machine_cache_data = None
@@ -93,9 +92,6 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     window._request_machine_cache_load = MainWindow._request_machine_cache_load.__get__(
         window
     )
-    window._apply_provisional_machine_cache = (
-        MainWindow._apply_provisional_machine_cache.__get__(window)
-    )
     window._continue_ready_startup = MagicMock()
 
     MainWindow._try_load_cache(window)
@@ -104,7 +100,8 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     release.set()
     qtbot.waitUntil(lambda: not window._machine_cache_running, timeout=1000)
 
-    assert window._ocr_ready is True
+    assert window._ocr_ready is False
+    window._continue_ready_startup.assert_not_called()
 
 
 def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(

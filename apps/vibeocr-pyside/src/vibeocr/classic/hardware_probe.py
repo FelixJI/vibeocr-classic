@@ -30,12 +30,30 @@ _EMPTY_GPU_INFO: dict[str, object] = {
 def _stop_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    try:
+        process.terminate()
+    except OSError:
+        logger.debug("[硬件检测] nvidia-smi terminate 失败", exc_info=True)
     try:
         process.wait(timeout=1)
-    except subprocess.TimeoutExpired:
+        return
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    try:
         process.kill()
+    except OSError:
+        logger.debug("[硬件检测] nvidia-smi kill 失败", exc_info=True)
+    try:
         process.wait(timeout=1)
+    except (subprocess.TimeoutExpired, OSError):
+        logger.warning("[硬件检测] nvidia-smi 未在强制终止后退出")
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 def _query_nvidia_smi(

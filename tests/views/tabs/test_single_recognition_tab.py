@@ -550,10 +550,6 @@ class TestOcrFinishedEmitsBringToFront:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", fake_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda result: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *args: True,
-        )
         options = OCROptions()
 
         pixmap = QPixmap(4, 4)
@@ -592,10 +588,6 @@ class TestRunOcrAsync:
         )
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
         monkeypatch.setattr(tab, "_on_ocr_finished", lambda r: finished_calls.append(r))
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *a: True,
-        )
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -638,10 +630,6 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *a: True,
-        )
 
         timer_fired: list[bool] = []
         pixmap = QPixmap(4, 4)
@@ -684,10 +672,6 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *a: True,
-        )
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -721,10 +705,6 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", raising_recognize)
         monkeypatch.setattr(tab, "_on_ocr_error", lambda msg: error_calls.append(msg))
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *a: True,
-        )
 
         tab._ocr_from_screenshot = True  # 验证错误路径不复位由 _on_ocr_error 负责
         pixmap = QPixmap(4, 4)
@@ -758,10 +738,6 @@ class TestRunOcrAsync:
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
         monkeypatch.setattr(tab, "_on_ocr_finished", lambda r: finished_calls.append(r))
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *a: True,
-        )
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -821,10 +797,6 @@ class TestRecognitionPreparationAsync:
 
         monkeypatch.setattr(tab, "_qimage_to_png_bytes", record_thread)
         monkeypatch.setattr(tab, "_display_result", lambda result: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-            lambda *args: True,
-        )
         pixmap = QPixmap(8, 8)
         pixmap.fill()
         tab.run_ocr(pixmap, OCROptions())

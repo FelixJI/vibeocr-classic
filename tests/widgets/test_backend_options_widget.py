@@ -255,7 +255,7 @@ def test_gpu_worker_uses_runtime_installer_accelerator(
         raising=False,
     )
     monkeypatch.setattr(
-        bow.env_manager,
+        bow,
         "detect_gpu_info",
         lambda **_kwargs: {
             "has_gpu": True,
@@ -333,7 +333,7 @@ def test_cancelled_gpu_worker_does_not_emit_result(_cleanup, tmp_path, monkeypat
         cancel_event.set()
         return {"has_gpu": True, "name": "late", "vram_mb": 1, "cuda": "x"}
 
-    monkeypatch.setattr(bow.env_manager, "detect_gpu_info", detect)
+    monkeypatch.setattr(bow, "detect_gpu_info", detect)
     worker = bow._GpuDetectWorker(tmp_path)
     received: list[dict] = []
     worker.finished_info.connect(received.append)

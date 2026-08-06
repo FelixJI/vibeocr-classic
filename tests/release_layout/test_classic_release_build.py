@@ -135,11 +135,12 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "Get-ChildItem $protocolSdk -Filter" not in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow
-    assert "vibeocr-backend" in project["project"]["dependencies"]
     assert not any(
-        dependency.startswith("vibeocr-backend") and dependency != "vibeocr-backend"
+        dependency.startswith("vibeocr-backend")
         for dependency in project["project"]["dependencies"]
     )
+    assert "'--collect-submodules', 'vibeocr.backend'" not in script
+    assert "'--collect-data', 'vibeocr.backend'" not in script
 
 
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:

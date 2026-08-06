@@ -52,7 +52,6 @@ def manager(qapp):
         "_open_worker",
         "_mutate_worker",
         "_ocr_worker",
-        "_preflight_worker",
         "_preview_worker",
         "_export_worker",
     ):
@@ -74,38 +73,6 @@ def manager(qapp):
     # crash the next nested pytest-qt event loop on Windows.
     mgr.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-
-
-def test_slow_mineru_preflight_keeps_event_loop_responsive(manager, qtbot, monkeypatch):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_prepare(*_args, **_kwargs):
-        entered.set()
-        release.wait(2)
-        return True, "ok"
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", slow_prepare
-    )
-    monkeypatch.setattr(manager, "_is_mineru_first_use", lambda _opts: True)
-    manager._inference_client = object()
-
-    assert manager.start_ocr([0], ocr_options=object()) is True
-    qtbot.waitUntil(entered.is_set)
-    assert_qt_event_loop_responsive(
-        qtbot,
-        in_flight=lambda: (
-            manager._preflight_worker is not None
-            and manager._preflight_worker.isRunning()
-        ),
-    )
-
-    manager.cancel_ocr()
-    release.set()
-    qtbot.waitUntil(lambda: manager._preflight_worker is None)
-    assert manager._ocr_state == "cancelled"
-    manager._client.reset_cancel.assert_not_called()
 
 
 def test_slow_backend_start_for_open_runs_off_gui(manager, qtbot):
@@ -403,60 +370,6 @@ def test_open_start_failure_reports_every_path_and_finishes(manager, qtbot):
     qtbot.waitUntil(lambda: manager._open_worker is None)
 
 
-def test_preflight_late_success_is_ignored_after_shutdown(manager, qtbot, monkeypatch):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_prepare(*_args, **_kwargs):
-        entered.set()
-        release.wait(2)
-        return True, "late"
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", slow_prepare
-    )
-    monkeypatch.setattr(manager, "_is_mineru_first_use", lambda _opts: True)
-    manager._inference_client = object()
-    run_ocr = MagicMock()
-    monkeypatch.setattr(manager, "_run_ocr", run_ocr)
-
-    assert manager.start_ocr([0], ocr_options=object())
-    qtbot.waitUntil(entered.is_set)
-    manager.request_shutdown()
-    release.set()
-    qtbot.waitUntil(lambda: manager._preflight_worker is None)
-
-    run_ocr.assert_not_called()
-    assert manager._pending_ocr_request is None
-
-
-def test_preflight_cancel_defers_business_terminal_until_native_finished(manager):
-    path = manager.active_session.file_path
-    worker = MagicMock()
-    worker.is_cancelled = True
-    manager._preflight_worker = worker
-    manager._preflight_generation = 11
-    manager._pending_ocr_request = (path, [0], object(), object(), False)
-    manager._ocr_running = True
-    manager._ocr_state = "preflight"
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, ok, fail: done.append((p, ok, fail)))
-
-    manager.cancel_ocr()
-
-    assert manager._ocr_running is True
-    assert manager.is_ocr_running is True
-    assert done == []
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._preflight_worker is None
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-    assert done == [(path, 0, 0)]
-    worker.deleteLater.assert_called_once_with()
-
-
 def test_pdf_shutdown_request_creates_session_close_workers_on_gui_owner(
     manager, monkeypatch
 ):
@@ -677,10 +590,6 @@ def test_is_ocr_running_and_pdf_write_busy(manager):
     assert manager._pdf_write_busy() is True
 
     manager._ocr_worker = None
-    manager._preflight_worker = MagicMock()
-    assert manager.is_ocr_running is True
-
-    manager._preflight_worker = None
     manager._mutate_worker = MagicMock()
     assert manager._pdf_write_busy() is True
 
@@ -781,7 +690,7 @@ def test_get_pages_without_text_layer(manager):
     assert manager.get_pages_without_text_layer("unknown") == []
 
 
-def test_is_current_open_and_preview_and_preflight_predicates(manager):
+def test_is_current_open_and_preview_predicates(manager):
     worker_open = MagicMock()
     manager._open_worker = worker_open
     manager._open_generation = 0
@@ -811,15 +720,6 @@ def test_is_current_open_and_preview_and_preflight_predicates(manager):
     assert manager._is_current_preview(MagicMock(), gen) is False
     assert manager._is_current_preview(preview_worker, gen + 1) is False
     manager._preview_worker = None
-
-    # preflight 谓词：仅匹配 worker+generation
-    preflight_worker = MagicMock()
-    manager._preflight_worker = preflight_worker
-    manager._preflight_generation = 5
-    assert manager._is_current_preflight(preflight_worker, 5) is True
-    assert manager._is_current_preflight(preflight_worker, 4) is False
-    assert manager._is_current_preflight(MagicMock(), 5) is False
-    manager._preflight_worker = None
 
 
 def test_is_current_mutate_allow_cancelling_branches(manager):
@@ -1144,84 +1044,6 @@ def test_on_ocr_worker_finished_when_completed_state(manager):
     assert manager._ocr_worker is None
     assert manager._ocr_state == "completed"
     worker.deleteLater.assert_called_once_with()
-
-
-def test_on_preflight_progress_emits_status(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "preflight"
-
-    statuses: list[str] = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == ["[download] 50%"]
-
-
-def test_on_preflight_progress_ignored_when_not_preflight_state(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "running"  # 非 preflight
-
-    statuses: list = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == []
-
-
-def test_on_preflight_progress_ignored_when_shutting_down(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "preflight"
-    manager._shutting_down = True
-
-    statuses: list = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == []
-
-
-def test_on_preflight_completed_stores_result(manager):
-    worker = MagicMock()
-    worker.is_cancelled = False
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 3)
-
-    assert manager._preflight_result == (True, "ok")
-
-
-def test_on_preflight_completed_ignored_when_cancelled(manager):
-    worker = MagicMock()
-    worker.is_cancelled = True
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 3)
-
-    assert manager._preflight_result is None
-
-
-def test_on_preflight_completed_ignored_when_stale_generation(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 99)
-
-    assert manager._preflight_result is None
 
 
 def test_on_export_done_and_failed_store_pending(manager):
@@ -2065,161 +1887,6 @@ def test_export_all_async_emits_empty_when_no_modified(manager):
     manager.export_done.connect(done.append)
     manager.export_all_async("/out")
     assert done == [[]]
-
-
-# =============================================================================
-# _on_preflight_finished 各分支（cancelled / 无 request / 失败 / 成功切走 / 成功启动）
-# =============================================================================
-
-
-def _setup_preflight(manager):
-    """构造一个匹配当前 preflight generation 的 worker + 状态。"""
-    worker = MagicMock()
-    worker.is_cancelled = False
-    manager._preflight_worker = worker
-    manager._preflight_generation = 11
-    manager._ocr_running = True
-    manager._ocr_state = "preflight"
-    manager._pending_ocr_request = ("C:/fake.pdf", [0], object(), object(), False)
-    manager._preflight_result = (True, "ok")
-    manager._preflight_cancel_path = None
-    return worker
-
-
-def test_on_preflight_finished_stale_generation_deleteLater(manager):
-    worker = _setup_preflight(manager)
-    # 过期 generation → deleteLater 返回
-    manager._on_preflight_finished(worker, 99)
-    worker.deleteLater.assert_called_once_with()
-    assert manager._preflight_worker is worker  # 未清理（非当前）
-
-
-def test_on_preflight_finished_worker_cancelled(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = "C:/fake.pdf"
-
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-    assert manager._preflight_worker is None
-    assert done == [("C:/fake.pdf", 0, 0)]
-
-
-def test_on_preflight_finished_cancelled_with_path_but_shutting_down(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = "C:/fake.pdf"
-    manager._shutting_down = True
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    # shutting_down 时不发 ocr_done
-    assert done == []
-    assert manager._ocr_state == "cancelled"
-
-
-def test_on_preflight_finished_cancelled_no_path(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = None  # 无 cancel_path
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert done == []  # 无 path 不发
-
-
-def test_on_preflight_finished_no_request(manager):
-    worker = _setup_preflight(manager)
-    manager._pending_ocr_request = None
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-
-
-def test_on_preflight_finished_failed_result(manager):
-    worker = _setup_preflight(manager)
-    manager._preflight_result = (False, "download error")
-
-    done: list[tuple[str, int, int]] = []
-    statuses: list[str] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._ocr_state == "completed"
-    assert done == [("C:/fake.pdf", 0, 1)]
-    assert any("download error" in s for s in statuses)
-
-
-def test_on_preflight_finished_none_result(manager):
-    worker = _setup_preflight(manager)
-    manager._preflight_result = None
-
-    statuses: list[str] = []
-    done: list = []
-    manager.mineru_models_status.connect(statuses.append)
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert done == [("C:/fake.pdf", 0, 1)]
-    assert any("未返回结果" in s for s in statuses)
-
-
-def test_on_preflight_finished_success_active_changed(manager):
-    """成功但 active_path 已切走 → cancelled + ocr_done(0,0)。"""
-    worker = _setup_preflight(manager)
-    # 把 request 的 path 设成与当前 active 不同
-    manager._pending_ocr_request = ("C:/other.pdf", [0], object(), object(), False)
-
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_state == "cancelled"
-    assert done == [("C:/other.pdf", 0, 0)]
-
-
-def test_on_preflight_finished_success_starts_ocr(manager, monkeypatch):
-    """成功且 active 匹配 → 调 start_ocr。"""
-    worker = _setup_preflight(manager)
-    monkeypatch.setattr(manager, "start_ocr", lambda *args, **kw: True)
-
-    statuses: list[str] = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert any("就绪" in s for s in statuses)
-    assert manager._ocr_running is False
-
-
-def test_on_preflight_finished_success_start_ocr_fails(manager, monkeypatch):
-    """start_ocr 返回 False → cancelled + ocr_done(0,0)。"""
-    worker = _setup_preflight(manager)
-    monkeypatch.setattr(manager, "start_ocr", lambda *args, **kw: False)
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_state == "cancelled"
-    assert done == [("C:/fake.pdf", 0, 0)]
-
-
-def test_is_mineru_first_use_none_options(manager):
-    """ocr_options 为 None → False。"""
-    assert manager._is_mineru_first_use(None) is False
 
 
 # =============================================================================

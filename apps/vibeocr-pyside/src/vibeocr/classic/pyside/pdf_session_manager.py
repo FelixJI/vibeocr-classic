@@ -45,7 +45,6 @@ from vibeocr.classic.pdf_workspace import (
 )
 from vibeocr.classic.recognition_settings import OCROptions, PdfGlobalSettings
 from vibeocr.classic.pyside.pdf_ipc_worker import (
-    MinerUPreflightWorker,
     PdfIpcCancelWorker,
     PdfIpcCloseWorker,
     PdfIpcMutateWorker,
@@ -92,7 +91,6 @@ class PdfSessionManager(QObject):
     ocr_done = Signal(str, int, int)
     ocr_stats_ready = Signal(str, int, int)
     ocr_write_error = Signal(str, str)  # (file_path, error_message) — 写层失败详情
-    mineru_models_status = Signal(str)
     render_progress = Signal(str, int, int)
     mutate_progress = Signal(str, int, int)
     mutate_done = Signal(str, object)
@@ -164,13 +162,6 @@ class PdfSessionManager(QObject):
         self._ocr_cancelled: bool = False
         self._ocr_state: str = "idle"
         self._ocr_worker: QThread | None = None
-        self._preflight_worker: MinerUPreflightWorker | None = None
-        self._preflight_generation = 0
-        self._preflight_result: tuple[bool, str] | None = None
-        self._preflight_cancel_path: str | None = None
-        self._pending_ocr_request: (
-            tuple[str, list[int], object, object, bool] | None
-        ) = None
         # PDF backend transport: lazily resolved from the supervisor adapter.
         # The supervisor owns the PDF child process; we hold a
         # SyncPdfSupervisorClient (vibeocr.classic.pdf_client) for the
@@ -361,11 +352,7 @@ class PdfSessionManager(QObject):
     def is_ocr_running(self) -> bool:
         # all_done/failed 属于业务终态信号，发出后 QThread 还可能在 finally 中
         # drain 渲染线程池；直到原生 finished 清除引用前，都仍占用 PDF 写门。
-        return (
-            self._ocr_running
-            or self._ocr_worker is not None
-            or self._preflight_worker is not None
-        )
+        return self._ocr_running or self._ocr_worker is not None
 
     def _pdf_write_busy(self) -> bool:
         """业务 done 不释放写门；以原生 worker finished/引用清理为边界。"""
@@ -1369,8 +1356,6 @@ class PdfSessionManager(QObject):
         ocr_options: OCROptions | None = None,
         pdf_settings: PdfGlobalSettings | None = None,
         overwrite: bool = False,
-        *,
-        _preflight_complete: bool = False,
     ) -> bool:
         if pdf_settings is None:
             pdf_settings = PdfGlobalSettings()
@@ -1383,20 +1368,10 @@ class PdfSessionManager(QObject):
             getattr(self, "_shutting_down", False)
             or getattr(self, "_mutate_worker", None) is not None
             or getattr(self, "_ocr_worker", None) is not None
-            or getattr(self, "_preflight_worker", None) is not None
             or bool(getattr(self, "_ocr_running", False))
             or bool(getattr(self, "_control_workers", set()))
         ):
             return False
-
-        if not _preflight_complete and self._is_mineru_first_use(ocr_options):
-            return self._start_mineru_preflight(
-                session.file_path,
-                list(page_indices),
-                ocr_options,
-                pdf_settings,
-                overwrite,
-            )
 
         self._pdf_settings = pdf_settings
         self._overwrite_text_layer = overwrite
@@ -2052,16 +2027,6 @@ class PdfSessionManager(QObject):
 
     def _cancel_ocr(self) -> None:
         self._ocr_cancelled = True
-        preflight = getattr(self, "_preflight_worker", None)
-        if preflight is not None:
-            request = self._pending_ocr_request
-            self._pending_ocr_request = None
-            self._preflight_cancel_path = request[0] if request is not None else None
-            # asyncio/QThread 的取消请求不是原生终态。保持写门与 UI busy，
-            # 直到 QThread.finished；否则下一次 OCR 会撞上仍在下载的 worker。
-            self._ocr_running = True
-            self._ocr_state = "cancelling"
-            preflight.cancel()
         w = getattr(self, "_ocr_worker", None)
         if w is not None and hasattr(w, "cancel"):
             self._ocr_state = "cancelling"
@@ -2079,153 +2044,6 @@ class PdfSessionManager(QObject):
         return [
             p.page_index for p in session.pdf_document.pages if not p.has_text_layer
         ]
-
-    # ---- MinerU 模型准备 ---------------------------------------------
-
-    def _start_mineru_preflight(
-        self,
-        file_path: str,
-        page_indices: list[int],
-        ocr_options: object,
-        pdf_settings: object,
-        overwrite: bool,
-    ) -> bool:
-        if self._preflight_worker is not None:
-            return False
-        self._task_generation += 1
-        self._preflight_generation = self._task_generation
-        generation = self._preflight_generation
-        self._preflight_result = None
-        self._preflight_cancel_path = None
-        self._pending_ocr_request = (
-            file_path,
-            page_indices,
-            ocr_options,
-            pdf_settings,
-            overwrite,
-        )
-        self._ocr_running = True
-        self._ocr_cancelled = False
-        self._ocr_state = "preflight"
-        worker = MinerUPreflightWorker()
-        worker.progress.connect(
-            lambda stage, message, w=worker, gen=generation: (
-                self._on_preflight_progress(stage, message, w, gen)
-            )
-        )
-        worker.completed.connect(
-            lambda ok, message, w=worker, gen=generation: self._on_preflight_completed(
-                ok, message, w, gen
-            )
-        )
-        worker.finished.connect(
-            lambda w=worker, gen=generation: self._on_preflight_finished(w, gen)
-        )
-        self._preflight_worker = worker
-        self.mineru_models_status.emit(
-            "首次使用文档解析，正在下载 MinerU 模型（约数 GB）..."
-        )
-        worker.start()
-        return True
-
-    def _is_current_preflight(self, worker, generation: int) -> bool:
-        return (
-            worker is self._preflight_worker
-            and generation == self._preflight_generation
-        )
-
-    def _on_preflight_progress(
-        self, stage: str, message: str, worker, generation: int
-    ) -> None:
-        if (
-            self._is_current_preflight(worker, generation)
-            and not self._shutting_down
-            and self._ocr_state == "preflight"
-        ):
-            self.mineru_models_status.emit(f"[{stage}] {message}")
-
-    def _on_preflight_completed(
-        self, ok: bool, message: str, worker, generation: int
-    ) -> None:
-        if not self._is_current_preflight(worker, generation):
-            return
-        if self._shutting_down or worker.is_cancelled or self._ocr_state != "preflight":
-            return
-        # completed 是业务结果，不是原生线程终态。只暂存；真正继续 OCR、
-        # 发布失败或取消均在 finished 槽完成。
-        self._preflight_result = (bool(ok), str(message))
-
-    def _on_preflight_finished(self, worker, generation: int) -> None:
-        if not self._is_current_preflight(worker, generation):
-            worker.deleteLater()
-            return
-
-        request = self._pending_ocr_request
-        cancel_path = self._preflight_cancel_path
-        result = self._preflight_result
-        was_cancelled = bool(
-            worker.is_cancelled
-            or self._ocr_state == "cancelling"
-            or self._shutting_down
-        )
-        self._preflight_worker = None
-        self._pending_ocr_request = None
-        self._preflight_result = None
-        self._preflight_cancel_path = None
-        worker.deleteLater()
-
-        if was_cancelled:
-            self._ocr_running = False
-            self._ocr_state = "cancelled"
-            if cancel_path and not self._shutting_down:
-                self.ocr_done.emit(cancel_path, 0, 0)
-            return
-
-        if request is None:
-            self._ocr_running = False
-            self._ocr_state = "cancelled"
-            return
-
-        file_path, pages, options, settings, overwrite = request
-        if result is None or not result[0]:
-            message = result[1] if result is not None else "模型准备线程未返回结果"
-            self._ocr_running = False
-            self._ocr_state = "completed"
-            self.mineru_models_status.emit(f"模型下载失败: {message}")
-            self.ocr_done.emit(file_path, 0, 1)
-            return
-
-        self.mineru_models_status.emit("MinerU 模型准备就绪")
-        self._ocr_running = False
-        if self._active_path != file_path:
-            self._ocr_state = "cancelled"
-            self.ocr_done.emit(file_path, 0, 0)
-            return
-        started = self.start_ocr(
-            pages,
-            options,
-            settings,
-            overwrite,
-            _preflight_complete=True,
-        )
-        if not started:
-            self._ocr_state = "cancelled"
-            self.ocr_done.emit(file_path, 0, 0)
-
-    def _is_mineru_first_use(self, ocr_options: OCROptions | None) -> bool:
-        if ocr_options is None:
-            return False
-        try:
-            from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
-
-            if ocr_options.pipeline != OCRPipeline.DOCUMENT_PARSING:
-                return False
-            from vibeocr.backend.pipeline_status import is_pipeline_ever_succeeded
-            from vibeocr.classic.app_paths import get_install_root
-
-            return not is_pipeline_ever_succeeded("MinerU", get_install_root())
-        except Exception:
-            return False
 
     # ---- 批量导出 -------------------------------------------------------
 
@@ -2445,7 +2263,6 @@ class PdfSessionManager(QObject):
                 self._open_worker,
                 self._mutate_worker,
                 self._ocr_worker,
-                self._preflight_worker,
                 self._preview_worker,
                 self._export_worker,
             )

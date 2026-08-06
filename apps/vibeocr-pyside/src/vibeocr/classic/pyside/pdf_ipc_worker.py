@@ -21,45 +21,6 @@ from PySide6.QtGui import QImage
 logger = logging.getLogger(__name__)
 
 
-class MinerUPreflightWorker(QThread):
-    """在后台准备 MinerU 模型；取消后不再发布进度或成功结果。"""
-
-    progress = Signal(str, str)
-    completed = Signal(bool, str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._cancelled = False
-
-    def cancel(self) -> None:
-        self._cancelled = True
-        self.requestInterruption()
-
-    @property
-    def is_cancelled(self) -> bool:
-        return self._cancelled
-
-    def run(self) -> None:
-        from vibeocr.backend.env_manager import ensure_mineru_models
-        from vibeocr.classic.app_paths import get_install_root
-
-        def report(stage: str, message: str) -> None:
-            if not self._cancelled:
-                self.progress.emit(stage, message)
-
-        try:
-            ok, message = ensure_mineru_models(
-                get_install_root(), progress_callback=report
-            )
-        except Exception as exc:
-            ok, message = False, str(exc)
-        # cancel() 只能协作式中断底层下载；若调用已越过取消检查点，run()
-        # 仍可能自然返回。取消后的业务结果必须丢弃，最终状态由原生
-        # QThread.finished 统一发布，避免 UI 在 worker 尚存活时解除 busy。
-        if not self._cancelled:
-            self.completed.emit(bool(ok), str(message))
-
-
 class PdfIpcPreviewWorker(QThread):
     """后台渲染预览，并按需获取文字层详情。"""
 

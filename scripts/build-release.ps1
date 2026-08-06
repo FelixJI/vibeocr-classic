@@ -119,9 +119,7 @@ $pyinstallerArgs = @(
     '--collect-submodules', 'vibeocr.classic',
     '--collect-submodules', 'vibeocr.runtime_client',
     '--collect-submodules', 'vibeocr.runtime_contracts',
-    '--collect-submodules', 'vibeocr.backend',
     '--collect-data', 'vibeocr.runtime_contracts',
-    '--collect-data', 'vibeocr.backend',
     '--add-data', "$root/resources;resources",
     '--add-data', "$root/CHANGELOG.md;."
 )

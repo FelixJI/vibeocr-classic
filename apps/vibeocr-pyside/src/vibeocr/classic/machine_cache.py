@@ -39,17 +39,6 @@ CACHE_VERSION = 4
 #                                   update_cache_field）。
 #   hardware_info: {has_gpu: bool, cuda_version: str|None}
 #                                   GPU 检测结果。写入方：env_manager。
-#   pipeline_success: {name: bool}  管道"曾在此机器跑通"标记。写入方：
-#                                   pipeline_status.mark_pipeline_success（经
-#                                   update_cache_field 增量写）。
-#   network: {last_detected: ISO str, paddlex_source: str, mineru_source: str}
-#                                   模型源网络探测结果，7 天 TTL。写入方：
-#                                   network_detector._save_to_cache（经 save_cache）。
-#   pending_backend: "gpu"|"cpu"|null
-#                                   用户在设置页选择的待切换后端，下次启动 worker
-#                                   时由 resolve_use_gpu 读取消费。写入方：
-#                                   env_manager.switch_paddle_backend（经
-#                                   update_cache_field）。
 #   preload_pipelines: [str]        历史字段。已迁移至 app_settings.json，
 #                                   config_manager.get_preload_pipelines 仅做
 #                                   一次性读迁移（只读，不再写入此文件）。
@@ -356,12 +345,11 @@ def create_cache_entry(
 def update_cache_field(project_root: Path, key: str, value: object) -> bool:
     """原地更新缓存中的单个顶层字段（保留其余字段）
 
-    用于 switch_paddle_backend 写入 pending_backend、设置页标记待切换等场景，
-    避免重建整个缓存条目。
+    用于后台任务安全更新单个缓存字段，避免重建整个缓存条目。
 
     Args:
         project_root: 项目根目录
-        key: 顶层字段名（如 "pending_backend"）
+        key: 顶层字段名
         value: 字段值
 
     Returns:
@@ -431,20 +419,6 @@ def get_cache_info(project_root: Path) -> str:
         else "(空)"
     )
     hw = cache_data.get("hardware_info", {})
-    pipeline_success = cache_data.get("pipeline_success", {})
-    pipeline_summary = (
-        ", ".join(sorted(pipeline_success.keys())) if pipeline_success else "(无)"
-    )
-    network = cache_data.get("network", {})
-    network_summary = (
-        f"paddlex={network.get('paddlex_source', '?')}, "
-        f"mineru={network.get('mineru_source', '?')}, "
-        f"@ {network.get('last_detected', '?')}"
-        if network
-        else "(未探测)"
-    )
-    pending_backend = cache_data.get("pending_backend")
-
     lines = [
         f"version={version} (current CACHE_VERSION={CACHE_VERSION})",
         f"machine_id={machine_id[:16]}...",
@@ -452,9 +426,5 @@ def get_cache_info(project_root: Path) -> str:
         f"python_version={py_ver}",
         f"dependencies: {deps_summary}",
         f"hardware: has_gpu={hw.get('has_gpu', '?')}, cuda={hw.get('cuda_version', '?')}",
-        f"pipeline_success: {pipeline_summary}",
-        f"network: {network_summary}",
     ]
-    if pending_backend is not None:
-        lines.append(f"pending_backend={pending_backend}")
     return "\n".join(lines)

@@ -102,7 +102,7 @@ class SettingsPageController:
         # 没联动 MainWindow._ocr_ready / 子进程 Worker，导致装完仍提示"未就绪"。
         # 现由 MainWindow 传入一个触发 dependency_manager.check_dependencies
         # 的回调，使设置页安装成功后与首启路径行为一致（检测完成回调里自动
-        # 设 _ocr_ready + 启动 Worker + 消费 pending_backend）。
+        # 设 _ocr_ready + 启动 Worker）。
         self._install_succeeded_callback = install_succeeded_callback
         self._gpu_capability_callback = gpu_capability_callback
         self._runtime_has_gpu: bool | None = None
@@ -1123,14 +1123,14 @@ class SettingsPageController:
     # ============================================================
 
     def _on_refresh_cache_clicked(self) -> None:
-        """在线程池刷新机器缓存，避免机器码探测阻塞 GUI。"""
+        """在线程池重新检查产品绑定的 Runtime。"""
         if self._closing or self._cache_refresh_running:
             return
         self._cache_refresh_running = True
         button = self._ui.findChild(QPushButton, "btnRefreshCache")
         if button:
             button.setEnabled(False)
-        self._update_cache_status("正在重新检测环境（可能需要数十秒）...")
+        self._update_cache_status("正在验证 Runtime manifest 与组件状态...")
         self._machine_cache_generation += 1
         generation = self._machine_cache_generation
 
@@ -1142,59 +1142,41 @@ class SettingsPageController:
                 return
             success, info = result
             if success:
-                self._apply_cache_status(generation, True, info, "缓存已刷新")
-                self._show_settings_toast("机器/依赖缓存已重置（下次启动时重新检测）")
-                logger.debug("[缓存] 已刷新机器/依赖缓存")
+                self._apply_cache_status(
+                    generation,
+                    True,
+                    info,
+                    f"Runtime 状态已刷新：{info}",
+                )
+                self._show_settings_toast("Runtime manifest 与组件状态已重新验证")
+                logger.debug("[Runtime] 已重新验证产品绑定状态")
             else:
-                self._apply_cache_status(generation, False, "", "缓存刷新失败")
+                self._apply_cache_status(generation, False, "", "Runtime 验证失败")
 
         def failed(error: str) -> None:
             self._cache_refresh_running = False
             if button:
                 button.setEnabled(True)
             if generation == self._machine_cache_generation:
-                self._update_cache_status(f"缓存刷新失败：{error}")
+                self._update_cache_status(f"Runtime 验证失败：{error}")
 
         self._run_cache_operation(
             self._refresh_machine_cache_operation, finished, failed
         )
 
     def _refresh_machine_cache_operation(self) -> tuple[bool, str]:
-        """真正重检测：清环境检测字段 → 触发完整检测 → 读回 cache info。
-
-        在 _run_cache_operation 后台线程执行。完整检测耗时数十秒
-        （40+ subprocess + paddle import），UI 通过按钮 disable + 进度文案提示。
-
-        注意：**不清 pipeline_success 字段**——它是运行时累积的状态（哪些
-        管道曾成功跑过），不属于"环境检测"范畴。清掉会导致 _decide_recognize_timeout
-        误判"模型未缓存"，给 OCR 600s 超时。用 reset_cache_to_empty 会清
-        deps/hardware_info 但不保留 pipeline_success，故这里手动保留。
-        """
-        from vibeocr.backend import env_manager
-        from vibeocr.classic.machine_cache import get_cache_info, load_cache, save_cache
-
-        # 1. 备份 pipeline_success（运行时状态，不应被环境重检测清掉）
-        cached = load_cache(self._project_root) or {}
-        preserved_pipeline_success = cached.get("pipeline_success", {})
-        preserved_network = cached.get("network", {})
-        # 2. 清环境检测字段，强制下次检测为"全量"
-        from vibeocr.classic.machine_cache import reset_cache_to_empty
-
-        reset_cache_to_empty(self._project_root)
-        # 3. 跑完整检测（use_cache=False 强制走 _check_imports 全量探测）
-        env_manager.check_embedded_environment_dependencies(
-            self._project_root,
-            use_cache=False,
+        """通过稳定 Installer interface 验证完整 Runtime 绑定。"""
+        inspection = self._runtime_installer.inspect()
+        accelerator = (
+            "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
         )
-        # 4. 还原保留的运行时状态字段
-        if preserved_pipeline_success or preserved_network:
-            new_cached = load_cache(self._project_root) or {}
-            if preserved_pipeline_success:
-                new_cached["pipeline_success"] = preserved_pipeline_success
-            if preserved_network:
-                new_cached["network"] = preserved_network
-            save_cache(self._project_root, new_cached)
-        return True, get_cache_info(self._project_root)
+        readiness = "已就绪" if inspection.ready else f"未就绪({inspection.status})"
+        summary = (
+            f"{readiness} · Backend {inspection.backend_version} · "
+            f"Protocol {inspection.protocol_version} · {accelerator} · "
+            f"integrity={inspection.integrity}"
+        )
+        return True, summary
 
     def _run_after_supervisor_invalidated(
         self, continuation: Callable[[], None]
@@ -1297,7 +1279,7 @@ class SettingsPageController:
 
         def _on_install_succeeded() -> None:
             # 装完依赖联动 MainWindow：刷新设置页状态 + 触发重新检测依赖
-            # （检测完成回调里自动设 _ocr_ready、启动子进程 Worker、消费 pending_backend）。
+            # （检测完成回调里自动设 _ocr_ready 并启动子进程 Worker）。
             # 不直接设 _ocr_ready=True：让真实检测反映"装了但间接依赖没装完"等
             # 异常状态，避免假就绪。
             self._refresh_env_maintenance_state()
@@ -1764,41 +1746,21 @@ class SettingsPageController:
         return "✗ 未安装"
 
     def _on_clear_cache_clicked(self) -> None:
-        """清除缓存按钮点击。
-
-        保留 pipeline_success（运行时累积状态，清掉会导致 OCR 误判未缓存）。
-        """
+        """清除 Classic 自有的启动环境检测缓存。"""
         reply = QMessageBox.question(
             None,
             "确认清除",
-            "确定要清除环境检测缓存吗？\n"
-            "下次启动时需要重新检测依赖与硬件。\n"
-            "（管道运行状态会保留，不影响 OCR 超时判定）",
+            "确定要清除环境检测缓存吗？\n下次启动时需要重新检测应用环境与硬件。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            from vibeocr.classic.machine_cache import (
-                load_cache,
-                reset_cache_to_empty,
-                save_cache,
-            )
+            from vibeocr.classic.machine_cache import reset_cache_to_empty
 
-            # 保留运行时状态字段，只清环境检测数据
-            cached = load_cache(self._project_root) or {}
-            preserved_pipeline_success = cached.get("pipeline_success", {})
-            preserved_network = cached.get("network", {})
             reset_cache_to_empty(self._project_root)
-            if preserved_pipeline_success or preserved_network:
-                new_cached = load_cache(self._project_root) or {}
-                if preserved_pipeline_success:
-                    new_cached["pipeline_success"] = preserved_pipeline_success
-                if preserved_network:
-                    new_cached["network"] = preserved_network
-                save_cache(self._project_root, new_cached)
             self._update_cache_status("缓存已清除")
-            logger.debug("[缓存] 已清除（保留 pipeline_success）")
+            logger.debug("[缓存] 已清除 Classic 启动环境检测状态")
 
     def _update_cache_status(self, status: str | None = None) -> None:
         """更新缓存状态；校验机器码的路径始终在线程池执行。"""

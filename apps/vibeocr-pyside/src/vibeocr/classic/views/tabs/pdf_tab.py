@@ -1005,7 +1005,6 @@ class PdfTab(QWidget):
         mgr.ocr_done.connect(self._on_ocr_finished)
         mgr.ocr_stats_ready.connect(self._on_ocr_stats_ready)
         mgr.ocr_write_error.connect(self._on_ocr_write_error)
-        mgr.mineru_models_status.connect(self._on_mineru_models_status)
         mgr.mutate_progress.connect(self._on_mutate_progress)
         mgr.mutate_done.connect(self._on_mutate_done)
         mgr.mutate_failed.connect(self._on_mutate_failed)
@@ -1168,13 +1167,6 @@ class PdfTab(QWidget):
         self.task_status_changed.emit(
             f"PDF OCR · {pct}% · {pages_done}/{pages_total} 页"
         )
-
-    def _on_mineru_models_status(self, message: str) -> None:
-        """MinerU 模型下载状态提示（首次使用文档解析时）"""
-        self._status_label.setText(message)
-        # 下载期间显示不确定进度条（无具体百分比）
-        self._progress_bar.setRange(0, 0)
-        self._progress_bar.setVisible(True)
 
     def on_ocr_queued(self, message: str) -> None:
         """OCR worker 忙碌（如预热中）时，识别请求已排队。

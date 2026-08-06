@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.classic.app_paths import get_install_root
-from vibeocr.classic.machine_cache import is_cache_valid, update_cache_field
+from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.managers.config_manager import ConfigManager
 from vibeocr.classic.managers.dependency_manager import DependencyManager
 from vibeocr.classic.managers.layout_manager import LayoutManager
@@ -645,7 +645,7 @@ class MainWindow(QMainWindow):
             # 旧逻辑设置页装完只刷新表格，不联动 _ocr_ready/Worker，截图界面
             # 仍提示"未就绪"。现复用 dependency_manager.check_dependencies，
             # 检测完成回调（_on_dependency_check_finished）自动设 _ocr_ready、
-            # 启动子进程 Worker、消费 pending_backend，与首启路径行为一致。
+            # 启动子进程 Worker，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
             gpu_capability_callback=self._on_gpu_capability_resolved,
             defer_backend_initialization=True,
@@ -659,7 +659,7 @@ class MainWindow(QMainWindow):
         由 SettingsPageController._open_reinstall_dialog 在对话框 emit
         install_succeeded 时调用。复用 DependencyManager.check_dependencies
         重新检测便携环境——检测完成回调（_on_dependency_check_finished）会
-        自动设置 _ocr_ready、启动子进程 Worker、消费 pending_backend，使
+        自动设置 _ocr_ready 并启动子进程 Worker，使
         截图界面立即生效，无需重启程序。
 
         不直接设 _ocr_ready=True：让真实检测（双层 _probe_module）正确反映
@@ -764,8 +764,8 @@ class MainWindow(QMainWindow):
                 self._statusbar.showMessage("准备 Supervisor")
             logging.info("OCR 运行环境可用")
 
-            # 依赖检测可能刚重建缓存。后台重新校验并回填后，再消费
-            # pending_backend；避免初始缓存读取与依赖检查写缓存竞态。
+            # 依赖检测可能刚重建缓存。后台重新校验并回填后，再继续启动；
+            # 避免初始缓存读取与依赖检查写缓存竞态。
             self._request_machine_cache_load(after_dependency=True)
         else:
             self._ocr_ready = False
@@ -787,10 +787,6 @@ class MainWindow(QMainWindow):
         if self._closing or not self._ocr_ready:
             return
 
-        needs_switch, target = self._check_pending_backend(self._machine_cache_data)
-        if needs_switch and target:
-            self._show_switch_dialog(target)
-            return
         self._start_supervisor()
 
     def _check_pending_sync(self) -> bool:
@@ -811,60 +807,6 @@ class MainWindow(QMainWindow):
                 pending_path.unlink(missing_ok=True)
             except Exception as e:
                 logging.warning("[依赖同步] 删除 %s 失败: %s", pending_path, e)
-
-    def _check_pending_backend(
-        self, cached_data: dict | None = None
-    ) -> tuple[bool, str | None]:
-        """检测是否有待生效的后端切换（重启消费 pending_backend）
-
-        Returns:
-            (是否需要切换, 目标后端 "gpu"/"cpu"/None)
-        """
-        # 兼容独立调用/旧测试；真实启动路径总是传入后台校验后的快照。
-        if cached_data is None:
-            is_valid, cached_data = is_cache_valid(self._project_root)
-            if not (is_valid and cached_data):
-                return False, None
-
-        pending = cached_data.get("pending_backend")
-        if not pending:
-            return False, None
-
-        # 当前实际后端：读 hardware_info.has_gpu（switch_paddle_backend 会更新它）
-        hardware_info = cached_data.get("hardware_info") or {}
-        current = "gpu" if hardware_info.get("has_gpu") else "cpu"
-
-        if pending == current:
-            # 一致，清除标记，无需切换
-            update_cache_field(self._project_root, "pending_backend", None)
-            logging.info("[后端切换] pending_backend 与当前一致，已清除标记")
-            return False, None
-
-        logging.info(
-            "[后端切换] 检测到 pending_backend=%s（当前 %s），将切换", pending, current
-        )
-        return True, pending
-
-    def _show_switch_dialog(self, target: str) -> None:
-        """显示后端切换对话框（重启消费 pending_backend）"""
-        from vibeocr.classic.widgets.switch_dialog import SwitchDialog
-
-        name = "GPU" if target == "gpu" else "CPU"
-        self._statusbar.showMessage(f"正在切换到 {name} 后端...")
-
-        def _on_switch_finished(result: int) -> None:
-            if result == 1:
-                # 切换成功，清除 pending 标记
-                update_cache_field(self._project_root, "pending_backend", None)
-                self._statusbar.showMessage("OCR 后端切换完成 · 正在启动 Supervisor")
-                self._start_supervisor()
-            else:
-                self._statusbar.showMessage("后端切换失败，请在设置页重试")
-                self._ocr_ready = False
-
-        dialog = SwitchDialog(self._project_root, target, self)
-        dialog.finished.connect(_on_switch_finished)
-        dialog.exec()
 
     def _start_supervisor(self) -> None:
         """依赖检测完成后启动唯一的 PySide Supervisor 会话。"""

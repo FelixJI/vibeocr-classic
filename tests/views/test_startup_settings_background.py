@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
@@ -190,4 +191,30 @@ def test_settings_cache_refresh_is_responsive_and_single_flight(
 
     release.set()
     qtbot.waitUntil(button.isEnabled, timeout=1000)
-    assert label.text() == "缓存已刷新"
+    assert label.text() == "Runtime 状态已刷新：cache-info"
+
+
+def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
+    qtbot, tmp_path
+) -> None:
+    controller = _controller(qtbot, tmp_path)
+    controller._runtime_installer = MagicMock()
+    controller._runtime_installer.inspect.return_value = SimpleNamespace(
+        ready=True,
+        status="ready",
+        accelerator="nvidia_cuda",
+        backend_version="0.8.0",
+        protocol_version="2.4.0",
+        integrity="verified",
+    )
+    cache_file = tmp_path / ".vibeocr" / "cache.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("owned-by-classic", encoding="utf-8")
+
+    success, summary = controller._refresh_machine_cache_operation()
+
+    assert success is True
+    assert summary == (
+        "已就绪 · Backend 0.8.0 · Protocol 2.4.0 · NVIDIA CUDA · integrity=verified"
+    )
+    assert cache_file.read_text(encoding="utf-8") == "owned-by-classic"

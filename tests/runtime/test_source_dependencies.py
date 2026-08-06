@@ -64,42 +64,8 @@ APP_PATH_ONLY_CONSUMERS = (
     CLASSIC_SOURCE_ROOT / "views" / "tabs" / "about_tab.py",
 )
 
-# Temporary migration ledger.  Every remaining production import from the
-# Backend source package must be named here and this mapping must only shrink.
 # Protocol/runtime executable identity strings are intentionally outside this
 # source-import boundary.
-EXPECTED_BACKEND_SOURCE_IMPORTS = {
-    "pyside/pdf_ipc_worker.py": {
-        "vibeocr.backend.env_manager",
-        "vibeocr.backend.env_manager.ensure_mineru_models",
-    },
-    "pyside/pdf_session_manager.py": {
-        "vibeocr.backend.pipeline_status",
-        "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-    },
-    "services/update_service.py": {
-        "vibeocr.backend.network_detector",
-        "vibeocr.backend.network_detector.NetworkDetector",
-    },
-    "views/settings_page_controller.py": {
-        "vibeocr.backend",
-        "vibeocr.backend.env_manager",
-    },
-    "widgets/backend_choice_dialog.py": {
-        "vibeocr.backend",
-        "vibeocr.backend.env_manager",
-    },
-    "widgets/backend_options_widget.py": {
-        "vibeocr.backend",
-        "vibeocr.backend.env_manager",
-    },
-    "widgets/switch_dialog.py": {
-        "vibeocr.backend",
-        "vibeocr.backend.env_manager",
-        "vibeocr.backend.network_detector",
-        "vibeocr.backend.network_detector.NetworkDetector",
-    },
-}
 
 
 def _imported_modules(source: str, *, filename: str = "<source>") -> set[str]:
@@ -378,7 +344,7 @@ def test_pdf_frontend_does_not_import_backend_wire_or_session_modules() -> None:
     )
 
 
-def test_remaining_backend_source_imports_match_migration_ledger() -> None:
+def test_classic_source_does_not_import_backend_package() -> None:
     actual: dict[str, set[str]] = {}
 
     for source_file in CLASSIC_SOURCE_ROOT.rglob("*.py"):
@@ -392,7 +358,7 @@ def test_remaining_backend_source_imports_match_migration_ledger() -> None:
         if imported:
             actual[source_file.relative_to(CLASSIC_SOURCE_ROOT).as_posix()] = imported
 
-    assert actual == EXPECTED_BACKEND_SOURCE_IMPORTS
+    assert actual == {}
 
 
 def test_classic_settings_do_not_import_backend_value_models() -> None:

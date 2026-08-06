@@ -21,8 +21,6 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import httpx
 
-from vibeocr.classic.app_paths import get_install_root
-
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from pathlib import Path
@@ -32,8 +30,9 @@ logger = logging.getLogger(__name__)
 
 # 发布仓库标识与下载源选择收敛到 env_config（SSOT）。
 # 发布渠道：CNB 仅镜像代码；产物唯一源 GitHub。
-# 客户端按 NetworkDetector 选源：国内走 gh 代理加速（gh-proxy / ghproxy）→ GitHub 裸连；
-# 海外直连 GitHub。CNB OpenAPI 需 token 鉴权，客户端无法匿名访问，不用于更新。
+# 客户端按 GitHub 实际可达性选源：可达时直连，不可达时按
+# gh-proxy / ghproxy / GitHub 顺序回退。CNB OpenAPI 需 token 鉴权，
+# 客户端无法匿名访问，不用于更新。
 from vibeocr.classic.update_config import (  # noqa: E402
     GITHUB_API_LATEST,
     build_asset_url_pairs,
@@ -278,16 +277,6 @@ async def _fetch_release(url: str, headers: dict | None = None) -> dict | None:
     return None
 
 
-def _detect_network_type() -> str:
-    """读取 NetworkDetector 的网络类型；探测失败默认 international。"""
-    try:
-        from vibeocr.backend.network_detector import NetworkDetector
-
-        return NetworkDetector(get_install_root()).network_type
-    except Exception:
-        return "international"
-
-
 async def _probe_github_reachable(timeout: float = 3.0) -> bool:
     """快速探测 GitHub API（api.github.com）是否可达。
 
@@ -298,11 +287,8 @@ async def _probe_github_reachable(timeout: float = 3.0) -> bool:
         应同时探测一个 release asset 的 HEAD（如 latest release 的 .sha256 文件，
         体积小）。非本次 bug 根因，留待后续改进。
 
-    与 ``NetworkDetector`` 的国内/海外判定互补：那个判断用户所在网络环境（中国 vs
-    海外），本函数判断「此刻能不能直连 GitHub」。典型场景：海外或代理环境下
-    ``NetworkDetector`` 判 international（应直连 GitHub），但 GitHub 实际被墙/不稳定，
-    此时下载应改走国内代理（gh-proxy / ghproxy）。仅在 international 分支调用：
-    domestic 分支本就代理优先，无需再探测。
+    本函数只判断「此刻能不能直连 GitHub」，不复用 Backend 针对模型/pip
+    镜像的国内/海外分类。不可达时下载改走代理优先序。
 
     用 HEAD 请求 + 3s 超时，失败（DNS/连接/SSL/超时/5xx）一律视为不可达。
     4xx（如 403 限流）仍视为可达——说明能连上 GitHub，只是 rate limited。
@@ -607,14 +593,10 @@ async def download_update(
         return None, [DOWNLOAD_REASON_HTTP_ERROR]
     zip_path = cache_dir / zip_filename
     sha256_path = cache_dir / sha_filename
-    network_type = _detect_network_type()
-    # 海外环境（NetworkDetector 判 international）默认直连 GitHub。但 GitHub 实际
-    # 不可达时（被墙/不稳定），直连只会在所有源失败后才提示「网络问题」，体验差且
-    # 浪费一次完整下载。此处主动探测 GitHub：不可达则降级走国内代理源序。
-    # domestic 分支本就代理优先，无需探测（避免每次更新都多打一个请求）。
-    if network_type == "international" and not await _probe_github_reachable():
+    github_reachable = await _probe_github_reachable()
+    network_type = "international" if github_reachable else "domestic"
+    if not github_reachable:
         logger.info("GitHub 直连不可达，改用国内代理源序下载")
-        network_type = "domestic"
     url_pairs = build_asset_url_pairs(
         network_type, update_info.version, zip_filename, sha_filename
     )

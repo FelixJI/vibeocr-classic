@@ -491,7 +491,6 @@ class TestPdfTaskGeneration:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         # 本测试只验证 generation，不应泄漏真实 OCR 后台线程到后续测试。
         with (
@@ -501,6 +500,39 @@ class TestPdfTaskGeneration:
             mgr.start_ocr([0, 1])
 
         assert mgr._task_generation == 1
+        start_mock.assert_called_once_with()
+
+    def test_document_parsing_starts_runtime_job_directly(self, qapp):
+        from unittest.mock import MagicMock, patch
+
+        from PySide6.QtCore import QThread
+
+        from vibeocr.classic.recognition_settings import OCROptions
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+        mgr = PdfSessionManager.__new__(PdfSessionManager)
+        mgr._task_generation = 0
+        mgr._sessions = {}
+        mgr._active_path = "/fake.pdf"
+        mgr._inference_client = MagicMock()
+        mgr._ocr_running = False
+        mgr._ocr_cancelled = False
+        mgr._ocr_worker = None
+        mgr._client = MagicMock()
+        session = MagicMock()
+        session.session_id = "sid1"
+        session.file_path = "/fake.pdf"
+        mgr._sessions[session.file_path] = session
+
+        with patch.object(QThread, "start") as start_mock:
+            started = mgr.start_ocr(
+                [0],
+                ocr_options=OCROptions(pipeline=OCRPipeline.DOCUMENT_PARSING),
+            )
+
+        assert started is True
+        assert mgr._ocr_worker is not None
+        assert mgr._ocr_state == "running"
         start_mock.assert_called_once_with()
 
     def test_ocr_worker_resets_cancel_flag(self, qapp):
@@ -527,7 +559,6 @@ class TestPdfTaskGeneration:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         with patch.object(mgr, "_run_ocr"):
             mgr.start_ocr([0])
@@ -640,7 +671,6 @@ class TestOcrRunnerCancel:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         from unittest.mock import patch
 
@@ -1140,7 +1170,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})
@@ -1193,7 +1222,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})
@@ -1257,7 +1285,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})

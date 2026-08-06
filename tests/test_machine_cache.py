@@ -427,7 +427,7 @@ def test_create_cache_entry_save_failure_returns_none(project_root, monkeypatch)
 
 def test_update_cache_field_invalid_cache_returns_false(project_root):
     """缓存不存在/无效时返回 False。"""
-    assert update_cache_field(project_root, "pending_backend", "gpu") is False
+    assert update_cache_field(project_root, "custom_flag", "new") is False
 
 
 def test_update_cache_field_invalid_version_returns_false(project_root):
@@ -436,7 +436,7 @@ def test_update_cache_field_invalid_version_returns_false(project_root):
         project_root,
         {"version": CACHE_VERSION - 1, "machine_id": FIXED_MACHINE_ID},
     )
-    assert update_cache_field(project_root, "pending_backend", "gpu") is False
+    assert update_cache_field(project_root, "custom_flag", "new") is False
 
 
 def test_update_cache_field_preserves_other_fields(project_root):
@@ -448,9 +448,9 @@ def test_update_cache_field_preserves_other_fields(project_root):
         "hardware_info": {"has_gpu": True},
     }
     save_cache(project_root, base)
-    assert update_cache_field(project_root, "pending_backend", "gpu") is True
+    assert update_cache_field(project_root, "custom_flag", "new") is True
     updated = load_cache(project_root)
-    assert updated["pending_backend"] == "gpu"
+    assert updated["custom_flag"] == "new"
     assert updated["dependencies"] == {"paddle": True}
     assert updated["hardware_info"] == {"has_gpu": True}
     assert updated["version"] == CACHE_VERSION
@@ -462,11 +462,11 @@ def test_update_cache_field_overwrites_existing(project_root):
     base = {
         "version": CACHE_VERSION,
         "machine_id": FIXED_MACHINE_ID,
-        "pending_backend": "cpu",
+        "custom_flag": "old",
     }
     save_cache(project_root, base)
-    assert update_cache_field(project_root, "pending_backend", "gpu") is True
-    assert load_cache(project_root)["pending_backend"] == "gpu"
+    assert update_cache_field(project_root, "custom_flag", "new") is True
+    assert load_cache(project_root)["custom_flag"] == "new"
 
 
 # ---------------------------------------------------------------------------
@@ -568,28 +568,12 @@ def test_get_cache_info_full_summary(project_root):
     assert "torch=✗" in info
     assert "has_gpu=True" in info
     assert "cuda=12.1" in info
-    assert "OCR" in info
-    assert "paddlex=tsinghua" in info
-    # 无 pending_backend 时不输出该行
-    assert "pending_backend" not in info
+    assert "pipeline_success" not in info
+    assert "network" not in info
 
 
-def test_get_cache_info_with_pending_backend(project_root):
-    """有 pending_backend 时输出该字段。"""
-    save_cache(
-        project_root,
-        {
-            "version": CACHE_VERSION,
-            "machine_id": FIXED_MACHINE_ID,
-            "pending_backend": "gpu",
-        },
-    )
-    info = get_cache_info(project_root)
-    assert "pending_backend=gpu" in info
-
-
-def test_get_cache_info_empty_deps_and_network(project_root):
-    """空 dependencies 与无 network 的分支。"""
+def test_get_cache_info_empty_dependencies(project_root):
+    """空 dependencies 的分支。"""
     save_cache(
         project_root,
         {
@@ -600,8 +584,6 @@ def test_get_cache_info_empty_deps_and_network(project_root):
     )
     info = get_cache_info(project_root)
     assert "dependencies: (空)" in info
-    assert "network: (未探测)" in info
-    assert "pipeline_success: (无)" in info
 
 
 def test_get_cache_info_missing_fields_use_unknown(project_root):

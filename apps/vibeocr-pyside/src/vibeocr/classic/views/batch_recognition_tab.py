@@ -474,7 +474,7 @@ class BatchRecognitionTab(BaseOcrTab):
 
     def _on_files_changed(self, files: list[dict]) -> None:
         """文件列表变化时，根据是否包含文档文件锁定管道"""
-        from vibeocr.backend.utils.mime_types import is_document_file
+        from vibeocr.classic.utils.mime_types import is_document_file
 
         live_paths = {item["path"] for item in files}
         self._result_snapshots = {
@@ -502,9 +502,7 @@ class BatchRecognitionTab(BaseOcrTab):
                 if gpu_capability is None
                 else "队列含文档文件，仅支持文档解析"
             )
-            self._preprocess_options.lock_to_document_parsing(
-                reason
-            )
+            self._preprocess_options.lock_to_document_parsing(reason)
             if gpu_capability is None:
                 self._progress_label.setText("正在检测 GPU 能力，文档解析暂未就绪")
         else:
@@ -588,9 +586,7 @@ class BatchRecognitionTab(BaseOcrTab):
         except Exception:
             supervisor = None
         if supervisor is not None and supervisor.is_started:
-            self._start_supervisor_batch(
-                supervisor, files, preprocess_options
-            )
+            self._start_supervisor_batch(supervisor, files, preprocess_options)
             return
 
         worker = BatchRecognitionWorker(service, files, preprocess_options)
@@ -642,9 +638,7 @@ class BatchRecognitionTab(BaseOcrTab):
             failed: list[tuple[dict, str]] = []
             for file_info in files:
                 try:
-                    loaded.append(
-                        (file_info, Path(file_info["path"]).read_bytes())
-                    )
+                    loaded.append((file_info, Path(file_info["path"]).read_bytes()))
                 except OSError as exc:
                     failed.append((file_info, str(exc)))
             return loaded, failed
@@ -695,9 +689,7 @@ class BatchRecognitionTab(BaseOcrTab):
         loaded, read_failures = result  # type: ignore[misc]
         for file_info, error in read_failures:
             path = file_info["path"]
-            self._file_list_widget.update_file_status(
-                path, "failed", {"error": error}
-            )
+            self._file_list_widget.update_file_status(path, "failed", {"error": error})
             self._supervisor_results[path] = {
                 "file_path": path,
                 "error": error,
@@ -713,9 +705,7 @@ class BatchRecognitionTab(BaseOcrTab):
 
         option_payload = options.to_dict()
         pipeline = options.pipeline
-        pipeline_id = (
-            pipeline.value if hasattr(pipeline, "value") else str(pipeline)
-        )
+        pipeline_id = pipeline.value if hasattr(pipeline, "value") else str(pipeline)
         allowed = set(get_pipeline_supported_options(pipeline))
         semantic_options = {
             name: value
@@ -724,8 +714,7 @@ class BatchRecognitionTab(BaseOcrTab):
         }
         self._supervisor_files = [file_info for file_info, _data in loaded]
         uploads = [
-            (Path(file_info["path"]).name, None, data)
-            for file_info, data in loaded
+            (Path(file_info["path"]).name, None, data) for file_info, data in loaded
         ]
         # submit_recognition 同步抛异常会逃出 Qt slot，导致 _run_state 卡在
         # STATE_RUNNING、Start 按钮永久禁用。捕获后走统一失败路径，复位状态。
@@ -741,9 +730,7 @@ class BatchRecognitionTab(BaseOcrTab):
         except Exception as exc:
             self._fail_supervisor_submission(generation, str(exc))
 
-    def _fail_supervisor_submission(
-        self, generation: int, error: str
-    ) -> None:
+    def _fail_supervisor_submission(self, generation: int, error: str) -> None:
         self._submission_task = None
         if generation != self._supervisor_generation or self._shutting_down:
             return
@@ -759,9 +746,7 @@ class BatchRecognitionTab(BaseOcrTab):
         if self._run_state == self.STATE_CANCELLING:
             self._supervisor_adapter.cancel(job_id)
 
-    def _on_supervisor_progress(
-        self, job_id: str, current: int, total: int
-    ) -> None:
+    def _on_supervisor_progress(self, job_id: str, current: int, total: int) -> None:
         if job_id != self._supervisor_job_id:
             return
         self._progress_label.setText(f"{current}/{total}")
@@ -793,9 +778,7 @@ class BatchRecognitionTab(BaseOcrTab):
                 include_images=False,
                 include_text_blocks=False,
             )
-            self._file_list_widget.update_file_status(
-                path, "completed", result
-            )
+            self._file_list_widget.update_file_status(path, "completed", result)
             self._supervisor_results[path] = {
                 "file_path": path,
                 "result": result,
@@ -836,9 +819,7 @@ class BatchRecognitionTab(BaseOcrTab):
         self._reset_supervisor_run()
 
     def _finish_supervisor_batch(self) -> None:
-        failed = any(
-            "error" in result for result in self._supervisor_results.values()
-        )
+        failed = any("error" in result for result in self._supervisor_results.values())
         status = (
             BatchRecognitionWorker.STATUS_PARTIAL_FAILED
             if failed
@@ -866,10 +847,7 @@ class BatchRecognitionTab(BaseOcrTab):
             export_job.cancel()
             return
 
-        if (
-            self._submission_task is not None
-            or self._supervisor_job_id is not None
-        ):
+        if self._submission_task is not None or self._supervisor_job_id is not None:
             self._run_state = self.STATE_CANCELLING
             self._start_btn.setEnabled(False)
             self._cancel_btn.setEnabled(False)

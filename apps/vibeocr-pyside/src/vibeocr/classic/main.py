@@ -45,7 +45,7 @@ os.environ.setdefault("FLAGS_use_mkldnn", "0")
 # 按逻辑核数设置，避免 i9-14900KF 这类 32 线程 CPU 仅单核推理。
 # 用户可用 VIBEOCR_CPU_THREADS 显式覆盖。
 try:
-    from vibeocr.backend.utils.cpu_info import get_cpu_thread_count
+    from vibeocr.classic.utils.platform_defaults import get_cpu_thread_count
 
     _cpu_threads = str(get_cpu_thread_count())
     os.environ.setdefault("OMP_NUM_THREADS", _cpu_threads)

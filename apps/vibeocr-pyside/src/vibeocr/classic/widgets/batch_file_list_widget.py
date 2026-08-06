@@ -133,7 +133,7 @@ class BatchFileListWidget(QWidget):
 
     def _on_select_files(self):
         """选择文件"""
-        from vibeocr.backend.utils.mime_types import FILE_FILTER_ALL
+        from vibeocr.classic.utils.mime_types import FILE_FILTER_ALL
 
         files, _ = QFileDialog.getOpenFileNames(
             self,

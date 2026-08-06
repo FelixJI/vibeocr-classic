@@ -203,7 +203,7 @@ class SingleRecognitionTab(BaseOcrTab):
             return
         from PySide6.QtWidgets import QFileDialog
 
-        from vibeocr.backend.utils.mime_types import FILE_FILTER_ALL, is_document_file
+        from vibeocr.classic.utils.mime_types import FILE_FILTER_ALL, is_document_file
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -788,15 +788,13 @@ class SingleRecognitionTab(BaseOcrTab):
         if not self._accepting_new_input():
             logger.debug("识别进行中，忽略 process_file 请求")
             return
-        from vibeocr.backend.utils.mime_types import is_document_file
+        from vibeocr.classic.utils.mime_types import is_document_file
 
         path = Path(file_path)
         if not path.exists():
             from PySide6.QtWidgets import QMessageBox
 
-            QMessageBox.warning(
-                self, "无法识别", f"文件不存在：\n{file_path}"
-            )
+            QMessageBox.warning(self, "无法识别", f"文件不存在：\n{file_path}")
             return
 
         if is_document_file(file_path):

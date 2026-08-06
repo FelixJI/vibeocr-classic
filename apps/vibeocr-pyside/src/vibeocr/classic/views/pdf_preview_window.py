@@ -210,7 +210,7 @@ class PreviewCanvas(QWidget):
 
     def _paint_text_layers(self, painter: QPainter) -> None:
         """渲染旧 text_layers（PDF points 坐标）。"""
-        from vibeocr.backend.utils.pdf_coords import bbox_to_pixel
+        from vibeocr.classic.utils.pdf_coords import bbox_to_pixel
 
         if self._page_rect is None:
             return
@@ -229,7 +229,10 @@ class PreviewCanvas(QWidget):
             ]
             r, g, b, a = palette[color_idx]
             pixel_bbox = bbox_to_pixel(
-                bbox, self._page_rect, self._render_dpi, source=self._source,
+                bbox,
+                self._page_rect,
+                self._render_dpi,
+                source=self._source,
                 rotation=self._rotation,
             )
             x0, y0, x1, y1 = pixel_bbox
@@ -288,7 +291,7 @@ class PreviewCanvas(QWidget):
         self.setToolTip("")
 
     def _handle_layer_hover(self, event: QMouseEvent) -> None:
-        from vibeocr.backend.utils.pdf_coords import bbox_to_pixel
+        from vibeocr.classic.utils.pdf_coords import bbox_to_pixel
 
         if self._page_rect is None:
             return
@@ -513,7 +516,10 @@ class PdfPreviewWindow(QWidget):
         """设置预览页面与高亮层（公共 API，替代直接访问 _canvas）。"""
         self._canvas.set_pixmap(pixmap)
         self._canvas.set_highlight_layers(
-            layers, render_dpi=render_dpi, page_rect=page_rect, source=source,
+            layers,
+            render_dpi=render_dpi,
+            page_rect=page_rect,
+            source=source,
             rotation=rotation,
         )
 

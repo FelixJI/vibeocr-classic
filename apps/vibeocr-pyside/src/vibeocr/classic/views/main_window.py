@@ -1394,7 +1394,7 @@ class MainWindow(QMainWindow):
             return
         logging.debug("打开图片文件对话框")
 
-        from vibeocr.backend.utils.mime_types import (
+        from vibeocr.classic.utils.mime_types import (
             FILE_FILTER_DOCUMENTS,
             FILE_FILTER_IMAGES,
         )
@@ -1414,7 +1414,7 @@ class MainWindow(QMainWindow):
             return
         logging.debug("打开文件对话框（图片/PDF）")
 
-        from vibeocr.backend.utils.mime_types import FILE_FILTER_ALL
+        from vibeocr.classic.utils.mime_types import FILE_FILTER_ALL
 
         self._open_file_dialog_and_dispatch(
             "选择文件", f"{FILE_FILTER_ALL};;所有文件 (*)"
@@ -1422,7 +1422,7 @@ class MainWindow(QMainWindow):
 
     def _open_file_dialog_and_dispatch(self, title: str, file_filter: str) -> None:
         """统一三处文件入口；图片后台解码，文档沿现有异步识别路径。"""
-        from vibeocr.backend.utils.mime_types import is_document_file
+        from vibeocr.classic.utils.mime_types import is_document_file
 
         file_path, _ = QFileDialog.getOpenFileName(self, title, "", file_filter)
         if not file_path:

@@ -88,20 +88,30 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     window._machine_cache_data = None
     window._dependency_check_complete = False
     window._ocr_ready = False
-    window._settings_controller = None
+    window._statusbar = MagicMock()
+    window._settings_controller = MagicMock()
+    window._check_pending_sync = MagicMock(return_value=False)
+    window._start_supervisor = MagicMock()
     window._request_machine_cache_load = MainWindow._request_machine_cache_load.__get__(
         window
     )
-    window._continue_ready_startup = MagicMock()
+    window._continue_ready_startup = MainWindow._continue_ready_startup.__get__(window)
 
     MainWindow._try_load_cache(window)
     assert entered.wait(timeout=1)
     assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+
+    MainWindow._on_dependency_check_finished(window, True, [])
+
+    window._start_supervisor.assert_called_once_with()
+    window._settings_controller.initialize_deferred_backend_options.assert_not_called()
     release.set()
     qtbot.waitUntil(lambda: not window._machine_cache_running, timeout=1000)
 
-    assert window._ocr_ready is False
-    window._continue_ready_startup.assert_not_called()
+    assert window._ocr_ready is True
+    window._settings_controller.apply_deferred_machine_cache_status.assert_called_once_with(
+        True
+    )
 
 
 def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(

@@ -615,7 +615,7 @@ class SettingsPageController:
         )
 
     def initialize_deferred_backend_options(self) -> None:
-        """机器缓存已在后台预热后，再构造 GPU 设置组件。"""
+        """为显式延迟初始化的独立宿主构造 Runtime profile 组件。"""
         if not self._closing:
             self._init_backend_options_in_group()
 

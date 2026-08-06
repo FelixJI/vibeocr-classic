@@ -215,7 +215,6 @@ def test_settings_gpu_callback_updates_main_window_state(qtbot, has_gpu):
     qtbot.addWidget(host)
     host._closing = False
     host._runtime_gpu_capability = None
-    host._worker_start_pending = False
     host._apply_gpu_gating_to_all = MagicMock()
     controller = SimpleNamespace(
         _closing=False,

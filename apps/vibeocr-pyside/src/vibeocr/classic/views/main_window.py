@@ -72,7 +72,6 @@ class MainWindow(QMainWindow):
         self._ocr_status_callback_fn: Any = None  # OCR 状态回调
         self._app_settings = None  # 应用设置
         self._runtime_gpu_capability: bool | None = None
-        self._worker_start_pending = False
         self._machine_cache_data: dict | None = None
         self._machine_cache_tasks: set[FunctionTask] = set()
         self._machine_cache_generation = 0
@@ -188,10 +187,6 @@ class MainWindow(QMainWindow):
             return
         self._runtime_gpu_capability = bool(has_gpu)
         self._apply_gpu_gating_to_all(bool(has_gpu))
-
-        if self._worker_start_pending:
-            self._worker_start_pending = False
-            self._start_supervisor()
 
     def _setup_ocr_status_callback(self) -> None:
         """设置 OCR 状态回调，用于在状态栏显示模型下载进度"""
@@ -647,7 +642,6 @@ class MainWindow(QMainWindow):
             # 启动子进程 Worker，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
             gpu_capability_callback=self._on_gpu_capability_resolved,
-            defer_backend_initialization=True,
             defer_machine_cache_status=True,
         )
         self._settings_controller.connect_signals()
@@ -698,7 +692,6 @@ class MainWindow(QMainWindow):
             )
             controller = getattr(self, "_settings_controller", None)
             if controller is not None:
-                controller.initialize_deferred_backend_options()
                 controller.apply_deferred_machine_cache_status(bool(valid))
 
         def failed(error: str) -> None:
@@ -785,20 +778,8 @@ class MainWindow(QMainWindow):
             logging.debug("[MainWindow] 应用程序正在关闭，跳过启动 Supervisor")
             return
 
-        if self._runtime_gpu_capability is None:
-            self._worker_start_pending = True
-            self._statusbar.showMessage("正在等待后台 GPU 检测...")
-            return
-
         logging.debug("[MainWindow] 正在启动共享 Supervisor...")
-        use_gpu = self._runtime_gpu_capability
-        device = "GPU" if use_gpu else "CPU"
-        self._statusbar.showMessage(f"Supervisor 启动中 · {device} 后端")
-
-        # 将决策同步到主进程环境变量。OCR 子进程会由 ocr_worker.run_worker
-        # 自行设置该变量，但主进程此前从未设置，导致跑在主进程 QThread 里的
-        # PdfOcrWorker 读到空值、误判为 CPU（日志误报 + batch 走 RAM 公式）。
-        os.environ["VIBEOCR_USE_GPU"] = "true" if use_gpu else "false"
+        self._statusbar.showMessage("Supervisor 启动中")
 
         # Supervisor 的进程启动、ready 握手和 typed client 初始化可能耗时；
         # 交给 SubprocessManager 的线程池，完成后通过 service_ready 回到 Qt 主线程。

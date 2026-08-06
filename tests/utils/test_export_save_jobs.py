@@ -273,7 +273,7 @@ def test_snapshot_ocr_result_content_list_validates(monkeypatch):
         calls.append(content)
 
     monkeypatch.setattr(
-        "vibeocr.backend.tables.blocks.validate_table_blocks", fake_validate
+        "vibeocr.classic.table_model.validate_table_blocks", fake_validate
     )
     result = SimpleNamespace(
         content_list=[{"type": "text", "text": "a"}],

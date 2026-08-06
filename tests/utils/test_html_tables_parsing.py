@@ -8,7 +8,7 @@ normalize_table_html / html_tables_to_cell_grid / _collect_table_htmls_from_text
 
 from __future__ import annotations
 
-from vibeocr.backend.utils.html_tables import (
+from vibeocr.classic.table_model import (
     _cell_text,
     _collect_table_htmls_from_text,
     _span_value,

@@ -46,6 +46,10 @@ FORBIDDEN_BACKEND_TEXT_LAYOUT_MODULES = {
 FORBIDDEN_BACKEND_OCR_SIDECAR_MODULES = {
     "vibeocr.backend.utils.ocr_sidecar",
 }
+FORBIDDEN_BACKEND_TABLE_MODULES = {
+    "vibeocr.backend.tables",
+    "vibeocr.backend.utils.html_tables",
+}
 BACKEND_GPU_CACHE_PATH = "vibeocr.backend.env_manager._runtime_gpu_capability_cache"
 FORBIDDEN_BACKEND_APP_PATH_HELPERS = {
     "get_bundled_changelog_path",
@@ -77,27 +81,9 @@ EXPECTED_BACKEND_SOURCE_IMPORTS = {
         "vibeocr.backend.network_detector",
         "vibeocr.backend.network_detector.NetworkDetector",
     },
-    "utils/export_jobs.py": {
-        "vibeocr.backend.tables.blocks",
-        "vibeocr.backend.tables.blocks.validate_table_blocks",
-    },
     "views/settings_page_controller.py": {
         "vibeocr.backend",
         "vibeocr.backend.env_manager",
-    },
-    "views/tabs/base_tab.py": {
-        "vibeocr.backend.tables.blocks",
-        "vibeocr.backend.tables.blocks.table_model_from_block",
-        "vibeocr.backend.tables.html_adapter",
-        "vibeocr.backend.tables.html_adapter.table_model_from_html",
-        "vibeocr.backend.tables.html_adapter.table_model_to_html",
-        "vibeocr.backend.tables.projections",
-        "vibeocr.backend.tables.projections.table_model_to_markdown",
-        "vibeocr.backend.tables.projections.table_model_to_plain_text",
-        "vibeocr.backend.tables.reducer",
-        "vibeocr.backend.tables.reducer.build_result_projections",
-        "vibeocr.backend.tables.reducer.rebuild_result_projections",
-        "vibeocr.backend.tables.reducer.update_result_table_cell",
     },
     "widgets/backend_choice_dialog.py": {
         "vibeocr.backend",
@@ -106,18 +92,6 @@ EXPECTED_BACKEND_SOURCE_IMPORTS = {
     "widgets/backend_options_widget.py": {
         "vibeocr.backend",
         "vibeocr.backend.env_manager",
-    },
-    "widgets/result_view_widget.py": {
-        "vibeocr.backend.tables.blocks",
-        "vibeocr.backend.tables.blocks.table_model_from_block",
-        "vibeocr.backend.tables.html_adapter",
-        "vibeocr.backend.tables.html_adapter.table_model_to_html",
-        "vibeocr.backend.utils.html_tables",
-        "vibeocr.backend.utils.html_tables._extract_table_html",
-        "vibeocr.backend.utils.html_tables._html_table_to_markdown",
-        "vibeocr.backend.utils.html_tables.html_tables_to_cell_grid",
-        "vibeocr.backend.utils.html_tables.normalize_table_html",
-        "vibeocr.backend.utils.html_tables.tables_from_result",
     },
     "widgets/switch_dialog.py": {
         "vibeocr.backend",
@@ -338,6 +312,22 @@ def test_ocr_sidecar_guard_recognizes_equivalent_import_syntax() -> None:
     }
 
 
+def test_table_guard_recognizes_backend_modules_and_symbols() -> None:
+    imported = _imported_modules(
+        "from vibeocr.backend import tables\n"
+        "from vibeocr.backend.tables.reducer import update_result_table_cell\n"
+        "from vibeocr.backend.utils import html_tables\n"
+        "import vibeocr.backend.utils.html_tables as legacy_tables\n"
+    )
+
+    assert _forbidden_imports(imported, FORBIDDEN_BACKEND_TABLE_MODULES) == {
+        "vibeocr.backend.tables",
+        "vibeocr.backend.tables.reducer",
+        "vibeocr.backend.tables.reducer.update_result_table_cell",
+        "vibeocr.backend.utils.html_tables",
+    }
+
+
 def test_gpu_cache_guard_recognizes_private_cache_access_syntaxes() -> None:
     accesses = _backend_gpu_cache_accesses(
         "from vibeocr.backend.env_manager import "
@@ -537,6 +527,25 @@ def test_classic_source_and_tests_do_not_import_backend_ocr_sidecar() -> None:
             )
 
     assert not violations, "Backend OCR sidecar leaked into Classic:\n" + "\n".join(
+        violations
+    )
+
+
+def test_classic_source_and_tests_do_not_import_backend_table_modules() -> None:
+    violations: list[str] = []
+
+    for root in (CLASSIC_SOURCE_ROOT, CLASSIC_TEST_ROOT):
+        for source_file in root.rglob("*.py"):
+            imported = _imported_modules(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            forbidden = _forbidden_imports(imported, FORBIDDEN_BACKEND_TABLE_MODULES)
+            violations.extend(
+                f"{source_file.relative_to(REPOSITORY_ROOT)}: {module}"
+                for module in sorted(forbidden)
+            )
+
+    assert not violations, "Backend table modules leaked into Classic:\n" + "\n".join(
         violations
     )
 

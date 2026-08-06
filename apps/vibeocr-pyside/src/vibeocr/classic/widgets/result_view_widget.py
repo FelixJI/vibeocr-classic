@@ -15,7 +15,7 @@ import html as html_lib
 import json
 import logging
 import time
-from dataclasses import is_dataclass, replace
+from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QMimeData, QObject, QTimer, QUrl, Signal, Slot
@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.utils.html_tables import (
+from vibeocr.classic.table_model import (
     html_tables_to_cell_grid,
     normalize_table_html,
     tables_from_result,
@@ -134,8 +134,6 @@ def _render_title(block: dict, index: int) -> str:
 
 
 def _render_table(block: dict, index: int) -> str:
-    from vibeocr.backend.utils.html_tables import normalize_table_html
-
     parts: list[str] = []
     captions = block.get("table_caption") or []
     if captions:
@@ -144,8 +142,10 @@ def _render_table(block: dict, index: int) -> str:
         )
     canonical_table = ""
     if isinstance(block.get("table"), dict):
-        from vibeocr.backend.tables.blocks import table_model_from_block
-        from vibeocr.backend.tables.html_adapter import table_model_to_html
+        from vibeocr.classic.table_model import (
+            table_model_from_block,
+            table_model_to_html,
+        )
 
         try:
             canonical_table = table_model_to_html(table_model_from_block(block))
@@ -1123,49 +1123,16 @@ def _rebuild_copy_snapshot(
     include_markdown: bool,
 ) -> Any:
     """Rebuild aggregates from an already detached, worker-owned snapshot."""
-    raw_parts: list[str] = []
-    for index, block in enumerate(snapshot.text_blocks):
-        if index % 128 == 0 and cancel_event.is_set():
-            raise ExportJobCancelled
-        if block.text:
-            raw_parts.append(block.text)
-    raw_text = "\n".join(raw_parts)
-    if not raw_text:
-        raw_text = snapshot.raw_text
+    from vibeocr.classic.table_results import build_copy_snapshot
 
-    markdown_text = raw_text
-    if include_markdown and snapshot.content_list:
-        from vibeocr.backend.utils.html_tables import (
-            _extract_table_html,
-            _html_table_to_markdown,
-        )
-
-        markdown_parts: list[str] = []
-        for index, block in enumerate(snapshot.content_list):
-            if index % 128 == 0 and cancel_event.is_set():
-                raise ExportJobCancelled
-            if block.get("type") == "table":
-                markdown = _html_table_to_markdown(
-                    _extract_table_html(block.get("table_body", ""))
-                )
-                if markdown:
-                    markdown_parts.append(markdown)
-            else:
-                text = str(block.get("text", "") or "")
-                if text:
-                    markdown_parts.append(text)
-        if markdown_parts:
-            markdown_text = "\n\n".join(markdown_parts)
-
-    if cancel_event.is_set():
-        raise ExportJobCancelled
-
-    return replace(
+    rebuilt = build_copy_snapshot(
         snapshot,
-        raw_text=raw_text,
-        markdown_text=markdown_text,
-        html_text="",
+        is_cancelled=cancel_event.is_set,
+        include_markdown=include_markdown,
     )
+    if rebuilt is None:
+        raise ExportJobCancelled
+    return rebuilt
 
 
 class _Bridge(QObject):

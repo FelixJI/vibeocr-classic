@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vibeocr.classic.app_paths import get_bundled_resources_dir
 from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.pyside import settings_runtime
 from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
@@ -66,9 +67,7 @@ def _is_bundled() -> bool:
 
 def _resolve_shortcut_icon_path() -> str:
     """解析快捷方式图标路径（.ico），兼容开发态与打包态。"""
-    from vibeocr.backend import env_manager
-
-    icon = env_manager.get_bundled_resources_dir() / "app_icon.ico"
+    icon = get_bundled_resources_dir() / "app_icon.ico"
     return str(icon) if icon.exists() else ""
 
 

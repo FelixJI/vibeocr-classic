@@ -20,6 +20,9 @@ from vibeocr.classic.app_paths import (
     OUTPUT_DIR,
     PROFILES_DIR,
     RUNTIME_DIR,
+    get_bundle_root,
+    get_bundled_changelog_path,
+    get_bundled_resources_dir,
     get_install_root,
     resolve_app_paths,
 )
@@ -225,3 +228,80 @@ def test_get_install_root_frozen_mode(monkeypatch, tmp_path):
     finally:
         # 恢复，避免污染后续测试
         monkeypatch.setattr(sys, "frozen", False, raising=False)
+
+
+def test_get_bundle_root_prefers_meipass(monkeypatch, tmp_path):
+    """PyInstaller 资源根必须使用 _MEIPASS，而非 exe 同级目录。"""
+    bundle_root = tmp_path / "_internal"
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+
+    assert get_bundle_root() == bundle_root
+
+
+def test_get_bundled_resources_dir_uses_meipass(monkeypatch, tmp_path):
+    """frozen 资源目录位于 _MEIPASS/resources，不要求目录已存在。"""
+    bundle_root = tmp_path / "_internal"
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+
+    assert get_bundled_resources_dir() == bundle_root / "resources"
+
+
+def test_get_bundled_resources_dir_uses_repository_in_source_mode(monkeypatch):
+    """源码模式的资源目录位于 Classic 仓库根。"""
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    repository_root = Path(__file__).resolve().parents[2]
+
+    assert get_bundle_root() == repository_root
+    assert get_bundled_resources_dir() == repository_root / "resources"
+
+
+def test_get_bundled_changelog_path_prefers_meipass(monkeypatch, tmp_path):
+    """_MEIPASS 中的内置 changelog 优先于 exe 同级用户文件。"""
+    bundle_root = tmp_path / "_internal"
+    executable_root = tmp_path / "app"
+    bundle_root.mkdir()
+    executable_root.mkdir()
+    bundled = bundle_root / "CHANGELOG.md"
+    bundled.write_text("bundled", encoding="utf-8")
+    (executable_root / "CHANGELOG.md").write_text("fallback", encoding="utf-8")
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable_root / "VibeOCR.exe"))
+
+    assert get_bundled_changelog_path() == bundled
+
+
+def test_get_bundled_changelog_path_falls_back_to_executable_dir(monkeypatch, tmp_path):
+    """_MEIPASS 中缺失时，frozen 应回退到 exe 同级 changelog。"""
+    bundle_root = tmp_path / "_internal"
+    executable_root = tmp_path / "app"
+    bundle_root.mkdir()
+    executable_root.mkdir()
+    fallback = executable_root / "CHANGELOG.md"
+    fallback.write_text("fallback", encoding="utf-8")
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable_root / "VibeOCR.exe"))
+
+    assert get_bundled_changelog_path() == fallback
+
+
+def test_get_bundled_changelog_path_uses_repository_in_source_mode(monkeypatch):
+    """源码模式从 Classic 仓库根读取 changelog。"""
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    repository_changelog = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+
+    assert repository_changelog.is_file()
+    assert get_bundled_changelog_path() == repository_changelog
+
+
+def test_get_bundled_changelog_path_returns_none_when_frozen_candidates_absent(
+    monkeypatch, tmp_path
+):
+    """frozen 的内置与 exe 同级 changelog 都缺失时返回 None。"""
+    bundle_root = tmp_path / "_internal"
+    executable_root = tmp_path / "app"
+    bundle_root.mkdir()
+    executable_root.mkdir()
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable_root / "VibeOCR.exe"))
+
+    assert get_bundled_changelog_path() is None

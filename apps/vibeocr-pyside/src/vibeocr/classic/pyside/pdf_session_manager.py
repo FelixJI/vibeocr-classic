@@ -2218,10 +2218,10 @@ class PdfSessionManager(QObject):
 
             if ocr_options.pipeline != OCRPipeline.DOCUMENT_PARSING:
                 return False
-            from vibeocr.backend.env_manager import get_project_root
             from vibeocr.backend.pipeline_status import is_pipeline_ever_succeeded
+            from vibeocr.classic.app_paths import get_install_root
 
-            return not is_pipeline_ever_succeeded("MinerU", get_project_root())
+            return not is_pipeline_ever_succeeded("MinerU", get_install_root())
         except Exception:
             return False
 

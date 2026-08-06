@@ -49,7 +49,7 @@ class TestAboutTab:
         from vibeocr.classic.views.tabs import about_tab
 
         monkeypatch.setattr(
-            about_tab.env_manager,
+            about_tab,
             "get_bundled_changelog_path",
             lambda: changelog,
         )
@@ -112,7 +112,9 @@ class TestAboutTabFrozen:
         assert "9.9.9" in html, "打包态应从 _MEIPASS 读到 CHANGELOG，而非显示占位文案"
         assert "frozen-test" in html
 
-    def test_changelog_shows_placeholder_when_absent(self, qtbot, monkeypatch, tmp_path):
+    def test_changelog_shows_placeholder_when_absent(
+        self, qtbot, monkeypatch, tmp_path
+    ):
         """打包态且各处都无 CHANGELOG.md 时回退占位文案。"""
         monkeypatch.setattr(sys, "frozen", True, raising=False)
         monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
@@ -207,7 +209,9 @@ class TestAboutTabUpdateTiming:
             ),
             encoding="utf-8",
         )
-        monkeypatch.setattr(about_tab, "get_update_progress_path", lambda: progress_path)
+        monkeypatch.setattr(
+            about_tab, "get_update_progress_path", lambda: progress_path
+        )
 
         data = about_tab._load_update_progress()
         assert data is not None
@@ -261,7 +265,9 @@ class TestAboutTabUpdateTiming:
             ),
             encoding="utf-8",
         )
-        monkeypatch.setattr(about_tab, "get_update_progress_path", lambda: progress_path)
+        monkeypatch.setattr(
+            about_tab, "get_update_progress_path", lambda: progress_path
+        )
 
         tab = about_tab.AboutTab()
         qtbot.addWidget(tab)

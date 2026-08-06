@@ -22,8 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend import env_manager
 from vibeocr.classic import __version__
+from vibeocr.classic.app_paths import (
+    get_bundled_changelog_path,
+    get_bundled_resources_dir,
+    get_install_root,
+)
 from vibeocr.classic.ui import theme
 from vibeocr.classic.update_config import (
     GITEE_REPO_BASE,
@@ -291,7 +295,7 @@ class AboutTab(QWidget):
         # 打包态 CHANGELOG.md 由 --add-data 捆绑进 _internal/（sys._MEIPASS），
         # 早期用 get_project_root()（exe 同级）找不到，导致客户机显示"暂无更新日志"。
         # 改用 get_bundled_changelog_path 统一解析 dev/frozen 两态。
-        changelog_path = env_manager.get_bundled_changelog_path()
+        changelog_path = get_bundled_changelog_path()
         if changelog_path is not None:
             try:
                 raw = changelog_path.read_text(encoding="utf-8")
@@ -403,7 +407,7 @@ class AboutTab(QWidget):
         （16×16），再放大到 ``size`` 会模糊。QIcon 才会按需挑选高分辨率
         子图（见实测：请求 96 时取 144 这一档）。
         """
-        icon_path = env_manager.get_bundled_resources_dir() / "app_icon.ico"
+        icon_path = get_bundled_resources_dir() / "app_icon.ico"
         if not icon_path.exists():
             logger.warning(f"应用图标不存在: {icon_path}")
             return None
@@ -427,7 +431,7 @@ class AboutTab(QWidget):
         async def _run():
             from vibeocr.classic.pyside.update import UpdateService
 
-            app_dir = env_manager.get_project_root()
+            app_dir = get_install_root()
             service = UpdateService(app_dir, status_callback=self._status_callback)
             # manual=True：用户主动点「检查更新」按钮，忽略「稍后提醒」暂缓，
             # 始终弹窗（用户主动请求即表示现在想看更新信息）。

@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import httpx
 
+from vibeocr.classic.app_paths import get_install_root
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from pathlib import Path
@@ -165,7 +167,11 @@ def _asset_matches(name: str, suffix: str) -> bool:
     校验文件（.sha256）：同理排除 webengine 的。
     """
     if suffix == ".zip":
-        return name.endswith(".zip") and ".sha256" not in name and "-webengine-" not in name
+        return (
+            name.endswith(".zip")
+            and ".sha256" not in name
+            and "-webengine-" not in name
+        )
     if suffix == ".sha256":
         return name.endswith(".sha256") and "-webengine-" not in name
     return False
@@ -260,7 +266,9 @@ async def _fetch_release(url: str, headers: dict | None = None) -> dict | None:
                 "GET",
                 url,
                 resp,
-                request_bytes=guess_request_size(getattr(resp.request, "content", None)),
+                request_bytes=guess_request_size(
+                    getattr(resp.request, "content", None)
+                ),
                 start_time=started,
             )
             if resp.status_code == 200:
@@ -273,10 +281,9 @@ async def _fetch_release(url: str, headers: dict | None = None) -> dict | None:
 def _detect_network_type() -> str:
     """读取 NetworkDetector 的网络类型；探测失败默认 international。"""
     try:
-        from vibeocr.backend.env_manager import get_project_root
         from vibeocr.backend.network_detector import NetworkDetector
 
-        return NetworkDetector(get_project_root()).network_type
+        return NetworkDetector(get_install_root()).network_type
     except Exception:
         return "international"
 
@@ -815,9 +822,7 @@ def save_remind_later(until_ts: float, settings_path: Path) -> None:
     )
 
 
-def is_remind_later_active(
-    settings_path: Path, *, now: float | None = None
-) -> bool:
+def is_remind_later_active(settings_path: Path, *, now: float | None = None) -> bool:
     """暂缓是否仍在窗口内。
 
     Args:

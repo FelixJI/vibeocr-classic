@@ -1,8 +1,8 @@
 """应用路径单一边界：resolve_app_paths()。
 
-集中定义便携应用的所有路径根：install_root、data_root、runtime_root、
-model_cache_root、output_root、config_file。旧 helper（env_manager /
-env_config）逐步委托到此模块，避免路径逻辑分散。
+集中定义便携应用的可写安装根、数据/Runtime 路径，以及只读 bundle
+资源和 changelog 路径。Classic 的 frozen/dev 路径规则全部收敛到此处，
+避免 UI 或更新流程为定位自身资源而导入 Backend。
 
 profile 机制：
 - ``"production"``（默认）：正式便携版路径，全部在 install_root 下。
@@ -47,6 +47,34 @@ def get_install_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[5]
+
+
+def get_bundle_root() -> Path:
+    """Return the read-only bundle root for packaged application assets."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    return Path(meipass) if meipass is not None else get_install_root()
+
+
+def get_bundled_resources_dir() -> Path:
+    """Return the bundled ``resources`` directory without checking existence."""
+    return get_bundle_root() / "resources"
+
+
+def get_bundled_changelog_path() -> Path | None:
+    """Return the first bundled changelog path that exists."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass is not None:
+        bundled = Path(meipass) / "CHANGELOG.md"
+        if bundled.exists():
+            return bundled
+        executable_fallback = Path(sys.executable).resolve().parent / "CHANGELOG.md"
+        if executable_fallback.exists():
+            return executable_fallback
+    else:
+        source_changelog = get_install_root() / "CHANGELOG.md"
+        if source_changelog.exists():
+            return source_changelog
+    return None
 
 
 @dataclass(frozen=True, slots=True)

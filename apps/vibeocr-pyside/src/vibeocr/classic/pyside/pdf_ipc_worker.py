@@ -40,7 +40,8 @@ class MinerUPreflightWorker(QThread):
         return self._cancelled
 
     def run(self) -> None:
-        from vibeocr.backend.env_manager import ensure_mineru_models, get_project_root
+        from vibeocr.backend.env_manager import ensure_mineru_models
+        from vibeocr.classic.app_paths import get_install_root
 
         def report(stage: str, message: str) -> None:
             if not self._cancelled:
@@ -48,7 +49,7 @@ class MinerUPreflightWorker(QThread):
 
         try:
             ok, message = ensure_mineru_models(
-                get_project_root(), progress_callback=report
+                get_install_root(), progress_callback=report
             )
         except Exception as exc:
             ok, message = False, str(exc)

@@ -36,6 +36,7 @@ from vibeocr.backend.utils.html_tables import (
     normalize_table_html,
     tables_from_result,
 )
+from vibeocr.classic.app_paths import get_bundled_resources_dir
 from vibeocr.classic.utils.export_jobs import (
     ExportJobCancelled,
     ExportSaveJob,
@@ -62,13 +63,11 @@ _DOCUMENT_TOKEN_PLACEHOLDER = "__VIBEOCR_DOCUMENT_TOKEN_8E2C4A75__"
 def _get_resources_dir() -> Path:
     """获取 resources 目录路径（打包态/开发态通用）
 
-    委托 env_manager.get_bundled_resources_dir() 作为 SSOT：
+    委托 Classic app_paths.get_bundled_resources_dir() 作为 SSOT：
     打包态 resources 由 ``--add-data`` 打入 ``sys._MEIPASS``（``_internal/resources``），
     而非 exe 同级；开发态位于仓库根。
-    采用函数惰性求值，避免模块导入时触发 env_manager 的循环导入。
+    采用函数惰性求值，保留现有测试替换 seam。
     """
-    from vibeocr.backend.env_manager import get_bundled_resources_dir
-
     return get_bundled_resources_dir()
 
 
@@ -1060,7 +1059,9 @@ def _capture_stable_result_snapshot(
     if cancel_event.is_set():
         raise ExportJobCancelled
     if last_error is not None:
-        raise RuntimeError("OCR result changed while creating a stable snapshot") from last_error
+        raise RuntimeError(
+            "OCR result changed while creating a stable snapshot"
+        ) from last_error
     raise RuntimeError("OCR result did not reach a stable revision")
 
 
@@ -1712,9 +1713,11 @@ class ResultViewWidget(QWidget):
                 include_text_blocks=False,
             )
             resources_dir = _get_resources_dir()
-            return _build_result_html(
-                result_snapshot, resources_dir, cancel_event
-            ), str(resources_dir), result_snapshot
+            return (
+                _build_result_html(result_snapshot, resources_dir, cancel_event),
+                str(resources_dir),
+                result_snapshot,
+            )
 
         job = ExportSaveJob(build)
         job.setProperty("generation", generation)
@@ -1866,9 +1869,7 @@ class ResultViewWidget(QWidget):
             if cancel_event.is_set():
                 raise ExportJobCancelled
             resources_dir = _get_resources_dir()
-            full_html = _build_full_html(
-                body, resources_dir / "katex", resources_dir
-            )
+            full_html = _build_full_html(body, resources_dir / "katex", resources_dir)
             return full_html, str(resources_dir), result_snapshot
 
         job = ExportSaveJob(build)

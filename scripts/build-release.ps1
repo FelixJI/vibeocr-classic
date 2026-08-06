@@ -62,7 +62,6 @@ $frontendProtocol = Get-Content -LiteralPath $frontendProtocolLock -Raw |
 $protocolRepository = [string]$componentLock.protocol.repository
 $protocolSdkVersion = [string]$frontendProtocol.version
 $protocolSdkRepository = [string]$frontendProtocol.repository
-$backendVersion = [string]$componentLock.backend.version
 $backendRepository = [string]$componentLock.backend.repository
 foreach ($item in @(
     @{ path = $protocol; repo = $protocolRepository },
@@ -98,9 +97,8 @@ $clientWheel = Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'
 python -m pip install build==1.5.0 hatchling==1.27.0 pyinstaller==6.21.0
 python -m pip install `
   $contractsWheel `
-  $clientWheel `
-  (Get-ChildItem $backend -Filter "vibeocr_backend-$backendVersion-*.whl" | Select-Object -First 1).FullName
-if ($LASTEXITCODE -ne 0) { throw 'verified upstream wheel install failed' }
+  $clientWheel
+if ($LASTEXITCODE -ne 0) { throw 'verified frontend SDK wheel install failed' }
 python -m build --wheel --no-isolation (Join-Path $root 'apps/vibeocr-pyside') --outdir $build
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel build failed' }
 python -m pip install --force-reinstall --no-deps `

@@ -51,9 +51,24 @@ def _locked_backend_wheel(root: Path) -> Path:
 
 def install(release_input: Path) -> None:
     root = release_input.resolve(strict=True)
-    wheels = (*_locked_sdk_wheels(root), _locked_backend_wheel(root))
+    sdk_wheels = _locked_sdk_wheels(root)
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", *(str(path) for path in wheels)],
+        [sys.executable, "-m", "pip", "install", *(str(path) for path in sdk_wheels)],
+        check=True,
+    )
+    # Classic 的生产包只依赖 Protocol SDK。完整测试仍覆盖已解析的正式
+    # Backend 作为跨进程/legacy fixture，但它的 Python metadata 不能参与前端
+    # SDK 求解，否则旧 Runtime 的 exact contracts lock 会重新制造 Backend-first
+    # 发布顺序。Backend Release 自身已在上游完成依赖闭包验证。
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            str(_locked_backend_wheel(root)),
+        ],
         check=True,
     )
     subprocess.run(

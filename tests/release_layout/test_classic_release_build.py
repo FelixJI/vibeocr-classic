@@ -141,6 +141,8 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     )
     assert "'--collect-submodules', 'vibeocr.backend'" not in script
     assert "'--collect-data', 'vibeocr.backend'" not in script
+    assert "pip install --no-deps" not in script
+    assert "vibeocr_backend-$backendVersion" not in script
 
 
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:

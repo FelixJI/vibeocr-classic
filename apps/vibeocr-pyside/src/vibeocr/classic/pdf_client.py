@@ -5,15 +5,13 @@ GUI never instantiates ``PdfBackendClient`` directly. This module exposes the
 client surface the PySide PDF session manager / IPC workers use instead.
 
 * :class:`PdfSupervisorClient` — async domain adapter over the publishable
-  Protocol SDK transport, mirrors
-  the full ``PdfBackendClient`` business API (open/close/load_stream/render/
-  mutate/text-layer/save/cancel). Method names and DTOs (``vibeocr.backend.ipc.schemas``)
-  are identical to the legacy client so the PySide transport swap is a drop-in.
+  Protocol SDK transport, mirrors the full PDF business API without importing
+  Backend implementation packages.
 * :class:`SyncPdfSupervisorClient` — sync wrapper driving the async client on a
   dedicated background event loop. PySide PDF workers are plain ``QThread`` and
   cannot await; this wrapper lets them call the same surface synchronously,
   including streaming operations (``load_stream`` / ``delete_text_layers_stream``)
-  which yield ``ProgressEvent`` objects from the NDJSON response.
+  which yield Protocol ``PdfProgressEvent`` objects from NDJSON responses.
 
 Loopback + Bearer token are pinned exactly like :class:`SupervisorClient`.
 """
@@ -28,31 +26,6 @@ import httpx
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterator
 
-from vibeocr.backend.ipc.schemas import (
-    AddTextLayerRequest,
-    BatchAddTextLayerPage,
-    BatchAddTextLayerRequest,
-    DeletePagesRequest,
-    DetectTextLayersRequest,
-    DetectTextLayersResponse,
-    InsertBlankRequest,
-    InsertFromRequest,
-    MovePageRequest,
-    MutateResponse,
-    OpenRequest,
-    OpenResponse,
-    PageListRequest,
-    PdfDocumentMirror,
-    ProgressEvent,
-    RenderPreviewRequest,
-    RenderThumbnailRequest,
-    ReorderRequest,
-    RewriteTextLayerRequest,
-    RotateRequest,
-    SaveRequest,
-    SaveResponse,
-    UpdateBlockTextRequest,
-)
 from vibeocr.runtime_client.background_loop import (
     get_background_loop,
     shutdown_background_loop,
@@ -66,6 +39,14 @@ from vibeocr.runtime_client.errors import InferenceClientError
 from vibeocr.runtime_contracts import ErrorCode
 from vibeocr.runtime_contracts.generated import RuntimeHealthEnvelope
 from vibeocr.runtime_contracts.generated.operations import operation_path
+from vibeocr.runtime_contracts.pdf import (
+    PdfDetectResult,
+    PdfDocumentMirror,
+    PdfMutationResult,
+    PdfOpenResult,
+    PdfProgressEvent,
+    PdfSaveResult,
+)
 from vibeocr.runtime_contracts.utils.http_log import (
     guess_request_size,
     guess_response_size,
@@ -109,6 +90,21 @@ _HTTP_TIMEOUT = httpx.Timeout(60.0, connect=5.0)
 _HTTP_LONG_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
 
 logger = logging.getLogger(__name__)
+
+
+def _text_block_payload(block: Any) -> dict[str, Any]:
+    """Project a Classic text block onto the formal PDF request shape."""
+
+    return {
+        "text": str(block.text),
+        "score": float(block.score),
+        "bbox": list(block.bbox) if block.bbox is not None else None,
+        "polygon": list(block.polygon) if block.polygon is not None else None,
+        "page_idx": block.page_idx,
+        "is_manually_edited": bool(block.is_manually_edited),
+        "label": str(block.label),
+        "order": int(block.order),
+    }
 
 
 class PdfSupervisorClient:
@@ -241,14 +237,14 @@ class PdfSupervisorClient:
             ) from exc
         return body.to_payload()
 
-    async def open_session(self, path: str) -> OpenResponse:
+    async def open_session(self, path: str) -> PdfOpenResult:
         client = self._require_client()
         resp = await client.post(
             operation_path("openPdfSession"),
-            json=OpenRequest(path=path).model_dump(),
+            json={"path": path},
         )
         self._raise_on_error(resp)
-        return OpenResponse.model_validate(resp.json())
+        return PdfOpenResult.from_payload(resp.json())
 
     async def close_session(self, sid: str) -> None:
         client = self._require_client()
@@ -261,10 +257,10 @@ class PdfSupervisorClient:
             bind_operation_path("getPdfSessionModel", session_id=sid)
         )
         self._raise_on_error(resp)
-        return PdfDocumentMirror.model_validate(resp.json())
+        return PdfDocumentMirror.from_payload(resp.json())
 
-    async def load_stream(self, sid: str) -> AsyncIterator[ProgressEvent]:
-        """Stream per-page text-layer detection. Yields one ProgressEvent per page."""
+    async def load_stream(self, sid: str) -> AsyncIterator[PdfProgressEvent]:
+        """Stream per-page text-layer detection."""
         client = self._require_client()
         try:
             async with client.stream(
@@ -276,7 +272,7 @@ class PdfSupervisorClient:
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
-                    yield ProgressEvent.model_validate_json(line)
+                    yield PdfProgressEvent.from_json(line)
         except httpx.HTTPError as e:
             raise PdfBackendError(
                 ErrorCode.INTERNAL_ERROR, f"load 流式调用失败: {e}"
@@ -288,7 +284,7 @@ class PdfSupervisorClient:
         client = self._require_client()
         resp = await client.post(
             bind_operation_path("renderPdfThumbnail", session_id=sid),
-            json=RenderThumbnailRequest(page=page, size=size).model_dump(),
+            json={"page": page, "size": size},
             timeout=_HTTP_TIMEOUT,
         )
         self._raise_on_error(resp)
@@ -298,34 +294,32 @@ class PdfSupervisorClient:
         client = self._require_client()
         resp = await client.post(
             bind_operation_path("renderPdfPreview", session_id=sid),
-            json=RenderPreviewRequest(page=page, dpi=dpi).model_dump(),
+            json={"page": page, "dpi": dpi},
             timeout=_HTTP_LONG_TIMEOUT,
         )
         self._raise_on_error(resp)
         return resp.content
 
-    async def detect_text_layers(self, sid: str, page: int) -> DetectTextLayersResponse:
+    async def detect_text_layers(self, sid: str, page: int) -> PdfDetectResult:
         client = self._require_client()
         resp = await client.post(
             bind_operation_path("detectPdfTextLayers", session_id=sid),
-            json=DetectTextLayersRequest(page=page).model_dump(),
+            json={"page": page},
         )
         self._raise_on_error(resp)
-        return DetectTextLayersResponse.model_validate(resp.json())
+        return PdfDetectResult.from_payload(resp.json())
 
     # ---- page mutations ----------------------------------------------
 
-    async def rotate(self, sid: str, pages: list[int], angle: int) -> MutateResponse:
+    async def rotate(self, sid: str, pages: list[int], angle: int) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "rotatePdfPages",
-            RotateRequest(pages=pages, angle=angle).model_dump(),
+            {"pages": pages, "angle": angle},
         )
 
-    async def delete_pages(self, sid: str, pages: list[int]) -> MutateResponse:
-        return await self._mutate(
-            sid, "deletePdfPages", DeletePagesRequest(pages=pages).model_dump()
-        )
+    async def delete_pages(self, sid: str, pages: list[int]) -> PdfMutationResult:
+        return await self._mutate(sid, "deletePdfPages", {"pages": pages})
 
     async def insert_blank(
         self,
@@ -333,53 +327,47 @@ class PdfSupervisorClient:
         after_index: int,
         width: float = 612.0,
         height: float = 792.0,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "insertBlankPdfPage",
-            InsertBlankRequest(
-                after_index=after_index, width=width, height=height
-            ).model_dump(),
+            {"after_index": after_index, "width": width, "height": height},
         )
 
     async def insert_from(
         self, sid: str, source_path: str, after_index: int
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "insertPdfPagesFromFile",
-            InsertFromRequest(
-                source_path=source_path, after_index=after_index
-            ).model_dump(),
+            {"source_path": source_path, "after_index": after_index},
         )
 
     async def move_page(
         self, sid: str, from_index: int, to_index: int
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "movePdfPage",
-            MovePageRequest(from_index=from_index, to_index=to_index).model_dump(),
+            {"from_index": from_index, "to_index": to_index},
         )
 
-    async def reorder(self, sid: str, new_order: list[int]) -> MutateResponse:
-        return await self._mutate(
-            sid, "reorderPdfPages", ReorderRequest(new_order=new_order).model_dump()
-        )
+    async def reorder(self, sid: str, new_order: list[int]) -> PdfMutationResult:
+        return await self._mutate(sid, "reorderPdfPages", {"new_order": new_order})
 
     async def _mutate(
         self,
         sid: str,
         operation_id: str,
         body: dict[str, Any],
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         client = self._require_client()
         resp = await client.post(
             bind_operation_path(operation_id, session_id=sid),
             json=body,
         )
         self._raise_on_error(resp)
-        return MutateResponse.model_validate(resp.json())
+        return PdfMutationResult.from_payload(resp.json())
 
     # ---- text layer ---------------------------------------------------
 
@@ -390,16 +378,16 @@ class PdfSupervisorClient:
         ocr_result: dict[str, Any],
         pdf_settings: dict[str, Any] | None = None,
         overwrite: bool = False,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "addPdfTextLayer",
-            AddTextLayerRequest(
-                page=page,
-                ocr_result=ocr_result,
-                pdf_settings=pdf_settings,
-                overwrite=overwrite,
-            ).model_dump(),
+            {
+                "page": page,
+                "ocr_result": ocr_result,
+                "pdf_settings": pdf_settings,
+                "overwrite": overwrite,
+            },
         )
 
     async def add_text_layer_batch(
@@ -409,27 +397,24 @@ class PdfSupervisorClient:
         pdf_settings: dict[str, Any] | None = None,
         overwrite: bool = False,
         save: bool = False,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         client = self._require_client()
-        body = BatchAddTextLayerRequest(
-            pages=[
-                BatchAddTextLayerPage(
-                    page=p["page"],
-                    ocr_result=p["ocr_result"],
-                )
-                for p in pages_data
+        body = {
+            "pages": [
+                {"page": page["page"], "ocr_result": page["ocr_result"]}
+                for page in pages_data
             ],
-            pdf_settings=pdf_settings,
-            overwrite=overwrite,
-            save=save,
-        ).model_dump()
+            "pdf_settings": pdf_settings,
+            "overwrite": overwrite,
+            "save": save,
+        }
         resp = await client.post(
             bind_operation_path("addPdfTextLayerBatch", session_id=sid),
             json=body,
             timeout=_HTTP_LONG_TIMEOUT,
         )
         self._raise_on_error(resp)
-        return MutateResponse.model_validate(resp.json())
+        return PdfMutationResult.from_payload(resp.json())
 
     async def rewrite_text_layer(
         self,
@@ -438,46 +423,44 @@ class PdfSupervisorClient:
         text_blocks: list[Any],
         preproc_angle: int = 0,
         pdf_settings: dict[str, Any] | None = None,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "rewritePdfTextLayer",
-            RewriteTextLayerRequest(
-                page=page,
-                text_blocks=text_blocks,
-                preproc_angle=preproc_angle,
-                pdf_settings=pdf_settings,
-            ).model_dump(),
+            {
+                "page": page,
+                "text_blocks": [_text_block_payload(block) for block in text_blocks],
+                "preproc_angle": preproc_angle,
+                "pdf_settings": pdf_settings,
+            },
         )
 
     async def update_block_text(
         self, sid: str, page: int, block_index: int, new_text: str
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return await self._mutate(
             sid,
             "updatePdfBlockText",
-            UpdateBlockTextRequest(
-                page=page, block_index=block_index, new_text=new_text
-            ).model_dump(),
+            {"page": page, "block_index": block_index, "new_text": new_text},
         )
 
     async def delete_text_layers_stream(
         self, sid: str, pages: list[int]
-    ) -> AsyncIterator[ProgressEvent]:
+    ) -> AsyncIterator[PdfProgressEvent]:
         """Stream per-page text-layer deletion."""
         client = self._require_client()
         try:
             async with client.stream(
                 "POST",
                 bind_operation_path("deletePdfTextLayers", session_id=sid),
-                json=PageListRequest(pages=pages).model_dump(),
+                json={"pages": pages},
                 timeout=_HTTP_LONG_TIMEOUT,
             ) as resp:
                 self._raise_on_error(resp)
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
-                    yield ProgressEvent.model_validate_json(line)
+                    yield PdfProgressEvent.from_json(line)
         except httpx.HTTPError as e:
             raise PdfBackendError(
                 ErrorCode.INTERNAL_ERROR, f"delete_text_layers 流式调用失败: {e}"
@@ -492,20 +475,20 @@ class PdfSupervisorClient:
         pdf_settings: dict[str, Any] | None = None,
         *,
         rewrite_text_layers: bool = True,
-    ) -> SaveResponse:
+    ) -> PdfSaveResult:
         client = self._require_client()
-        body = SaveRequest(
-            path=path,
-            pdf_settings=pdf_settings,
-            rewrite_text_layers=rewrite_text_layers,
-        ).model_dump()
+        body = {
+            "path": path,
+            "pdf_settings": pdf_settings,
+            "rewrite_text_layers": rewrite_text_layers,
+        }
         resp = await client.post(
             bind_operation_path("savePdfSession", session_id=sid),
             json=body,
             timeout=_HTTP_LONG_TIMEOUT,
         )
         self._raise_on_error(resp)
-        return SaveResponse.model_validate(resp.json())
+        return PdfSaveResult.from_payload(resp.json())
 
     # ---- cancel -------------------------------------------------------
 
@@ -577,7 +560,7 @@ class SyncPdfSupervisorClient:
     def health(self) -> dict[str, Any]:
         return _get_bg_loop().run(self._ensure_entered().health())
 
-    def open_session(self, path: str) -> OpenResponse:
+    def open_session(self, path: str) -> PdfOpenResult:
         return _get_bg_loop().run(self._ensure_entered().open_session(path))
 
     def close_session(self, sid: str) -> None:
@@ -586,7 +569,7 @@ class SyncPdfSupervisorClient:
     def get_model(self, sid: str) -> PdfDocumentMirror:
         return _get_bg_loop().run(self._ensure_entered().get_model(sid))
 
-    def load_stream(self, sid: str) -> Iterator[ProgressEvent]:
+    def load_stream(self, sid: str) -> Iterator[PdfProgressEvent]:
         client = self._ensure_entered()
 
         return _get_bg_loop().iterate_stream(lambda: client.load_stream(sid))
@@ -601,13 +584,13 @@ class SyncPdfSupervisorClient:
             self._ensure_entered().render_preview(sid, page, dpi=dpi)
         )
 
-    def detect_text_layers(self, sid: str, page: int) -> DetectTextLayersResponse:
+    def detect_text_layers(self, sid: str, page: int) -> PdfDetectResult:
         return _get_bg_loop().run(self._ensure_entered().detect_text_layers(sid, page))
 
-    def rotate(self, sid: str, pages: list[int], angle: int) -> MutateResponse:
+    def rotate(self, sid: str, pages: list[int], angle: int) -> PdfMutationResult:
         return _get_bg_loop().run(self._ensure_entered().rotate(sid, pages, angle))
 
-    def delete_pages(self, sid: str, pages: list[int]) -> MutateResponse:
+    def delete_pages(self, sid: str, pages: list[int]) -> PdfMutationResult:
         return _get_bg_loop().run(self._ensure_entered().delete_pages(sid, pages))
 
     def insert_blank(
@@ -616,24 +599,24 @@ class SyncPdfSupervisorClient:
         after_index: int,
         width: float = 612.0,
         height: float = 792.0,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().insert_blank(sid, after_index, width, height)
         )
 
     def insert_from(
         self, sid: str, source_path: str, after_index: int
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().insert_from(sid, source_path, after_index)
         )
 
-    def move_page(self, sid: str, from_index: int, to_index: int) -> MutateResponse:
+    def move_page(self, sid: str, from_index: int, to_index: int) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().move_page(sid, from_index, to_index)
         )
 
-    def reorder(self, sid: str, new_order: list[int]) -> MutateResponse:
+    def reorder(self, sid: str, new_order: list[int]) -> PdfMutationResult:
         return _get_bg_loop().run(self._ensure_entered().reorder(sid, new_order))
 
     def add_text_layer(
@@ -643,7 +626,7 @@ class SyncPdfSupervisorClient:
         ocr_result: dict[str, Any],
         pdf_settings: dict[str, Any] | None = None,
         overwrite: bool = False,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().add_text_layer(
                 sid, page, ocr_result, pdf_settings, overwrite
@@ -657,7 +640,7 @@ class SyncPdfSupervisorClient:
         pdf_settings: dict[str, Any] | None = None,
         overwrite: bool = False,
         save: bool = False,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().add_text_layer_batch(
                 sid, pages_data, pdf_settings, overwrite, save
@@ -671,7 +654,7 @@ class SyncPdfSupervisorClient:
         text_blocks: list[Any],
         preproc_angle: int = 0,
         pdf_settings: dict[str, Any] | None = None,
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().rewrite_text_layer(
                 sid, page, text_blocks, preproc_angle, pdf_settings
@@ -680,14 +663,14 @@ class SyncPdfSupervisorClient:
 
     def update_block_text(
         self, sid: str, page: int, block_index: int, new_text: str
-    ) -> MutateResponse:
+    ) -> PdfMutationResult:
         return _get_bg_loop().run(
             self._ensure_entered().update_block_text(sid, page, block_index, new_text)
         )
 
     def delete_text_layers_stream(
         self, sid: str, pages: list[int]
-    ) -> Iterator[ProgressEvent]:
+    ) -> Iterator[PdfProgressEvent]:
         client = self._ensure_entered()
 
         return _get_bg_loop().iterate_stream(
@@ -701,7 +684,7 @@ class SyncPdfSupervisorClient:
         pdf_settings: dict[str, Any] | None = None,
         *,
         rewrite_text_layers: bool = True,
-    ) -> SaveResponse:
+    ) -> PdfSaveResult:
         return _get_bg_loop().run(
             self._ensure_entered().save(
                 sid, path, pdf_settings, rewrite_text_layers=rewrite_text_layers

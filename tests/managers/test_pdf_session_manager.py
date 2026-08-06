@@ -384,9 +384,7 @@ class TestPdfMutateLifecycle:
         done = []
         mgr.mutate_done.connect(lambda *args: done.append(args))
 
-        mgr._on_mutate_all_done(
-            "sid-a", MagicMock(), {}, task_id=1, worker=old
-        )
+        mgr._on_mutate_all_done("sid-a", MagicMock(), {}, task_id=1, worker=old)
 
         assert done == []
         assert mgr._mutate_worker is current
@@ -806,6 +804,7 @@ class TestRunOcrIncrementalSave:
 
         from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
+        from vibeocr.runtime_contracts.pdf import PdfMutationResult
 
         pdf_path = tmp_path / "doc.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 test")
@@ -816,8 +815,7 @@ class TestRunOcrIncrementalSave:
 
         doc = PdfDocument(file_path=str(pdf_path))
         doc.pages = [
-            PdfPageInfo(page_index=i, rect=(0.0, 0.0, 595.0, 842.0))
-            for i in range(3)
+            PdfPageInfo(page_index=i, rect=(0.0, 0.0, 595.0, 842.0)) for i in range(3)
         ]
         session = MagicMock()
         session.session_id = "sid1"
@@ -832,10 +830,14 @@ class TestRunOcrIncrementalSave:
         client = MagicMock()
         # render_preview 返回非空 bytes（避免被当渲染失败）
         client.render_preview.return_value = b"\x89PNG fake"
-        # add_text_layer_batch 返回带 extra.saved=True
-        resp = MagicMock()
-        resp.extra = {"saved": True}
-        client.add_text_layer_batch.return_value = resp
+        client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+            {
+                "schema_version": 2,
+                "instance_id": "runtime-1",
+                "diff": {},
+                "extra": {"saved": True},
+            }
+        )
         mgr._client = client
 
         # mock OCR service：每页返回带 text_blocks 的 result
@@ -855,7 +857,8 @@ class TestRunOcrIncrementalSave:
 
         # sidecar 重定向到 tmp（隔离测试，避免污染真实缓存目录）
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "sessions"
+            "vibeocr.backend.utils.ocr_sidecar._sessions_dir",
+            lambda: tmp_path / "sessions",
         )
 
         runner = MagicMock()
@@ -866,9 +869,9 @@ class TestRunOcrIncrementalSave:
         runner.all_done = MagicMock()
         # _run_ocr 通过 runner._render_pool.map 并发渲染；mock 成返回 3 份 PNG bytes。
         runner._render_pool = MagicMock()
-        runner._render_pool.map.side_effect = (
-            lambda func, indices: [func(index) for index in indices]
-        )
+        runner._render_pool.map.side_effect = lambda func, indices: [
+            func(index) for index in indices
+        ]
 
         mgr._run_ocr(
             runner,
@@ -893,7 +896,9 @@ class TestRunOcrIncrementalSave:
         assert data["completed"] is True
         assert doc.is_modified is False
         assert doc.has_structural_change is False
-        assert [call.kwargs["dpi"] for call in client.render_preview.call_args_list] == [
+        assert [
+            call.kwargs["dpi"] for call in client.render_preview.call_args_list
+        ] == [
             200,
             200,
             200,
@@ -907,6 +912,7 @@ class TestRunOcrIncrementalSave:
 
         from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
+        from vibeocr.runtime_contracts.pdf import PdfMutationResult
 
         pdf_path = tmp_path / "fallback.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 test")
@@ -923,28 +929,40 @@ class TestRunOcrIncrementalSave:
 
         client = MagicMock()
         client.render_preview.return_value = b"png"
-        client.add_text_layer_batch.return_value = SimpleNamespace(
-            extra={"saved": False}
+        client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+            {
+                "schema_version": 2,
+                "instance_id": "runtime-1",
+                "diff": {},
+                "extra": {"saved": False},
+            }
         )
         mgr._client = client
         block = SimpleNamespace(
-            text="正文", score=0.9, bbox=(0, 0, 100, 100), polygon=None,
-            page_idx=0, is_manually_edited=False, label="text", order=0,
+            text="正文",
+            score=0.9,
+            bbox=(0, 0, 100, 100),
+            polygon=None,
+            page_idx=0,
+            is_manually_edited=False,
+            label="text",
+            order=0,
         )
         mgr._inference_client = MagicMock()
         mgr._recognize_images_via_job = MagicMock(
             return_value=[SimpleNamespace(text_blocks=[block], preproc_angle=90)]
         )
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "sessions"
+            "vibeocr.backend.utils.ocr_sidecar._sessions_dir",
+            lambda: tmp_path / "sessions",
         )
 
         runner = MagicMock()
         runner._cancelled = False
         runner._task_id = 1
-        runner._render_pool.map.side_effect = (
-            lambda func, indices: [func(index) for index in indices]
-        )
+        runner._render_pool.map.side_effect = lambda func, indices: [
+            func(index) for index in indices
+        ]
 
         mgr._run_ocr(runner, "sid1", [0], None, {}, False)
 
@@ -1061,7 +1079,8 @@ class TestRunOcrIncrementalSave:
         mgr._client = MagicMock()
         mgr._client.get_model.return_value = MagicMock()
         monkeypatch.setattr(
-            "vibeocr.classic.pyside.pdf_session_manager.mirror_to_doc", lambda _model: doc
+            "vibeocr.classic.pyside.pdf_session_manager.mirror_to_doc",
+            lambda _model: doc,
         )
 
         runner = MagicMock()

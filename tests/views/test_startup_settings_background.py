@@ -10,11 +10,11 @@ from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from tests.qt_responsiveness import assert_qt_event_loop_responsive
 from vibeocr.backend import env_manager
+from vibeocr.classic.utils.shortcuts import create_windows_shortcut
 from vibeocr.classic.views.background_tasks import DependencyUpdateCheckTask
 from vibeocr.classic.views.main_window import MainWindow
 from vibeocr.classic.views.settings_page_controller import (
     SettingsPageController,
-    _create_windows_shortcut,
 )
 
 
@@ -59,7 +59,9 @@ def test_dependency_update_check_is_responsive_and_single_flight(
     assert results == [("startup", {})]
 
 
-def test_dependency_update_development_mode_short_circuits(qtbot, tmp_path, monkeypatch):
+def test_dependency_update_development_mode_short_circuits(
+    qtbot, tmp_path, monkeypatch
+):
     detect = MagicMock(return_value={})
     task = DependencyUpdateCheckTask(tmp_path)
     results: list[object] = []
@@ -75,6 +77,7 @@ def test_dependency_update_development_mode_short_circuits(qtbot, tmp_path, monk
 def test_dependency_update_close_drops_late_result(qtbot, tmp_path, monkeypatch):
     entered = threading.Event()
     release = threading.Event()
+
     def slow_detect():
         entered.set()
         release.wait(timeout=2)
@@ -101,7 +104,9 @@ def test_settings_drain_waits_for_owned_cache_task(qtbot, tmp_path):
         release.wait(timeout=2)
         return "done"
 
-    controller._run_cache_operation(slow_cache_call, lambda _result: None, lambda _e: None)
+    controller._run_cache_operation(
+        slow_cache_call, lambda _result: None, lambda _e: None
+    )
     assert entered.wait(timeout=1)
     controller.request_shutdown()
 
@@ -115,6 +120,7 @@ def test_settings_first_update_check_does_not_stall_startup(
 ):
     entered = threading.Event()
     release = threading.Event()
+
     def slow_detect():
         entered.set()
         release.wait(timeout=2)
@@ -231,7 +237,7 @@ def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(
         "vibeocr.classic.views.settings_page_controller._is_bundled", lambda: True
     )
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller._create_windows_shortcut", slow_create
+        "vibeocr.classic.utils.shortcuts.create_windows_shortcut", slow_create
     )
     toast = MagicMock()
     controller._show_settings_toast = toast
@@ -251,16 +257,16 @@ def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(
 
 def test_shortcut_timeout_and_failure_return_false(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.subprocess.run",
+        "vibeocr.classic.utils.shortcuts.subprocess.run",
         MagicMock(side_effect=subprocess.TimeoutExpired("powershell", 15)),
     )
-    assert not _create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
+    assert not create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.subprocess.run",
+        "vibeocr.classic.utils.shortcuts.subprocess.run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess([], 1),
     )
-    assert not _create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
+    assert not create_windows_shortcut("app.exe", str(tmp_path / "VibeOCR.lnk"))
 
 
 def test_settings_cache_refresh_is_responsive_and_single_flight(
@@ -304,6 +310,6 @@ def test_pending_backend_overrides_background_gpu_result(monkeypatch, tmp_path):
         "is_cache_valid",
         lambda _root: (True, {"pending_backend": "gpu"}),
     )
-    assert env_manager.get_runtime_gpu_capability(
-        tmp_path, detected_has_gpu=False
-    ) is True
+    assert (
+        env_manager.get_runtime_gpu_capability(tmp_path, detected_has_gpu=False) is True
+    )

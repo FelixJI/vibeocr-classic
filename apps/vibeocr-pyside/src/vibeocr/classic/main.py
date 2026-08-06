@@ -609,6 +609,15 @@ def launch_application() -> int:
     # 加载应用设置
     app_settings = AppSettings(cm)
 
+    # 一次性迁移：把旧版「注册表 Run」开机自启静默切到更杀软友好的
+    # 「启动文件夹 .lnk」。迁移标记防止重复执行。失败不影响启动。
+    if not app_settings.autostart_migrated_to_lnk:
+        from vibeocr.classic.utils.autostart import migrate_legacy_autostart
+
+        migrate_legacy_autostart()
+        app_settings.autostart_migrated_to_lnk = True
+        app_settings.save()
+
     # 创建 qasync 事件循环（整合 Qt 和 asyncio）
     loop = create_qasync_event_loop(app)
 

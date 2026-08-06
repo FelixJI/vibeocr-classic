@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from tests.qt_responsiveness import assert_qt_event_loop_responsive
-from vibeocr.backend import env_manager
 from vibeocr.classic.utils.shortcuts import create_windows_shortcut
 from vibeocr.classic.views.background_tasks import DependencyUpdateCheckTask
 from vibeocr.classic.views.main_window import MainWindow
@@ -301,15 +300,3 @@ def test_settings_cache_refresh_is_responsive_and_single_flight(
     release.set()
     qtbot.waitUntil(button.isEnabled, timeout=1000)
     assert label.text() == "缓存已刷新"
-
-
-def test_pending_backend_overrides_background_gpu_result(monkeypatch, tmp_path):
-    monkeypatch.setattr(env_manager, "_runtime_gpu_capability_cache", None)
-    monkeypatch.setattr(
-        env_manager,
-        "is_cache_valid",
-        lambda _root: (True, {"pending_backend": "gpu"}),
-    )
-    assert (
-        env_manager.get_runtime_gpu_capability(tmp_path, detected_has_gpu=False) is True
-    )

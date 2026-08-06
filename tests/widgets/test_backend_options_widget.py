@@ -264,11 +264,6 @@ def test_gpu_worker_uses_runtime_installer_accelerator(
             "cuda": "cu126",
         },
     )
-    monkeypatch.setattr(
-        bow.env_manager,
-        "get_runtime_gpu_capability",
-        lambda *_args, **_kwargs: True,
-    )
     worker = bow._GpuDetectWorker(tmp_path)
     received: list[dict] = []
     worker.finished_info.connect(received.append)

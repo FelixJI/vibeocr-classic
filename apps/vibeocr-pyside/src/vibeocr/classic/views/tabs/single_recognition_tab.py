@@ -18,8 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.utils.text_layout import TextBlockProcessor
 from vibeocr.classic.recognition_settings import OCROptions
+from vibeocr.classic.text_layout import TextBlockProcessor
 from vibeocr.classic.ui import theme
 from vibeocr.classic.utils.image_jobs import (
     GenerationImageJobs,

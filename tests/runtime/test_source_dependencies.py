@@ -12,6 +12,8 @@ CLASSIC_SOURCE_ROOT = (
     / "vibeocr"
     / "classic"
 )
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+CLASSIC_TEST_ROOT = REPOSITORY_ROOT / "tests"
 FORBIDDEN_BACKEND_PDF_MODULES = {
     "vibeocr.backend.ipc.schemas",
     "vibeocr.backend.ipc.model_bridge",
@@ -35,6 +37,16 @@ FORBIDDEN_BACKEND_OCR_PRESENTATION_MODULES = {
     "vibeocr.backend.models.ocr_result_serializer",
 }
 FORBIDDEN_BACKEND_APP_PATH_MODULES = {"vibeocr.backend.env_manager"}
+FORBIDDEN_BACKEND_BATCH_BUDGET_MODULES = {
+    "vibeocr.backend.core.batch_budget",
+}
+FORBIDDEN_BACKEND_TEXT_LAYOUT_MODULES = {
+    "vibeocr.backend.utils.text_layout",
+}
+FORBIDDEN_BACKEND_OCR_SIDECAR_MODULES = {
+    "vibeocr.backend.utils.ocr_sidecar",
+}
+BACKEND_GPU_CACHE_PATH = "vibeocr.backend.env_manager._runtime_gpu_capability_cache"
 FORBIDDEN_BACKEND_APP_PATH_HELPERS = {
     "get_bundled_changelog_path",
     "get_bundled_resources_dir",
@@ -44,8 +56,76 @@ FORBIDDEN_BACKEND_APP_PATH_HELPERS = {
 APP_PATH_ONLY_CONSUMERS = (
     CLASSIC_SOURCE_ROOT / "main.py",
     CLASSIC_SOURCE_ROOT / "services" / "update_service.py",
+    CLASSIC_SOURCE_ROOT / "views" / "main_window.py",
     CLASSIC_SOURCE_ROOT / "views" / "tabs" / "about_tab.py",
 )
+
+# Temporary migration ledger.  Every remaining production import from the
+# Backend source package must be named here and this mapping must only shrink.
+# Protocol/runtime executable identity strings are intentionally outside this
+# source-import boundary.
+EXPECTED_BACKEND_SOURCE_IMPORTS = {
+    "pyside/pdf_ipc_worker.py": {
+        "vibeocr.backend.env_manager",
+        "vibeocr.backend.env_manager.ensure_mineru_models",
+    },
+    "pyside/pdf_session_manager.py": {
+        "vibeocr.backend.pipeline_status",
+        "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
+    },
+    "services/update_service.py": {
+        "vibeocr.backend.network_detector",
+        "vibeocr.backend.network_detector.NetworkDetector",
+    },
+    "utils/export_jobs.py": {
+        "vibeocr.backend.tables.blocks",
+        "vibeocr.backend.tables.blocks.validate_table_blocks",
+    },
+    "views/settings_page_controller.py": {
+        "vibeocr.backend",
+        "vibeocr.backend.env_manager",
+    },
+    "views/tabs/base_tab.py": {
+        "vibeocr.backend.tables.blocks",
+        "vibeocr.backend.tables.blocks.table_model_from_block",
+        "vibeocr.backend.tables.html_adapter",
+        "vibeocr.backend.tables.html_adapter.table_model_from_html",
+        "vibeocr.backend.tables.html_adapter.table_model_to_html",
+        "vibeocr.backend.tables.projections",
+        "vibeocr.backend.tables.projections.table_model_to_markdown",
+        "vibeocr.backend.tables.projections.table_model_to_plain_text",
+        "vibeocr.backend.tables.reducer",
+        "vibeocr.backend.tables.reducer.build_result_projections",
+        "vibeocr.backend.tables.reducer.rebuild_result_projections",
+        "vibeocr.backend.tables.reducer.update_result_table_cell",
+    },
+    "widgets/backend_choice_dialog.py": {
+        "vibeocr.backend",
+        "vibeocr.backend.env_manager",
+    },
+    "widgets/backend_options_widget.py": {
+        "vibeocr.backend",
+        "vibeocr.backend.env_manager",
+    },
+    "widgets/result_view_widget.py": {
+        "vibeocr.backend.tables.blocks",
+        "vibeocr.backend.tables.blocks.table_model_from_block",
+        "vibeocr.backend.tables.html_adapter",
+        "vibeocr.backend.tables.html_adapter.table_model_to_html",
+        "vibeocr.backend.utils.html_tables",
+        "vibeocr.backend.utils.html_tables._extract_table_html",
+        "vibeocr.backend.utils.html_tables._html_table_to_markdown",
+        "vibeocr.backend.utils.html_tables.html_tables_to_cell_grid",
+        "vibeocr.backend.utils.html_tables.normalize_table_html",
+        "vibeocr.backend.utils.html_tables.tables_from_result",
+    },
+    "widgets/switch_dialog.py": {
+        "vibeocr.backend",
+        "vibeocr.backend.env_manager",
+        "vibeocr.backend.network_detector",
+        "vibeocr.backend.network_detector.NetworkDetector",
+    },
+}
 
 
 def _imported_modules(source: str, *, filename: str = "<source>") -> set[str]:
@@ -119,6 +199,69 @@ def _backend_env_path_calls(source: str, *, filename: str = "<source>") -> set[s
     return violations
 
 
+def _backend_gpu_cache_accesses(source: str, *, filename: str = "<source>") -> set[str]:
+    tree = ast.parse(source, filename=filename)
+    module_aliases = {"vibeocr.backend.env_manager"}
+    direct_cache_names: set[str] = set()
+    violations: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_aliases.update(
+                alias.asname
+                for alias in node.names
+                if alias.name == "vibeocr.backend.env_manager" and alias.asname
+            )
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "vibeocr.backend":
+                module_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "env_manager"
+                )
+            elif node.module == "vibeocr.backend.env_manager":
+                imported_cache_names = {
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "_runtime_gpu_capability_cache"
+                }
+                if imported_cache_names:
+                    direct_cache_names.update(imported_cache_names)
+                    violations.add(BACKEND_GPU_CACHE_PATH)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in direct_cache_names:
+            violations.add(BACKEND_GPU_CACHE_PATH)
+            continue
+
+        if isinstance(node, ast.Attribute):
+            parts = [node.attr]
+            value = node.value
+            while isinstance(value, ast.Attribute):
+                parts.append(value.attr)
+                value = value.value
+            if isinstance(value, ast.Name):
+                parts.append(value.id)
+            dotted = ".".join(reversed(parts))
+            module, _, name = dotted.rpartition(".")
+            if name == "_runtime_gpu_capability_cache" and module in module_aliases:
+                violations.add(BACKEND_GPU_CACHE_PATH)
+            continue
+
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        owner, attribute = node.args[:2]
+        if (
+            isinstance(owner, ast.Name)
+            and owner.id in module_aliases
+            and isinstance(attribute, ast.Constant)
+            and attribute.value == "_runtime_gpu_capability_cache"
+        ):
+            violations.add(BACKEND_GPU_CACHE_PATH)
+
+    return violations
+
+
 def test_pdf_dependency_guard_recognizes_equivalent_import_syntax() -> None:
     imported = _imported_modules(
         "from vibeocr.backend.ipc import schemas, model_bridge\n"
@@ -156,6 +299,60 @@ def test_app_path_guard_recognizes_backend_helper_imports() -> None:
     assert _forbidden_imports(imported, FORBIDDEN_BACKEND_APP_PATH_MODULES)
 
 
+def test_batch_budget_guard_recognizes_equivalent_import_syntax() -> None:
+    imported = _imported_modules(
+        "from vibeocr.backend.core import batch_budget\n"
+        "from vibeocr.backend.core.batch_budget import BatchBudget\n"
+        "import vibeocr.backend.core.batch_budget as budget\n"
+    )
+
+    assert _forbidden_imports(imported, FORBIDDEN_BACKEND_BATCH_BUDGET_MODULES) == {
+        "vibeocr.backend.core.batch_budget",
+        "vibeocr.backend.core.batch_budget.BatchBudget",
+    }
+
+
+def test_text_layout_guard_recognizes_equivalent_import_syntax() -> None:
+    imported = _imported_modules(
+        "from vibeocr.backend.utils import text_layout\n"
+        "from vibeocr.backend.utils.text_layout import TextBlockProcessor\n"
+        "import vibeocr.backend.utils.text_layout as layout\n"
+    )
+
+    assert _forbidden_imports(imported, FORBIDDEN_BACKEND_TEXT_LAYOUT_MODULES) == {
+        "vibeocr.backend.utils.text_layout",
+        "vibeocr.backend.utils.text_layout.TextBlockProcessor",
+    }
+
+
+def test_ocr_sidecar_guard_recognizes_equivalent_import_syntax() -> None:
+    imported = _imported_modules(
+        "from vibeocr.backend.utils import ocr_sidecar\n"
+        "from vibeocr.backend.utils.ocr_sidecar import restore_pending_pages\n"
+        "import vibeocr.backend.utils.ocr_sidecar as sidecar\n"
+    )
+
+    assert _forbidden_imports(imported, FORBIDDEN_BACKEND_OCR_SIDECAR_MODULES) == {
+        "vibeocr.backend.utils.ocr_sidecar",
+        "vibeocr.backend.utils.ocr_sidecar.restore_pending_pages",
+    }
+
+
+def test_gpu_cache_guard_recognizes_private_cache_access_syntaxes() -> None:
+    accesses = _backend_gpu_cache_accesses(
+        "from vibeocr.backend.env_manager import "
+        "_runtime_gpu_capability_cache as cached_gpu\n"
+        "from vibeocr.backend import env_manager as em\n"
+        "import vibeocr.backend.env_manager\n"
+        "cached_gpu\n"
+        "em._runtime_gpu_capability_cache\n"
+        "vibeocr.backend.env_manager._runtime_gpu_capability_cache\n"
+        'monkeypatch.setattr(em, "_runtime_gpu_capability_cache", None)\n'
+    )
+
+    assert accesses == {BACKEND_GPU_CACHE_PATH}
+
+
 def test_app_path_guard_recognizes_direct_and_aliased_calls() -> None:
     calls = _backend_env_path_calls(
         "from vibeocr.backend import env_manager as em\n"
@@ -189,6 +386,23 @@ def test_pdf_frontend_does_not_import_backend_wire_or_session_modules() -> None:
     assert not violations, "Backend PDF seam leaked into Classic:\n" + "\n".join(
         violations
     )
+
+
+def test_remaining_backend_source_imports_match_migration_ledger() -> None:
+    actual: dict[str, set[str]] = {}
+
+    for source_file in CLASSIC_SOURCE_ROOT.rglob("*.py"):
+        imported = {
+            module
+            for module in _imported_modules(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            if module == "vibeocr.backend" or module.startswith("vibeocr.backend.")
+        }
+        if imported:
+            actual[source_file.relative_to(CLASSIC_SOURCE_ROOT).as_posix()] = imported
+
+    assert actual == EXPECTED_BACKEND_SOURCE_IMPORTS
 
 
 def test_classic_settings_do_not_import_backend_value_models() -> None:
@@ -260,5 +474,86 @@ def test_classic_does_not_call_backend_path_helpers() -> None:
         )
 
     assert not violations, "Backend path helpers leaked into Classic:\n" + "\n".join(
+        violations
+    )
+
+
+def test_classic_source_and_tests_do_not_import_backend_batch_budget() -> None:
+    violations: list[str] = []
+
+    for root in (CLASSIC_SOURCE_ROOT, CLASSIC_TEST_ROOT):
+        for source_file in root.rglob("*.py"):
+            imported = _imported_modules(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            forbidden = _forbidden_imports(
+                imported, FORBIDDEN_BACKEND_BATCH_BUDGET_MODULES
+            )
+            violations.extend(
+                f"{source_file.relative_to(REPOSITORY_ROOT)}: {module}"
+                for module in sorted(forbidden)
+            )
+
+    assert not violations, "Backend batch budget leaked into Classic:\n" + "\n".join(
+        violations
+    )
+
+
+def test_classic_source_and_tests_do_not_import_backend_text_layout() -> None:
+    violations: list[str] = []
+
+    for root in (CLASSIC_SOURCE_ROOT, CLASSIC_TEST_ROOT):
+        for source_file in root.rglob("*.py"):
+            imported = _imported_modules(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            forbidden = _forbidden_imports(
+                imported, FORBIDDEN_BACKEND_TEXT_LAYOUT_MODULES
+            )
+            violations.extend(
+                f"{source_file.relative_to(REPOSITORY_ROOT)}: {module}"
+                for module in sorted(forbidden)
+            )
+
+    assert not violations, "Backend text layout leaked into Classic:\n" + "\n".join(
+        violations
+    )
+
+
+def test_classic_source_and_tests_do_not_import_backend_ocr_sidecar() -> None:
+    violations: list[str] = []
+
+    for root in (CLASSIC_SOURCE_ROOT, CLASSIC_TEST_ROOT):
+        for source_file in root.rglob("*.py"):
+            imported = _imported_modules(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            forbidden = _forbidden_imports(
+                imported, FORBIDDEN_BACKEND_OCR_SIDECAR_MODULES
+            )
+            violations.extend(
+                f"{source_file.relative_to(REPOSITORY_ROOT)}: {module}"
+                for module in sorted(forbidden)
+            )
+
+    assert not violations, "Backend OCR sidecar leaked into Classic:\n" + "\n".join(
+        violations
+    )
+
+
+def test_classic_source_and_tests_do_not_access_backend_gpu_cache() -> None:
+    violations: list[str] = []
+
+    for root in (CLASSIC_SOURCE_ROOT, CLASSIC_TEST_ROOT):
+        for source_file in root.rglob("*.py"):
+            forbidden = _backend_gpu_cache_accesses(
+                source_file.read_text(encoding="utf-8"), filename=str(source_file)
+            )
+            violations.extend(
+                f"{source_file.relative_to(REPOSITORY_ROOT)}: {access}"
+                for access in sorted(forbidden)
+            )
+
+    assert not violations, "Backend GPU cache leaked into Classic:\n" + "\n".join(
         violations
     )

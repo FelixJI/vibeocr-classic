@@ -75,9 +75,7 @@ class TestThumbnailIpcWorkerConcurrent:
         # DirectConnection:槽在 emit 的线程直接执行,无需主线程事件循环
         # (生产代码用默认 AutoConnection,槽排队到主线程;测试线程在
         #  done.wait() 阻塞无法处理事件,故测试用 DirectConnection 绕过)
-        worker.thumbnail_ready.connect(
-            _on_ready, Qt.ConnectionType.DirectConnection
-        )
+        worker.thumbnail_ready.connect(_on_ready, Qt.ConnectionType.DirectConnection)
         worker.start()
         try:
             for i in range(8):
@@ -106,9 +104,7 @@ class TestThumbnailIpcWorkerConcurrent:
         # DirectConnection:槽在 emit 的线程直接执行,无需主线程事件循环
         # (生产代码用默认 AutoConnection,槽排队到主线程;测试线程在
         #  done.wait() 阻塞无法处理事件,故测试用 DirectConnection 绕过)
-        worker.thumbnail_ready.connect(
-            _on_ready, Qt.ConnectionType.DirectConnection
-        )
+        worker.thumbnail_ready.connect(_on_ready, Qt.ConnectionType.DirectConnection)
         worker.start()
         try:
             worker.request(0, gen=42)
@@ -146,9 +142,7 @@ class TestThumbnailIpcWorkerConcurrent:
         # DirectConnection:槽在 emit 的线程直接执行,无需主线程事件循环
         # (生产代码用默认 AutoConnection,槽排队到主线程;测试线程在
         #  done.wait() 阻塞无法处理事件,故测试用 DirectConnection 绕过)
-        worker.thumbnail_ready.connect(
-            _on_ready, Qt.ConnectionType.DirectConnection
-        )
+        worker.thumbnail_ready.connect(_on_ready, Qt.ConnectionType.DirectConnection)
         worker.start()
         try:
             worker.request(0, gen=0)
@@ -166,8 +160,8 @@ class TestThumbnailIpcWorkerConcurrent:
         """cancel 后即使 HTTP 请求阻塞，worker 也应退出而不依赖 terminate()。
 
         复现 bug：阻塞的 HTTP 请求使 ThreadPoolExecutor 无法 shutdown(wait=True)，
-        导致 _wait_thread 超时后 worker.terminate()。修复后 cancel() 应使用
-        cancel_futures=True 让 executor 快速收尾。
+        关闭路径不得用 worker.terminate() 强杀。cancel() 应使用
+        cancel_futures=True 让 executor 快速收尾并自然退出。
         """
 
         # 用 threading.Event 阻塞 render_thumbnail，模拟后端卡死
@@ -192,48 +186,3 @@ class TestThumbnailIpcWorkerConcurrent:
         # 应在合理时间内退出（cancel_futures 让 executor 不等未开始的任务）
         assert w.wait(10000), "cancel 后 worker 未在 10s 内退出"
         assert w.isFinished()
-
-
-class TestWaitThreadNoTerminate:
-    """_wait_thread 不得调用 worker.terminate()。"""
-
-    def test_wait_thread_returns_bool(self, qapp):
-        """_wait_thread 应返回 bool（是否在超时内完成）。"""
-        from PySide6.QtCore import QThread
-
-        from vibeocr.classic.managers.pdf_session_manager import _wait_thread
-
-        # 一个已完成的 QThread（什么都不做）
-        class _DoneThread(QThread):
-            def run(self):
-                pass
-
-        t = _DoneThread()
-        t.start()
-        t.wait(2000)
-        result = _wait_thread(t, timeout_ms=500)
-        assert isinstance(result, bool)
-
-    def test_wait_thread_does_not_terminate(self, qapp):
-        """_wait_thread 超时后不得调用 worker.terminate()。"""
-        from PySide6.QtCore import QThread
-
-        from vibeocr.classic.managers.pdf_session_manager import _wait_thread
-
-        class _BlockingThread(QThread):
-            def run(self):
-                # 阻塞超过 _wait_thread 的超时
-                import time as _time
-
-                _time.sleep(2.0)
-
-        t = _BlockingThread()
-        t.start()
-        try:
-            result = _wait_thread(t, timeout_ms=200)
-            # 超时应返回 False
-            assert result is False
-            # 线程不应被 terminate（仍在运行，最终自然退出）
-            # terminate() 会立即杀死线程；如果被调用，isRunning 可能为 False
-        finally:
-            t.wait(5000)  # 等自然退出

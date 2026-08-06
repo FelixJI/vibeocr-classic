@@ -57,15 +57,6 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         self._setup_ui()
         self._connect_signals()
 
-        # 进程级 GPU 能力缓存已被 main_window 在启动时算出 → 立即应用门控
-        # （无 nvidia-smi 开销，瞬时完成）。缓存未就绪时跳过，由 main_window
-        # 算完后通过 apply_gpu_gating 广播补齐。这覆盖了懒加载的 inline 面板：
-        # 它在截图时才构造，此时缓存通常已就绪。
-        from vibeocr.backend.env_manager import _runtime_gpu_capability_cache
-
-        if _runtime_gpu_capability_cache is not None:
-            self.apply_gpu_gating(_runtime_gpu_capability_cache)
-
     def _setup_ui(self):
         """设置 UI"""
         layout = self.contentLayout()
@@ -863,10 +854,10 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         且 GPU 门控不会被 unlock_pipeline 冲掉（unlock 后仍重新应用）。
 
         无 GPU 或 CPU 后端时禁用 MinerU(文档解析)/PaddleOCR-VL；有 GPU 后端时
-        恢复可选。由 MainWindow 在启动时（依赖检测完成后）调用一次。
+        恢复可选。由 MainWindow 在依赖检测完成后及懒加载构造后显式广播。
 
         Args:
-            has_gpu: 运行时是否使用 GPU 后端（见 env_manager.get_runtime_gpu_capability）
+            has_gpu: 运行时是否使用 GPU 后端。
         """
         self._gpu_capability = bool(has_gpu)
         self._gpu_disabled_pipelines = (

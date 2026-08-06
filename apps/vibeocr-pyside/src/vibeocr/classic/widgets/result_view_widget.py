@@ -323,7 +323,7 @@ def _build_text_layout_html(
         LINE_MODE_MERGE,
         LINE_MODE_SMART,
     )
-    from vibeocr.backend.utils.text_layout import TextBlockProcessor
+    from vibeocr.classic.text_layout import TextBlockProcessor
 
     # 用 (原始下标, 块) 配对跟踪位置，避免 drop_blank / 排序后 index 错位。
     if cancel_event is not None and cancel_event.is_set():

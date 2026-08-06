@@ -76,14 +76,6 @@ class ScreenshotOptionsWidget(QWidget):
         self._connect_signals()
         self.load()
 
-        # 进程级 GPU 能力缓存已被 main_window 在启动时算出 → 立即应用门控
-        # （无 nvidia-smi 开销，瞬时完成）。缓存未就绪时跳过，由 main_window
-        # 算完后通过 apply_gpu_gating 广播补齐。
-        from vibeocr.backend.env_manager import _runtime_gpu_capability_cache
-
-        if _runtime_gpu_capability_cache is not None:
-            self.apply_gpu_gating(_runtime_gpu_capability_cache)
-
     # ── UI 构建 ──
 
     def _setup_ui(self) -> None:
@@ -91,9 +83,7 @@ class ScreenshotOptionsWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        hint = QLabel(
-            "识别类型由截图工具栏按钮决定，此处仅配置各管道的预处理参数。"
-        )
+        hint = QLabel("识别类型由截图工具栏按钮决定，此处仅配置各管道的预处理参数。")
         hint.setWordWrap(True)
         hint.setStyleSheet(
             f"color: {theme.Colors.text_muted};"
@@ -131,7 +121,9 @@ class ScreenshotOptionsWidget(QWidget):
             box_layout.addWidget(cb)
             checks[field] = cb
 
-        self._groups[pipeline] = _PipelineGroup(pipeline=pipeline, box=box, checks=checks)
+        self._groups[pipeline] = _PipelineGroup(
+            pipeline=pipeline, box=box, checks=checks
+        )
         return box
 
     def _connect_signals(self) -> None:
@@ -187,9 +179,11 @@ class ScreenshotOptionsWidget(QWidget):
         try:
             from vibeocr.classic.utils.ocr_preferences import OCRPreferences
 
-            base = OCRPreferences.instance().get_pipeline_options(
-                "screenshot", pipeline
-            ).to_dict()
+            base = (
+                OCRPreferences.instance()
+                .get_pipeline_options("screenshot", pipeline)
+                .to_dict()
+            )
         except RuntimeError:
             base = OCROptions(pipeline=pipeline).to_dict()
         # 强制 pipeline 与该块一致（识别类型权威性）
@@ -216,8 +210,8 @@ class ScreenshotOptionsWidget(QWidget):
         """根据运行时是否使用 GPU 后端，禁用/启用需 GPU 的重管道块。
 
         无 GPU 或 CPU 后端时禁用 PaddleOCR-VL 块（MinerU 无块）；
-        有 GPU 后端时恢复可配置。由 MainWindow 在启动时（依赖检测完成后）
-        调用一次，或在构造时从进程级缓存读取。
+        有 GPU 后端时恢复可配置。由 MainWindow 在依赖检测完成后及懒加载
+        构造后显式广播。
 
         Args:
             has_gpu: 运行时是否使用 GPU 后端。

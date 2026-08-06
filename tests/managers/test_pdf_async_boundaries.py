@@ -752,7 +752,7 @@ def test_path_for_session_id_hit_and_miss(manager):
 
 
 def test_get_ocr_batch_budget_default_and_override(manager):
-    from vibeocr.backend.core.batch_budget import BatchBudget
+    from vibeocr.classic.pyside.batch_budget import BatchBudget
 
     default = manager._get_ocr_batch_budget()
     assert isinstance(default, BatchBudget)

@@ -12,7 +12,7 @@
 （从暂存目录运行，新代码）完成部署。
 
 核心流程：verify_sha256 → signal_ready → extract → replace_app_files
-        （备份-删除-复制-失败回滚）→ sync deps → launch_app
+        （备份-删除-复制-失败回滚）→ launch_app
         （cleanup 已移交新主程序后台线程，见 main.py _cleanup_update_artifacts）
 """
 
@@ -459,9 +459,7 @@ def replace_app_files(
             新路径为空；调用方另行加入自身产品入口。
     """
     logger.info("替换应用文件...")
-    recovery_marker = (
-        app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
-    )
+    recovery_marker = app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
     if recovery_marker.is_file():
         logger.error("存在待人工恢复的更新备份，拒绝覆盖: %s", recovery_marker)
         return False
@@ -480,7 +478,9 @@ def replace_app_files(
             for item in old_items:
                 bak = backup_dir / item.name
                 if item.is_dir():
-                    shutil.copytree(item, bak, dirs_exist_ok=True, copy_function=_busy_copy2)
+                    shutil.copytree(
+                        item, bak, dirs_exist_ok=True, copy_function=_busy_copy2
+                    )
                 else:
                     _busy_copy2(item, bak)
                 backed_up.append((item, bak))
@@ -626,10 +626,7 @@ def _restore_backup(
                 if restored_files != backup_files:
                     restored = False
                     break
-            elif (
-                not original.is_file()
-                or file_sha256(original) != file_sha256(bak)
-            ):
+            elif not original.is_file() or file_sha256(original) != file_sha256(bak):
                 restored = False
                 break
 
@@ -783,7 +780,11 @@ def _safe_remove_running_exe(path: Path, *, label: str = "") -> None:
             # 用 use_last_error=True 让 ctypes.get_last_error() 拿到真实错误码。
             move_file_ex = ctypes.windll.kernel32.MoveFileExW  # type: ignore[attr-defined]
             move_file_ex.restype = ctypes.c_int
-            move_file_ex.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+            move_file_ex.argtypes = [
+                ctypes.c_wchar_p,
+                ctypes.c_wchar_p,
+                ctypes.c_uint32,
+            ]
             ok = move_file_ex(str(path), None, 4)
             if ok:
                 logger.info(f"{name} 被占用，已标记在下次重启时删除")
@@ -823,134 +824,6 @@ def cleanup_leftover_old_exes(app_dir: Path) -> None:
     for old_exe in app_dir.glob("*.exe.old"):
         if old_exe.exists():
             _safe_remove_running_exe(old_exe, label=old_exe.name)
-
-
-# ---------------------------------------------------------------------------
-# 旧依赖同步兼容 helper（生产更新路径不再调用）
-# ---------------------------------------------------------------------------
-
-
-def _normalize_dep_value(v: object) -> str:
-    """把 dep_versions 的值归一化为 constraint 串（如 ">=3.3.1"）。
-
-    兼容三种历史格式（替换器读到的 version.json 可能由不同版本写入）：
-    - 当前版：约束串 str（如 ">=3.3.1" / "==3.3.1+cu126" / ">=1,<2"）→ 直接用
-    - 曾用版：{"version": "3.3.1", "op": ">="} dict → 拼成 ">=3.3.1"
-    - 旧旧版：裸版本号 str（如 "3.3.1"）→ 按 ">=3.3.1"
-
-    替换器需在 diff 前归一化，避免不同格式因类型/字符串差异被误判为变化。
-    """
-    if isinstance(v, dict):
-        ver = str(v.get("version", "")).strip()
-        op = str(v.get("op", ">=")).strip() or ">="
-        return f"{op}{ver}"
-    s = str(v).strip()
-    # 已是约束串（以 PEP 440 操作符开头）→ 直接返回；否则视为裸版本号
-    if s and (
-        s.startswith(("==", "!=", ">=", "<=", "~="))
-        or (s[:1] in "><" and len(s) > 1)
-    ):
-        return s
-    return f">={s}" if s else ""
-
-
-def _sync_dependencies(
-    old_deps: dict, new_data: dict, app_dir: Path, old_locked: dict | None = None
-) -> None:
-    """检查 AI 依赖版本变化并写入"待同步"标记。
-
-    替换器不能 import vibeocr（python/ 里没装 vibeocr，updater 是独立 --onefile
-    打包；self-update 虽然在主程序进程内，但同样不应在此引入 vibeocr 重模块），
-    因此不在替换器里直接 pip 安装。改为：若 dep_versions 有变化，把变更项
-    写入 data/settings/pending_sync.json，由覆盖后的新版 VibeOCR 启动时用
-    env_manager.install_embedded_dependencies（含 GPU/CUDA tag/镜像/PyPI 回退的完整
-    逻辑）执行升级。这样避免替换器用裸 pip 走 PyPI 把 paddle/torch 装成 CPU 版。
-
-    变化检测有两路（任一触发即同步，确保便携环境紧跟 uv.lock）：
-    1. 约束变化（dep_versions）：pyproject 显式改版（如 paddleocr >=3.7.0 →3.8.0）。
-    2. 锁定版变化（dep_locked_versions）：uv.lock 在下界内升级（如 mineru 3.4.0→3.4.2，
-       约束 >=3.4.0 不变）。仅靠约束比对会漏掉此类升级，便携环境会永久停留在旧锁定版，
-       故必须把锁定版基准一并比较。旧版无 dep_locked_versions 字段时，新版首次携带
-       视为全部变化（确保便携环境与新版 lock 对齐）。
-
-    写入字段：
-    - dep_versions：变化的包 → constraint 串（完整 PEP 440，支持 local version、
-        多段约束、精确锁 ==/降级）
-    - dep_extras：变化的包的 extras 列表（透传新版 dep_extras 中对应项）
-    - removed：新版从 dep_versions 中移除的包名列表（由主程序 pip uninstall）
-    - attempts：失败重试计数，初始为 1，主程序每次同步失败递增
-    """
-    new_deps = new_data.get("dep_versions", {})
-    new_extras = new_data.get("dep_extras", {})
-    new_locked = new_data.get("dep_locked_versions", {})
-    old_locked = old_locked or {}
-
-    # diff 路径 1：约束变化（归一化为 constraint 串后比较）
-    changed: dict[str, str] = {}
-    for pkg, new_v in new_deps.items():
-        new_norm = _normalize_dep_value(new_v)
-        old_norm = _normalize_dep_value(old_deps.get(pkg))
-        if old_norm != new_norm:
-            changed[pkg] = new_norm
-
-    # diff 路径 2：锁定版变化（捕获约束不变但 uv.lock 下界内升级的场景）。
-    # 仅对新版 dep_locked_versions 中的包比较；约束已判变的包不重复处理。
-    # 旧版无 dep_locked_versions 字段（old_locked 为空 dict）时，新版首次携带的
-    # 全部锁定版都视为变化，确保从无锁定版到有锁定版的过渡也触发同步。
-    lock_changed: list[str] = []
-    for pkg, new_lock in new_locked.items():
-        if pkg in changed:
-            continue  # 约束已变，无需重复
-        old_lock = old_locked.get(pkg)
-        if old_lock != new_lock:
-            lock_changed.append(pkg)
-            # 用新版约束串填值，使主程序 install 按约束重装（约束未变时取自 new_deps）
-            changed[pkg] = _normalize_dep_value(new_deps.get(pkg))
-
-    # removed：旧版有、新版无的包（仅范围 dep_versions，非全部 EXCLUDED_PACKAGES）
-    removed = [pkg for pkg in old_deps if pkg not in new_deps]
-    # 过滤掉非追踪的包（旧 version.json 可能含 _TRACKED_PREFIXES 之外的残留）
-    _TRACKED_PREFIXES = ("paddle", "paddleocr", "mineru", "torch", "nvidia")
-    removed = [p for p in removed if any(p.startswith(pre) for pre in _TRACKED_PREFIXES)]
-
-    if not changed and not removed:
-        logger.info("AI 依赖版本无变化")
-        return
-
-    if changed:
-        logger.info(f"检测到依赖变化: {changed}")
-    if lock_changed:
-        logger.info(f"检测到锁定版升级（约束不变）: {lock_changed}")
-    if removed:
-        logger.info(f"检测到依赖移除: {removed}")
-    logger.info("写入待同步标记，将由新版 VibeOCR 启动时升级...")
-
-    settings_dir = app_dir / "data" / "settings"
-    settings_dir.mkdir(parents=True, exist_ok=True)
-    pending_path = settings_dir / "pending_sync.json"
-
-    pending: dict = {
-        "version": new_data.get("version", ""),
-        "dep_versions": changed,
-        "written_at": datetime.now().isoformat(),
-        # 失败重试计数：主程序 _on_sync_finished 失败时递增。
-        # 达 SYNC_MAX_ATTEMPTS（env_config）后提示用户重装嵌入式 Python。
-        "attempts": 1,
-    }
-    # extras 透传：只写 changed 中带 extras 的包，避免空 dict 污染
-    changed_extras = {k: v for k, v in new_extras.items() if k in changed}
-    if changed_extras:
-        pending["dep_extras"] = changed_extras
-    if removed:
-        pending["removed"] = removed
-
-    try:
-        pending_path.write_text(
-            json.dumps(pending, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        logger.info(f"已写入待同步标记: {pending_path}")
-    except Exception as e:
-        logger.warning(f"写入待同步标记失败（依赖将不会自动升级）: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1126,9 +999,7 @@ def run_replacement(
     try:
         if not launch_entry or Path(launch_entry).name != launch_entry:
             raise ValueError("必须提供单个文件名形式的产品启动入口")
-        recovery_marker = (
-            app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
-        )
+        recovery_marker = app_dir / "data" / "cache" / "update" / _RECOVERY_MARKER
         if recovery_marker.is_file():
             fail_reason = "检测到待人工恢复的更新备份，已拒绝覆盖。"
             return 1

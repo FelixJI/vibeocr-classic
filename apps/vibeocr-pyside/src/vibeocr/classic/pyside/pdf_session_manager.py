@@ -22,19 +22,19 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal
 
-from vibeocr.backend.core.batch_budget import (
+from vibeocr.classic.pyside.batch_budget import (
     BatchBudget,
     BatchEntry,
     image_pixel_count,
     partition_batches,
 )
-from vibeocr.backend.utils import ocr_sidecar
 
 # Transport: the GUI no longer talks to the PDF child directly. It goes
 # through the supervisor HTTP v2 client (ADR §"Transport"; plan §6/§7A).
 # PdfBackendError is re-exported by the supervisor client for compat so
 # existing ``except PdfBackendError`` sites keep matching.
 from vibeocr.classic.pdf_client import PdfBackendError
+from vibeocr.classic import ocr_sidecar
 from vibeocr.classic.pdf_workspace import (
     PdfSession,
     apply_model_diff,
@@ -2521,39 +2521,3 @@ class PdfSessionManager(QObject):
         """兼容独立调用：请求取消后按单一预算等待。"""
         self.request_shutdown()
         return self.drain(timeout_ms)
-
-
-def _wait_thread(worker, timeout_ms: int | None = None) -> bool:
-    """等待 QThread 结束,期间处理事件循环以避免跨线程信号死锁。
-
-    PdfTab 的缩略图 worker 停止时用。超时后返回 False，**不调用 terminate()**——
-    worker 仍持有 ThreadPoolExecutor 和 HTTP 连接，强杀会留下半写状态。
-    调用方应通过 cancel() 协作取消 + 有界 HTTP 超时确保 worker 最终自然退出。
-
-    Returns:
-        True 如果 worker 在超时内结束；False 如果超时（worker 仍在运行）。
-    """
-    if not worker.isRunning():
-        return True
-
-    import time
-
-    from PySide6.QtCore import QCoreApplication
-
-    from vibeocr.backend.core.constants import Constants
-
-    if timeout_ms is None:
-        timeout_ms = Constants.Timeout.Ms.PDF_WORKER_CANCEL_SHORT
-    start = time.monotonic()
-    while not worker.isFinished():
-        QCoreApplication.processEvents()
-        worker.wait(Constants.Timeout.Ms.PDF_WORKER_POLL_STEP)
-        if time.monotonic() - start > timeout_ms / 1000:
-            logger.warning(
-                "Worker 未在 %dms 内结束，保持运行等待自然退出（不 terminate）",
-                timeout_ms,
-            )
-            QCoreApplication.processEvents()
-            return False
-    QCoreApplication.processEvents()
-    return True

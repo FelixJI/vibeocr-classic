@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vibeocr.classic import ocr_sidecar
 from vibeocr.classic.pyside.pdf_session_manager import PdfSessionManager
 from vibeocr.classic.recognition_settings import OCROptions, PdfGlobalSettings
 from vibeocr.classic.ui.theme import Colors
@@ -1129,10 +1130,8 @@ class PdfTab(QWidget):
             )
         # 续传检测：若有未完成 sidecar，提示用户可继续 OCR
         try:
-            from vibeocr.backend.utils.ocr_sidecar import restore_pending_pages
-
             if file_path:
-                pending = restore_pending_pages(file_path)
+                pending = ocr_sidecar.restore_pending_pages(file_path)
                 if pending:
                     total_pages = len(session.pdf_document.pages) if session else 0
                     self._status_label.setText(

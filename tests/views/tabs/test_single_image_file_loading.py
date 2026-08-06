@@ -211,15 +211,6 @@ def test_document_gpu_capability_unknown_does_not_probe_on_gui_thread(
     module = import_module("vibeocr.classic.views.tabs.single_recognition_tab")
     path = tmp_path / "cold.pdf"
     path.write_bytes(b"%PDF")
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager._runtime_gpu_capability_cache", None
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_runtime_gpu_capability",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("GUI 路径不应同步探测 GPU")
-        ),
-    )
     tab = module.SingleRecognitionTab(backend=object())
     qtbot.addWidget(tab)
     messages = []

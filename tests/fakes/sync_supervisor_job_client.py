@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from vibeocr.backend.models import ocr_result_to_payload
 from vibeocr.runtime_contracts import (
     ItemOutcome,
     ItemState,
@@ -15,6 +14,18 @@ from vibeocr.runtime_contracts import (
     JobSummary,
     JobUpdate,
 )
+
+
+def _ocr_result_payload(result: object) -> dict[str, object]:
+    """Build the small ``ocr.v1`` payload needed by this in-memory fake."""
+
+    if isinstance(result, dict):
+        return result
+    return {
+        "raw_text": str(getattr(result, "raw_text", "")),
+        "text_blocks": list(getattr(result, "text_blocks", ()) or ()),
+        "preproc_angle": int(getattr(result, "preproc_angle", 0) or 0),
+    }
 
 
 class FakeSyncSupervisorJobClient:
@@ -43,9 +54,7 @@ class FakeSyncSupervisorJobClient:
                 state=ItemState.SUCCEEDED,
                 attempt=1,
                 payload_type="ocr.v1",
-                payload=ocr_result_to_payload(
-                    self._result_factory(index, request)
-                ),
+                payload=_ocr_result_payload(self._result_factory(index, request)),
             )
             for index, item in enumerate(items)
         )
@@ -61,9 +70,7 @@ class FakeSyncSupervisorJobClient:
             priority=request.priority,
             state=JobState.COMPLETED,
             items=items,
-            summary=JobSummary(
-                succeeded=len(items), total=len(items)
-            ),
+            summary=JobSummary(succeeded=len(items), total=len(items)),
             progress_current=len(items),
             progress_total=len(items),
             result_available=True,

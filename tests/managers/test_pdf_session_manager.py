@@ -857,7 +857,7 @@ class TestRunOcrIncrementalSave:
 
         # sidecar 重定向到 tmp（隔离测试，避免污染真实缓存目录）
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir",
+            "vibeocr.classic.ocr_sidecar._sessions_dir",
             lambda: tmp_path / "sessions",
         )
 
@@ -889,7 +889,7 @@ class TestRunOcrIncrementalSave:
         # 每批已增量落盘，不再整文档压缩，也不再全量拉取模型。
         client.save.assert_not_called()
         client.get_model.assert_not_called()
-        from vibeocr.backend.utils.ocr_sidecar import load_sidecar
+        from vibeocr.classic.ocr_sidecar import load_sidecar
 
         data = load_sidecar(str(pdf_path))
         assert data is not None
@@ -953,7 +953,7 @@ class TestRunOcrIncrementalSave:
             return_value=[SimpleNamespace(text_blocks=[block], preproc_angle=90)]
         )
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir",
+            "vibeocr.classic.ocr_sidecar._sessions_dir",
             lambda: tmp_path / "sessions",
         )
 
@@ -968,7 +968,7 @@ class TestRunOcrIncrementalSave:
 
         assert client.save.call_args.kwargs["rewrite_text_layers"] is False
         client.get_model.assert_not_called()
-        from vibeocr.backend.utils.ocr_sidecar import load_sidecar
+        from vibeocr.classic.ocr_sidecar import load_sidecar
 
         data = load_sidecar(str(pdf_path))
         assert data is not None and data["completed"] is True
@@ -1040,7 +1040,7 @@ class TestRunOcrIncrementalSave:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.core.batch_budget import BatchBudget
+        from vibeocr.classic.pyside.batch_budget import BatchBudget
         from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
@@ -1115,10 +1115,10 @@ class TestStartOcrResumeFilter:
         pdf_path = tmp_path / "r.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s"
         )
         # 预置 sidecar：页 0 已落盘，未完成
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         mark_pages_saved(str(pdf_path), [0], {0: 0})
 
@@ -1169,9 +1169,9 @@ class TestStartOcrResumeFilter:
         pdf_path = tmp_path / "r2.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s2"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s2"
         )
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         mark_pages_saved(str(pdf_path), [0], {0: 0})
 
@@ -1228,9 +1228,9 @@ class TestStartOcrResumeFilter:
         pdf_path = tmp_path / "r3.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s3"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s3"
         )
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         # 页 0,1 都已落盘
         mark_pages_saved(str(pdf_path), [0, 1], {0: 0, 1: 0})

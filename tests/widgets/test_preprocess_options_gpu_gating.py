@@ -18,11 +18,8 @@ def app(qtbot):
 
 
 @pytest.fixture
-def widget(app, qtbot, monkeypatch):
-    """创建组件，并强制 GPU 缓存未就绪（不在构造时应用门控）。"""
-    import vibeocr.backend.env_manager as em
-
-    monkeypatch.setattr(em, "_runtime_gpu_capability_cache", None)
+def widget(app, qtbot):
+    """新构造组件保持 unknown，等待 MainWindow 显式广播门控。"""
     w = PreprocessOptionsWidget()
     qtbot.addWidget(w)
     return w
@@ -103,14 +100,18 @@ class TestGpuGating:
         # 当前管道已回退到非禁用项
         assert widget.get_current_pipeline() not in GPU_PIPELINES
 
-    def test_init_reads_process_cache_when_set(self, app, qtbot, monkeypatch):
-        """构造时若进程缓存已就绪为 CPU，应立即应用门控（覆盖懒加载 inline 面板）。"""
-        import vibeocr.backend.env_manager as em
-
-        monkeypatch.setattr(em, "_runtime_gpu_capability_cache", False)
+    def test_new_widget_waits_for_explicit_gpu_state(self, app, qtbot):
+        """构造不猜测 GPU 状态；后续显式广播可以反复更新。"""
         w = PreprocessOptionsWidget()
         qtbot.addWidget(w)
+        assert w.gpu_capability is None
+
+        w.apply_gpu_gating(False)
         assert w.gpu_capability is False
         em_map = _enabled_map(w)
         for p in GPU_PIPELINES:
             assert em_map[p] is False
+
+        w.apply_gpu_gating(True)
+        assert w.gpu_capability is True
+        assert all(_enabled_map(w).values())

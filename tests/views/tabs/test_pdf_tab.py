@@ -1101,7 +1101,7 @@ class TestLoadDoneSidecarHint:
 
         # 模拟 sidecar 有 2 页已保存（未完成）
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar.restore_pending_pages",
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
             lambda file_path: {0: 0, 1: 0},
         )
         pdf_tab._on_load_done("x.pdf")
@@ -1117,7 +1117,7 @@ class TestLoadDoneSidecarHint:
         self._inject(pdf_tab, pages)
 
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar.restore_pending_pages",
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
             lambda file_path: None,
         )
         pdf_tab._on_load_done("x.pdf")
@@ -1135,7 +1135,10 @@ class TestLoadDoneSidecarHint:
         def _boom(file_path):
             raise RuntimeError("sidecar 读取出错")
 
-        monkeypatch.setattr("vibeocr.backend.utils.ocr_sidecar.restore_pending_pages", _boom)
+        monkeypatch.setattr(
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
+            _boom,
+        )
         pdf_tab._on_load_done("x.pdf")
         # 异常被吞掉，状态栏应仍是"加载完成"
         assert "加载完成" in pdf_tab._status_label.text()

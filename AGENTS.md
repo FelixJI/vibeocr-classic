@@ -61,7 +61,7 @@
 
 - 本仓是仅 Windows 的 PySide6 Classic 桌面 shell，应用位于 `apps/vibeocr-pyside/`，包含 QtPdf、WebEngine、WebChannel、qasync 与打包入口；不要把 Backend 推理实现重新嵌入前端。
 - `.ci/project.json` 是权威入口：先用 `scripts/resolve_component_releases.py` 解析最新正式 Backend 及其绑定 Protocol 到 `build/automation/release-input`，再安装/验证输入；quality 跑 pytest，E2E 验证上游 release/attestation，随后 PowerShell release build 和 smoke。
-- 组件解析必须 fail closed：最新正式 Backend 不兼容、缺 capability、manifest/hash/attestation 不一致时直接失败，不回退旧 Backend。支持 Protocol major 2 且 minor-compatible；本仓 Python SDK 声明 `>=2.0.0,<3.0.0` 兼容范围，实际安装版本仍由正式 Release 的组件锁和已验证资产精确约束。
+- 组件解析必须 fail closed：最新正式 Backend 不兼容、缺 capability、manifest/hash/attestation 不一致时直接失败，不回退旧 Backend。支持 Protocol major 2 且 minor-compatible；前端 Python SDK 当前声明 `>=2.4.0,<3.0.0`，由独立 `frontend-protocol-lock.json` 精确约束；Backend Runtime 的 Protocol 则继续由组件锁和已验证资产独立精确约束。
 - 版本源包括 `version.txt`、应用 package TOML、package fallback `__version__` 与 `repository.json`，必须由 release prepare 同步。发布资产为 Classic win64 ZIP、sidecar SHA-256、`component-lock.json` 与 SPDX SBOM。
 - PyInstaller onedir 必须保留 QtPdf/WebEngine/WebChannel hidden imports 和 frozen smoke 所需资源，同时排除 ML/runtime 重型依赖。修改 spec、hidden import、资源路径或入口时必须执行真实 frozen smoke。
 - `.release-build` 与 automation artifacts 会由正式构建递归重建；不要对仓库外路径复用清理逻辑。pytest 默认排除 slow，CI 声明的完整阶段不能因此删减。

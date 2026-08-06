@@ -108,9 +108,32 @@ class TestOnProgress:
         assert item.text(0) == "OCR engine"
         assert item.text(1) == "进行中"
         assert item.text(2) == "3.7.0"
-        assert dlg._progress_bar.maximum() == 7
-        assert dlg._progress_bar.value() == 2
+        assert dlg._progress_bar.maximum() == 0
+        assert "2/7 步" in dlg._stage_label.text()
         assert summaries == ["Runtime 安装运行时依赖：OCR engine · 进行中"]
+
+    def test_bytes_progress_is_determinate_and_shows_real_eta(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path)
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=3,
+                operation="ensure",
+                operation_state="running",
+                phase="prepare_runtime",
+                profile_id="win-x64-cpu",
+                updated_at="2026-08-05T00:00:01Z",
+                progress_current=50,
+                progress_total=100,
+                progress_unit="bytes",
+                estimated_remaining_seconds=4,
+            )
+        )
+
+        assert dlg._progress_bar.maximum() == 100
+        assert dlg._progress_bar.value() == 50
+        assert "预计剩余 4 秒" in dlg._stage_label.text()
 
 
 class TestOnFinished:

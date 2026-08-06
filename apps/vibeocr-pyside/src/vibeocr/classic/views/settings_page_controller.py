@@ -1669,6 +1669,7 @@ class SettingsPageController:
                 }
                 service = "未连接"
                 maintenance = ""
+                identity = ""
                 if runtime_status is not None:
                     service = service_labels.get(
                         runtime_status.service_state.value,
@@ -1680,6 +1681,21 @@ class SettingsPageController:
                             f"{runtime_status.maintenance.phase.value} · "
                             f"{runtime_status.maintenance.operation_state.value}"
                         )
+                    source = getattr(runtime_status, "source", None)
+                    if source is not None:
+                        identity = (
+                            f"\nSource：{source.backend_source_sha[:12]}"
+                            f"\nRuntime manifest："
+                            f"{source.runtime_manifest_sha256[:12]}"
+                            f"\nProtocol manifest："
+                            f"{source.protocol_manifest_sha256[:12]}"
+                        )
+                elif getattr(inspection, "source", None) is not None:
+                    source = inspection.source
+                    identity = (
+                        f"\nSource：{source.backend_source_sha[:12]}"
+                        f"\nRuntime manifest：{source.runtime_manifest_sha256[:12]}"
+                    )
                 label.setText(
                     f"Runtime：{status}\n"
                     f"服务：{service}\n"
@@ -1688,6 +1704,7 @@ class SettingsPageController:
                     f"Backend：{inspection.backend_version}\n"
                     f"Protocol：{inspection.protocol_version}\n"
                     f"Manifest：{inspection.manifest_sha256[:12]}"
+                    f"{identity}"
                     f"{maintenance}"
                 )
             else:
@@ -1764,26 +1781,88 @@ class SettingsPageController:
             }
             components = runtime_status_snapshot.profile.components
             for component in components:
+                state_value = component.state.value
+                actual = getattr(component, "actual_state", None)
+                actual_value = getattr(actual, "value", actual)
+                drift = getattr(component, "drift_reason", None)
+                drift_value = getattr(drift, "value", drift)
+                desired = getattr(component, "desired_state", None)
+                desired_value = getattr(desired, "value", desired)
+                status_text = state_labels.get(state_value, state_value)
+                if state_value == "ready" and actual_value in {
+                    "missing",
+                    "drifted",
+                    "unknown",
+                }:
+                    actual_labels = {
+                        "missing": "✗ 缺失",
+                        "drifted": "⚠ 已漂移",
+                        "unknown": "? 未知",
+                    }
+                    status_text = actual_labels[actual_value]
+                if drift_value not in {None, "none"}:
+                    drift_labels = {
+                        "missing": "缺失",
+                        "version_mismatch": "版本不一致",
+                        "identity_mismatch": "来源不一致",
+                        "integrity_failed": "完整性失败",
+                        "unexpected": "非预期组件",
+                    }
+                    status_text += f" · {drift_labels.get(drift_value, drift_value)}"
+                if desired_value == "not_required":
+                    status_text = "— 不需要"
+                version = (
+                    getattr(component, "actual_version", None)
+                    or component.version
+                    or getattr(component, "desired_version", None)
+                    or "—"
+                )
                 backend_item.addChild(
                     QTreeWidgetItem(
                         [
                             component.display_name,
-                            state_labels.get(
-                                component.state.value, component.state.value
-                            ),
-                            component.version or "—",
+                            status_text,
+                            version,
                         ]
                     )
                 )
         else:
-            component_status = "✓ 已验证" if inspection.ready else "⚠ 未就绪"
             for component in getattr(inspection, "components", ()):
+                actual_labels = {
+                    "ready": "✓ 已就绪",
+                    "missing": "✗ 缺失",
+                    "drifted": "⚠ 已漂移",
+                    "unknown": "? 未知",
+                }
+                drift_labels = {
+                    "missing": "缺失",
+                    "version_mismatch": "版本不一致",
+                    "identity_mismatch": "来源不一致",
+                    "integrity_failed": "完整性失败",
+                    "unexpected": "非预期组件",
+                }
+                actual_state = getattr(component, "actual_state", None)
+                desired_state = getattr(component, "desired_state", None)
+                drift_reason = getattr(component, "drift_reason", None)
+                component_status = actual_labels.get(
+                    actual_state,
+                    "✓ 已验证" if inspection.ready else "⚠ 未就绪",
+                )
+                if drift_reason not in {None, "none"}:
+                    component_status += (
+                        f" · {drift_labels.get(drift_reason, drift_reason)}"
+                    )
+                if desired_state == "not_required":
+                    component_status = "— 不需要"
                 backend_item.addChild(
                     QTreeWidgetItem(
                         [
                             component.display_name,
                             component_status,
-                            component.version or "—",
+                            component.actual_version
+                            or component.version
+                            or component.desired_version
+                            or "—",
                         ]
                     )
                 )
@@ -1798,7 +1877,7 @@ class SettingsPageController:
         )
         tree.setToolTip(
             "显示产品绑定的 Python、Backend、Protocol 与推理 profile。"
-            "完整 profile 由 Runtime Installer 统一校验和修复。"
+            "组件状态区分 desired/actual，漂移项可由 Runtime Installer 修复。"
         )
 
     @staticmethod

@@ -316,12 +316,26 @@ class InstallDialog(QDialog):
         phase = _PHASE_LABELS.get(update.phase, update.phase)
         state = _STATE_LABELS.get(update.operation_state, update.operation_state)
         detail = phase
-        if update.progress_current is not None and update.progress_total is not None:
+        if update.has_determinate_progress:
+            assert update.progress_total is not None
+            assert update.progress_current is not None
             self._progress_bar.setRange(0, update.progress_total)
             self._progress_bar.setValue(update.progress_current)
             detail = f"{phase} · {update.progress_current}/{update.progress_total}"
-        elif self._progress_bar.maximum() == 0:
+            if update.progress_unit == "bytes":
+                detail += " bytes"
+            if update.estimated_remaining_seconds is not None:
+                detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        else:
             self._progress_bar.setRange(0, 0)
+            if (
+                update.progress_unit == "steps"
+                and update.progress_current is not None
+                and update.progress_total is not None
+            ):
+                detail = (
+                    f"{phase} · {update.progress_current}/{update.progress_total} 步"
+                )
         self._stage_label.setText(f"{detail} · {state}")
 
         if update.component_id:

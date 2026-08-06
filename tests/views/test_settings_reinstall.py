@@ -271,6 +271,35 @@ def test_backend_row_expands_functional_dependency_groups(controller):
     assert backend.child(0).text(2) == "3.7.0"
 
 
+def test_installer_inspection_preserves_component_actual_drift_before_http_ready(
+    controller,
+) -> None:
+    ctrl, host = controller
+    inspection = ctrl._runtime_installer.inspect.return_value
+    inspection.ready = False
+    inspection.integrity = "not-installed"
+    inspection.components = (
+        RuntimeComponentDescriptor(
+            "ocr_engine",
+            "OCR engine",
+            "3.7.0",
+            desired_state="ready",
+            desired_version="3.7.0",
+            actual_state="drifted",
+            actual_version="3.6.0",
+            drift_reason="version_mismatch",
+            repairable=True,
+        ),
+    )
+    tree = host.findChild(QTreeWidget, "treeDepsStatus")
+
+    ctrl._populate_deps_tree(tree, {"inspection": inspection})
+
+    component = tree.topLevelItem(1).child(0)
+    assert component.text(1) == "⚠ 已漂移 · 版本不一致"
+    assert component.text(2) == "3.6.0"
+
+
 def test_http_runtime_status_overrides_component_state(controller):
     ctrl, host = controller
     inspection = ctrl._runtime_installer.inspect.return_value
@@ -280,6 +309,13 @@ def test_http_runtime_status_overrides_component_state(controller):
             "instance_id": "runtime-1",
             "service_state": "maintenance",
             "backend_version": "0.9.0",
+            "source": {
+                "backend_version": "0.9.0",
+                "backend_source_sha": "a" * 40,
+                "runtime_manifest_sha256": "b" * 64,
+                "protocol_version": "2.3.0",
+                "protocol_manifest_sha256": "c" * 64,
+            },
             "profile": {
                 "profile_id": "win-x64-cpu",
                 "accelerator": "cpu",
@@ -289,6 +325,12 @@ def test_http_runtime_status_overrides_component_state(controller):
                         "display_name": "OCR engine",
                         "state": "installing",
                         "version": "3.7.0",
+                        "desired_state": "ready",
+                        "desired_version": "3.7.0",
+                        "actual_state": "missing",
+                        "actual_version": None,
+                        "drift_reason": "missing",
+                        "repairable": True,
                     }
                 ],
             },
@@ -312,8 +354,13 @@ def test_http_runtime_status_overrides_component_state(controller):
     )
 
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    assert tree.topLevelItem(1).child(0).text(1) == "… 安装中"
+    assert tree.topLevelItem(1).child(0).text(1) == "… 安装中 · 缺失"
     assert "服务：维护中" in host.findChild(QLabel, "labelEnvStatus").text()
+    assert "Source：aaaaaaaaaaaa" in host.findChild(QLabel, "labelEnvStatus").text()
+    assert (
+        "Runtime manifest：bbbbbbbbbbbb"
+        in host.findChild(QLabel, "labelEnvStatus").text()
+    )
     assert (
         "install_profile · running" in host.findChild(QLabel, "labelEnvStatus").text()
     )

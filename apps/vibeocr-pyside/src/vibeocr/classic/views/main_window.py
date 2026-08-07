@@ -31,8 +31,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend import env_manager
-from vibeocr.classic.machine_cache import is_cache_valid, update_cache_field
+from vibeocr.classic.app_paths import get_install_root
+from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.managers.config_manager import ConfigManager
 from vibeocr.classic.managers.dependency_manager import DependencyManager
 from vibeocr.classic.managers.layout_manager import LayoutManager
@@ -41,10 +41,7 @@ from vibeocr.classic.services.log_service import setup_logging
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.utils.image_jobs import GenerationImageJobs, decode_image_file
 from vibeocr.classic.utils.shutdown_jobs import ExternalShutdownJob
-from vibeocr.classic.views.background_tasks import (
-    DependencyUpdateCheckTask,
-    FunctionTask,
-)
+from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
 from vibeocr.classic.views.tabs.single_recognition_tab import SingleRecognitionTab
 from vibeocr.classic.widgets.runtime_status_bar import RuntimeStatusBar
@@ -65,7 +62,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._project_root = env_manager.get_project_root()
+        self._project_root = get_install_root()
         self._ocr_ready = False
         self._dependency_check_complete = False  # 依赖检测是否完成
 
@@ -75,27 +72,13 @@ class MainWindow(QMainWindow):
         self._ocr_status_callback_fn: Any = None  # OCR 状态回调
         self._app_settings = None  # 应用设置
         self._runtime_gpu_capability: bool | None = None
-        self._worker_start_pending = False
         self._machine_cache_data: dict | None = None
         self._machine_cache_tasks: set[FunctionTask] = set()
         self._machine_cache_generation = 0
         self._machine_cache_running = False
-        self._machine_cache_pending_startup = False
-        self._dependency_update_install_pending = False
-        self._startup_update_check_complete = False
         self._image_load_jobs = GenerationImageJobs(self)
         self._image_load_jobs.completed.connect(self._on_image_file_loaded)
         self._image_load_jobs.failed.connect(self._on_image_file_load_failed)
-
-        self._dependency_update_task = DependencyUpdateCheckTask(
-            self._project_root, self
-        )
-        self._dependency_update_task.completed.connect(
-            self._on_dependency_update_check_completed
-        )
-        self._dependency_update_task.failed.connect(
-            self._on_dependency_update_check_failed
-        )
 
         # 懒加载 Tab：批量/二维码/PDF 在启动期仅插占位空页，首次切换时才真正构造，
         # 把 MainWindow 构造耗时从 ~1.5s 砍到 <0.5s（首屏仅需单次识别 Tab）。
@@ -204,14 +187,6 @@ class MainWindow(QMainWindow):
             return
         self._runtime_gpu_capability = bool(has_gpu)
         self._apply_gpu_gating_to_all(bool(has_gpu))
-
-        if self._dependency_update_install_pending:
-            self._dependency_update_install_pending = False
-            self._open_dependency_update_dialog()
-
-        if self._worker_start_pending:
-            self._worker_start_pending = False
-            self._start_supervisor()
 
     def _setup_ocr_status_callback(self) -> None:
         """设置 OCR 状态回调，用于在状态栏显示模型下载进度"""
@@ -664,11 +639,9 @@ class MainWindow(QMainWindow):
             # 旧逻辑设置页装完只刷新表格，不联动 _ocr_ready/Worker，截图界面
             # 仍提示"未就绪"。现复用 dependency_manager.check_dependencies，
             # 检测完成回调（_on_dependency_check_finished）自动设 _ocr_ready、
-            # 启动子进程 Worker、消费 pending_backend，与首启路径行为一致。
+            # 启动子进程 Worker，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
             gpu_capability_callback=self._on_gpu_capability_resolved,
-            dependency_update_task=self._dependency_update_task,
-            defer_backend_initialization=True,
             defer_machine_cache_status=True,
         )
         self._settings_controller.connect_signals()
@@ -679,7 +652,7 @@ class MainWindow(QMainWindow):
         由 SettingsPageController._open_reinstall_dialog 在对话框 emit
         install_succeeded 时调用。复用 DependencyManager.check_dependencies
         重新检测便携环境——检测完成回调（_on_dependency_check_finished）会
-        自动设置 _ocr_ready、启动子进程 Worker、消费 pending_backend，使
+        自动设置 _ocr_ready 并启动子进程 Worker，使
         截图界面立即生效，无需重启程序。
 
         不直接设 _ocr_ready=True：让真实检测（双层 _probe_module）正确反映
@@ -692,19 +665,14 @@ class MainWindow(QMainWindow):
         self._dependency_manager.check_dependencies()
 
     def _try_load_cache(self) -> None:
-        """在线程池校验机器缓存；WMIC 永不进入 MainWindow 构造线程。"""
-        self._request_machine_cache_load(after_dependency=False)
+        """后台读取 Classic 诊断缓存；结果不参与 Runtime readiness。"""
+        self._request_machine_cache_load()
 
-    def _request_machine_cache_load(self, *, after_dependency: bool) -> None:
-        """读取一份经过机器码校验的缓存快照。
-
-        依赖检查可能重建缓存；若初始校验尚未完成，记录一次 pending 并在其
-        完成后重跑，保证后端切换消费的是依赖检查之后的快照。
-        """
+    def _request_machine_cache_load(self) -> None:
+        """读取一份经过机器码校验、仅供设置页展示的诊断快照。"""
         if self._closing:
             return
         if self._machine_cache_running:
-            self._machine_cache_pending_startup |= after_dependency
             return
 
         self._machine_cache_running = True
@@ -724,17 +692,7 @@ class MainWindow(QMainWindow):
             )
             controller = getattr(self, "_settings_controller", None)
             if controller is not None:
-                controller.initialize_deferred_backend_options()
                 controller.apply_deferred_machine_cache_status(bool(valid))
-
-            if not after_dependency and not self._dependency_check_complete:
-                self._apply_provisional_machine_cache()
-
-            if self._machine_cache_pending_startup:
-                self._machine_cache_pending_startup = False
-                self._request_machine_cache_load(after_dependency=True)
-            elif after_dependency:
-                self._continue_ready_startup()
 
         def failed(error: str) -> None:
             logging.warning("[缓存] 后台机器缓存校验失败: %s", error)
@@ -743,20 +701,6 @@ class MainWindow(QMainWindow):
         task.signals.finished.connect(finished)
         task.signals.error.connect(failed)
         QThreadPool.globalInstance().start(task)
-
-    def _apply_provisional_machine_cache(self) -> None:
-        cached_data = self._machine_cache_data
-        if not cached_data:
-            return
-        dependencies = cached_data.get("dependencies", {})
-        if all(
-            dependencies.get(name, False)
-            for name in ("paddlepaddle", "paddleocr", "mineru")
-        ):
-            self._ocr_ready = True
-            self._statusbar.set_service("环境缓存可用 · 复核中")
-            self._statusbar.showMessage("后台复核运行环境")
-            logging.info("OCR 运行环境缓存可用（等待后台复核）")
 
     def _check_embedded_dependencies(self) -> None:
         """异步检查嵌入式OCR依赖"""
@@ -769,11 +713,10 @@ class MainWindow(QMainWindow):
         """依赖检查完成"""
         if self._closing:
             return
-        # 优先消费"待同步"标记：更新流程中 updater 写入 pending_sync.json，
-        # 标记新版依赖需升级。存在时先升级 python/（复用 InstallDialog + 正确的
-        # GPU/CUDA/镜像逻辑），完成后再走常规依赖检查。避免用裸 pip 装 CPU 版。
+        # 清理旧版 updater 遗留的逐包同步标记。组件升级现在由
+        # component-lock 与 Runtime Installer 整组处理，然后继续常规依赖检查。
         if self._check_pending_sync():
-            return  # 同步对话框接管，完成后会重新触发依赖检查
+            return
 
         already_ready = self._ocr_ready
         self._dependency_check_complete = True
@@ -785,9 +728,9 @@ class MainWindow(QMainWindow):
                 self._statusbar.showMessage("准备 Supervisor")
             logging.info("OCR 运行环境可用")
 
-            # 依赖检测可能刚重建缓存。后台重新校验并回填后，再消费
-            # pending_backend；避免初始缓存读取与依赖检查写缓存竞态。
-            self._request_machine_cache_load(after_dependency=True)
+            # Runtime Installer inspect 是唯一 readiness 权威；Classic 诊断缓存
+            # 即使仍在后台加载，也不得阻塞或提前放行 Supervisor 启动。
+            self._continue_ready_startup()
         else:
             self._ocr_ready = False
             missing_str = ", ".join(missing)
@@ -804,363 +747,30 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(300, self._start_install)
 
     def _continue_ready_startup(self) -> None:
-        """缓存复核完成后的启动编排（仅在 GUI 线程应用结果）。"""
+        """Runtime inspect 成功后的启动编排（仅在 GUI 线程应用结果）。"""
         if self._closing or not self._ocr_ready:
             return
 
-        if not self._startup_update_check_complete:
-            self._maybe_prompt_dependency_updates()
-            return
-        needs_switch, target = self._check_pending_backend(self._machine_cache_data)
-        if needs_switch and target:
-            self._show_switch_dialog(target)
-            return
         self._start_supervisor()
 
     def _check_pending_sync(self) -> bool:
-        """检测并消费"依赖版本待同步"标记（updater 写入的 pending_sync.json）
-
-        程序内更新时，updater 替换应用文件后会把变更的 dep_versions 写入
-        pending_sync.json，但它无法 import vibeocr（独立 --onefile 打包），
-        故不直接 pip。由覆盖后的新版 VibeOCR 在此消费：用 InstallDialog 跑
-        install_embedded_dependencies（含 GPU/CUDA tag/镜像/PyPI 回退的完整逻辑）
-        升级 python/，避免裸 pip 走 PyPI 把 paddle/torch 装成 CPU 版。
-
-        pending_sync 字段（向后兼容）：
-        - dep_versions：变化的包 → {"version", "op"} 或旧式裸 str（展示用 key 即可）
-        - removed：被移除的包名列表（同步成功后调 uninstall_removed_deps 清理）
-        - attempts：失败重试计数（达 SYNC_MAX_ATTEMPTS 提示重装 Python）
-
-        Returns:
-            是否存在待同步标记（True 表示已弹出升级对话框接管流程）
-        """
+        """清理旧逐包同步标记；组件升级不再接管启动流程。"""
         # Phase 3：组件只能随产品 component-lock 整组升级。旧逐包同步标记
         # 不再消费；清理遗留文件后让 Runtime Installer 按新绑定 ensure。
         self._delete_pending_sync()
         return False
 
-        from vibeocr.classic.runtime_installation import get_pending_sync_path
-
-        pending_path = get_pending_sync_path()
-        if not pending_path.exists():
-            return False
-
-        try:
-            import json
-
-            data = json.loads(pending_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logging.warning(f"[依赖同步] 读取 pending_sync.json 失败，删除标记: {e}")
-            self._delete_pending_sync()
-            return False
-
-        changed = data.get("dep_versions", {})
-        removed = data.get("removed", [])
-        if not changed and not removed:
-            # 空标记，清理后走常规流程
-            self._delete_pending_sync()
-            return False
-
-        version = data.get("version", "")
-        # 展示用包名列表：取 dict/str 的 key 即可，兼容两种格式
-        pkgs = ", ".join(changed.keys()) if changed else ""
-        removed_str = ", ".join(removed) if removed else ""
-        display_parts = [p for p in (pkgs, removed_str) if p]
-        display = "、".join(display_parts) if display_parts else ""
-
-        logging.info(
-            f"[依赖同步] 检测到待同步标记（目标版本 {version}）："
-            f"changed={changed} removed={removed}"
-        )
-        self._statusbar.showMessage(f"正在同步 OCR 依赖更新：{display}")
-
-        from vibeocr.classic.widgets.install_dialog import InstallDialog
-
-        dialog = InstallDialog(
-            self._project_root,
-            self,
-            maintenance_callback=self._statusbar.showMessage,
-        )
-        dialog.setWindowTitle("同步 OCR 依赖更新")
-
-        title_lines = [f"检测到新版本依赖（{version}），正在同步更新："]
-        if pkgs:
-            title_lines.append(f"升级：{pkgs}")
-        if removed_str:
-            title_lines.append(f"清理：{removed_str}")
-        dialog._title_label.setText("\n".join(title_lines))
-
-        # 缓存 removed 供 _on_sync_finished 升级成功后清理
-        self._pending_removed = list(removed)
-        dialog.finished.connect(self._on_sync_finished)
-        dialog.exec()
-        return True
-
-    @Slot(int)
-    def _on_sync_finished(self, result: int) -> None:
-        """依赖同步对话框完成"""
-        return
-
-        if result == 1:
-            # 升级成功，先清理已移除的依赖（P4），再删除一次性标记
-            removed = getattr(self, "_pending_removed", [])
-            if removed:
-                self._cleanup_removed_deps(removed)
-                self._pending_removed = []
-            self._delete_pending_sync()
-            self._statusbar.showMessage("OCR 依赖同步完成")
-            logging.info("[依赖同步] 依赖同步完成，重新检查依赖")
-            # 清空依赖检测缓存，强制重新检测（否则旧缓存可能仍判就绪）
-            import vibeocr.backend.env_manager as em
-
-            em._dep_specs_cache = None
-            self._dependency_manager.check_dependencies()
-            # 同步会重装 python/ 内的包，Python 运行时状态可能变化，刷新设置页 label
-            self._refresh_settings_env_state()
-        else:
-            # 升级失败：递增 attempts 计数，达阈值提示重装 Python（P2）
-            attempts = self._increment_sync_attempts()
-            from vibeocr.classic.runtime_installation import SYNC_MAX_ATTEMPTS
-
-            self._ocr_ready = False
-            if attempts >= SYNC_MAX_ATTEMPTS:
-                msg = (
-                    f"OCR 依赖同步已失败 {attempts} 次，建议在「设置 → 环境」中"
-                    "重装 Python 运行时后再试"
-                )
-                self._statusbar.showMessage(msg)
-                logging.warning(
-                    "[依赖同步] 同步失败次数达阈值 %d，已提示用户重装 Python",
-                    attempts,
-                )
-            else:
-                self._statusbar.showMessage(
-                    f"OCR 依赖同步失败（第 {attempts} 次），将在下次启动重试"
-                )
-                logging.warning(
-                    "[依赖同步] 同步失败（第 %d 次），保留 pending_sync.json 供重试",
-                    attempts,
-                )
-
-    def _increment_sync_attempts(self) -> int:
-        """递增 pending_sync.json 的 attempts 字段并返回新值。
-
-        读取失败或字段缺失时按 1 处理（首次失败）。写入失败仅记录警告，
-        不阻断流程（最坏情况是提示滞后一次）。
-        """
-        return 0
-
-        from vibeocr.classic.runtime_installation import get_pending_sync_path
-
-        pending_path = get_pending_sync_path()
-        try:
-            import json
-
-            data = (
-                json.loads(pending_path.read_text(encoding="utf-8"))
-                if pending_path.exists()
-                else {}
-            )
-            attempts = int(data.get("attempts", 1)) + 1
-            data["attempts"] = attempts
-            pending_path.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            return attempts
-        except Exception as e:
-            logging.warning(f"[依赖同步] 递增 attempts 失败: {e}")
-            return 1
-
-    def _cleanup_removed_deps(self, removed: list[str]) -> None:
-        """升级成功后清理已移除的依赖（P4）。
-
-        在独立线程跑 uninstall_removed_deps，避免阻塞 UI。
-        失败仅记录日志（不阻断主流程，残留包不影响运行）。
-        """
-        logging.info("[组件更新] 忽略旧逐包清理请求: %s", removed)
-        return
-
-        import threading
-
-        from vibeocr.backend.env_manager import uninstall_removed_deps
-
-        def _run() -> None:
-            try:
-                ok, msg = uninstall_removed_deps(self._project_root, removed)
-                if ok:
-                    logging.info(f"[依赖同步] 依赖清理完成: {msg}")
-                else:
-                    logging.warning(f"[依赖同步] 依赖清理未完全成功: {msg}")
-            except Exception as e:
-                logging.warning(f"[依赖同步] 依赖清理异常: {e}")
-
-        threading.Thread(target=_run, daemon=True).start()
-
     def _delete_pending_sync(self) -> None:
-        """删除 pending_sync.json 标记文件（同步成功或标记无效时调用）"""
-        pending_path = (
-            self._project_root / "data" / "cache" / "update" / "pending_sync.json"
+        """删除新旧目录中遗留的逐包同步标记。"""
+        pending_paths = (
+            self._project_root / "data" / "cache" / "update" / "pending_sync.json",
+            self._project_root / "data" / "settings" / "pending_sync.json",
         )
-        try:
-            pending_path.unlink(missing_ok=True)
-        except Exception as e:
-            logging.warning(f"[依赖同步] 删除 pending_sync.json 失败: {e}")
-
-    def _maybe_prompt_dependency_updates(self) -> None:
-        """请求共享后台任务检测 OCR 依赖更新。
-
-        覆盖安装场景（用户直接覆盖文件升级 app，无 pending_sync.json）下，
-        version.json 的 dep_versions 可能比便携 Python 里已装的版本新。
-        本方法在环境就绪后检测，发现可更新包时弹 QMessageBox 让用户选择是否升级。
-
-        互斥：pending_sync 已由 _check_pending_sync 接管时会 return，不会走到这里。
-        开发态（.venv）不触发（detect_dependency_updates 仅便携模式生效，
-        开发态由 uv 管理环境）。
-        每个进程生命周期内只提示一次（_deps_update_prompted 标志）。
-        """
-        if self._closing or getattr(self, "_deps_update_requested", False):
-            return
-        self._deps_update_requested = True
-        started = self._dependency_update_task.request("startup")
-        if not started and self._dependency_update_task.is_running:
-            # 设置页已占用共享 single-flight：该入口负责展示结果。启动流程
-            # 不再等待一个 source="startup" 的完成信号，否则会永久停住；
-            # 同时不重复提示，直接用当前已验证环境继续启动。
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-
-    @Slot(str, object)
-    def _on_dependency_update_check_completed(
-        self, source: str, result: object
-    ) -> None:
-        if source != "startup" or self._closing:
-            return
-        updates = dict(result) if isinstance(result, dict) else {}
-        if not updates:
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-            return
-        self._deps_update_prompted = True
-        lines = []
-        for pkg, (installed, required) in updates.items():
-            lines.append(f"  • {pkg}：{installed or '（未安装）'} → {required}")
-        detail = "\n".join(lines)
-
-        from PySide6.QtWidgets import QMessageBox
-
-        reply = QMessageBox.question(
-            self,
-            "检测到依赖更新",
-            f"检测到以下 OCR 依赖有新版本可用：\n\n{detail}\n\n"
-            "是否立即更新？（将使用当前推理后端下载升级）",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-            return
-
-        if self._runtime_gpu_capability is None:
-            self._dependency_update_install_pending = True
-            self._statusbar.showMessage("等待后台 GPU 探测完成后更新 OCR 依赖...")
-            return
-        self._open_dependency_update_dialog()
-
-    @Slot(str, str)
-    def _on_dependency_update_check_failed(self, source: str, error: str) -> None:
-        if source == "startup" and not self._closing:
-            logging.warning("[依赖更新] 启动检测失败: %s", error)
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-
-    def _open_dependency_update_dialog(self) -> None:
-        """使用后台已解析的运行时后端打开更新对话框。"""
-        if self._closing or self._runtime_gpu_capability is None:
-            return
-        current_backend = "gpu" if self._runtime_gpu_capability else "cpu"
-        from vibeocr.classic.widgets.install_dialog import InstallDialog
-
-        dialog = InstallDialog(
-            self._project_root,
-            parent=self,
-            force_backend=current_backend,
-            maintenance_callback=self._statusbar.showMessage,
-        )
-        dialog.setWindowTitle("更新 OCR 依赖")
-        dialog._title_label.setText("正在更新 OCR 依赖...")
-        dialog.finished.connect(self._on_deps_update_finished)
-        dialog.exec()
-
-    @Slot(int)
-    def _on_deps_update_finished(self, result: int) -> None:
-        """依赖更新对话框完成：刷新设置页状态 + 重新检测依赖。"""
-        self._refresh_settings_env_state()
-        if result == 1:
-            # 升级成功：重置 specs 缓存 + 重新检测依赖（让设置页表格反映新版本）
-            import vibeocr.backend.env_manager as em
-
-            em._dep_specs_cache = None
-            self._startup_update_check_complete = True
-            self._dependency_manager.check_dependencies()
-        else:
-            # 用户取消/更新失败时仍允许用当前已验证环境启动。
-            self._startup_update_check_complete = True
-            self._continue_ready_startup()
-
-    def _check_pending_backend(
-        self, cached_data: dict | None = None
-    ) -> tuple[bool, str | None]:
-        """检测是否有待生效的后端切换（重启消费 pending_backend）
-
-        Returns:
-            (是否需要切换, 目标后端 "gpu"/"cpu"/None)
-        """
-        # 兼容独立调用/旧测试；真实启动路径总是传入后台校验后的快照。
-        if cached_data is None:
-            is_valid, cached_data = is_cache_valid(self._project_root)
-            if not (is_valid and cached_data):
-                return False, None
-
-        pending = cached_data.get("pending_backend")
-        if not pending:
-            return False, None
-
-        # 当前实际后端：读 hardware_info.has_gpu（switch_paddle_backend 会更新它）
-        hardware_info = cached_data.get("hardware_info") or {}
-        current = "gpu" if hardware_info.get("has_gpu") else "cpu"
-
-        if pending == current:
-            # 一致，清除标记，无需切换
-            update_cache_field(self._project_root, "pending_backend", None)
-            logging.info("[后端切换] pending_backend 与当前一致，已清除标记")
-            return False, None
-
-        logging.info(
-            "[后端切换] 检测到 pending_backend=%s（当前 %s），将切换", pending, current
-        )
-        return True, pending
-
-    def _show_switch_dialog(self, target: str) -> None:
-        """显示后端切换对话框（重启消费 pending_backend）"""
-        from vibeocr.classic.widgets.switch_dialog import SwitchDialog
-
-        name = "GPU" if target == "gpu" else "CPU"
-        self._statusbar.showMessage(f"正在切换到 {name} 后端...")
-
-        def _on_switch_finished(result: int) -> None:
-            if result == 1:
-                # 切换成功，清除 pending 标记
-                update_cache_field(self._project_root, "pending_backend", None)
-                self._statusbar.showMessage("OCR 后端切换完成 · 正在启动 Supervisor")
-                self._start_supervisor()
-            else:
-                self._statusbar.showMessage("后端切换失败，请在设置页重试")
-                self._ocr_ready = False
-
-        dialog = SwitchDialog(self._project_root, target, self)
-        dialog.finished.connect(_on_switch_finished)
-        dialog.exec()
+        for pending_path in pending_paths:
+            try:
+                pending_path.unlink(missing_ok=True)
+            except Exception as e:
+                logging.warning("[依赖同步] 删除 %s 失败: %s", pending_path, e)
 
     def _start_supervisor(self) -> None:
         """依赖检测完成后启动唯一的 PySide Supervisor 会话。"""
@@ -1168,20 +778,8 @@ class MainWindow(QMainWindow):
             logging.debug("[MainWindow] 应用程序正在关闭，跳过启动 Supervisor")
             return
 
-        if self._runtime_gpu_capability is None:
-            self._worker_start_pending = True
-            self._statusbar.showMessage("正在等待后台 GPU 检测...")
-            return
-
         logging.debug("[MainWindow] 正在启动共享 Supervisor...")
-        use_gpu = self._runtime_gpu_capability
-        device = "GPU" if use_gpu else "CPU"
-        self._statusbar.showMessage(f"Supervisor 启动中 · {device} 后端")
-
-        # 将决策同步到主进程环境变量。OCR 子进程会由 ocr_worker.run_worker
-        # 自行设置该变量，但主进程此前从未设置，导致跑在主进程 QThread 里的
-        # PdfOcrWorker 读到空值、误判为 CPU（日志误报 + batch 走 RAM 公式）。
-        os.environ["VIBEOCR_USE_GPU"] = "true" if use_gpu else "false"
+        self._statusbar.showMessage("Supervisor 启动中")
 
         # Supervisor 的进程启动、ready 握手和 typed client 初始化可能耗时；
         # 交给 SubprocessManager 的线程池，完成后通过 service_ready 回到 Qt 主线程。
@@ -1394,7 +992,7 @@ class MainWindow(QMainWindow):
             return
         logging.debug("打开图片文件对话框")
 
-        from vibeocr.backend.utils.mime_types import (
+        from vibeocr.classic.utils.mime_types import (
             FILE_FILTER_DOCUMENTS,
             FILE_FILTER_IMAGES,
         )
@@ -1414,7 +1012,7 @@ class MainWindow(QMainWindow):
             return
         logging.debug("打开文件对话框（图片/PDF）")
 
-        from vibeocr.backend.utils.mime_types import FILE_FILTER_ALL
+        from vibeocr.classic.utils.mime_types import FILE_FILTER_ALL
 
         self._open_file_dialog_and_dispatch(
             "选择文件", f"{FILE_FILTER_ALL};;所有文件 (*)"
@@ -1422,7 +1020,7 @@ class MainWindow(QMainWindow):
 
     def _open_file_dialog_and_dispatch(self, title: str, file_filter: str) -> None:
         """统一三处文件入口；图片后台解码，文档沿现有异步识别路径。"""
-        from vibeocr.backend.utils.mime_types import is_document_file
+        from vibeocr.classic.utils.mime_types import is_document_file
 
         file_path, _ = QFileDialog.getOpenFileName(self, title, "", file_filter)
         if not file_path:
@@ -1738,9 +1336,6 @@ class MainWindow(QMainWindow):
         image_load_jobs = getattr(self, "_image_load_jobs", None)
         if image_load_jobs is not None:
             image_load_jobs.close()
-        dependency_update_task = getattr(self, "_dependency_update_task", None)
-        if dependency_update_task is not None:
-            dependency_update_task.close()
         dependency_manager = getattr(self, "_dependency_manager", None)
         if dependency_manager is not None and hasattr(
             dependency_manager, "request_shutdown"
@@ -1837,11 +1432,6 @@ class MainWindow(QMainWindow):
         add_method(
             "dependency_manager",
             getattr(self, "_dependency_manager", None),
-            "is_drained",
-        )
-        add_method(
-            "dependency_update",
-            getattr(self, "_dependency_update_task", None),
             "is_drained",
         )
         add_method(

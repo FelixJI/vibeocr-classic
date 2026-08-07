@@ -6,11 +6,17 @@ import pytest
 from PySide6.QtCore import QItemSelectionModel, Qt
 from PySide6.QtWidgets import QListView, QListWidget, QScrollArea, QSplitter
 
-from vibeocr.backend.ipc.schemas import (
-    OpenResponse,
+from vibeocr.classic.pdf_workspace import (
+    PdfDocument,
+    PdfPageInfo,
+    PdfSession,
+    TextLayerInfo,
+)
+from vibeocr.runtime_contracts.pdf import (
     PdfDocumentMirror,
-    ProgressEvent,
-    ProgressPhase,
+    PdfOpenResult,
+    PdfProgressEvent,
+    PdfProgressPhase,
 )
 from vibeocr.classic.views.tabs.pdf_tab import (
     _LAYER_STATE_ROLE,
@@ -26,14 +32,15 @@ from vibeocr.classic.views.tabs.pdf_tab import (
 @pytest.fixture
 def pdf_tab(qtbot):
     client = MagicMock()
-    client.open_session.side_effect = lambda path: OpenResponse(
+    client.open_session.side_effect = lambda path: PdfOpenResult(
         session_id=path,
+        instance_id="test-instance",
         model=PdfDocumentMirror(file_path=path, pages=[]),
     )
     client.load_stream.side_effect = lambda _sid: iter(
         [
-            ProgressEvent(
-                phase=ProgressPhase.LOAD,
+            PdfProgressEvent(
+                phase=PdfProgressPhase.LOAD,
                 current=0,
                 total=0,
                 message="done",
@@ -107,15 +114,6 @@ class TestPdfTabStructure:
 class TestPdfTabLayerStatus:
     def test_status_wording_for_text_layer(self, pdf_tab, tmp_path, monkeypatch):
         """_update_layer_status 对有文字层的页应输出文字层类型 + 文本块数。"""
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import (
-            PdfDocument,
-            PdfPageInfo,
-            TextLayerInfo,
-        )
-        from vibeocr.backend.models.pdf_session import PdfSession
-
         page_info = PdfPageInfo(
             page_index=0,
             has_text_layer=True,
@@ -130,8 +128,6 @@ class TestPdfTabLayerStatus:
                 for i in range(12)
             ],
         )
-        doc = fitz.open()
-        doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=[page_info])
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -146,20 +142,12 @@ class TestPdfTabLayerStatus:
         # text_layers 非空但 ocr_text_blocks 为空 → 原生文字层
         assert "原生文字层" in tip
         assert "12个文本块" in tip
-        doc.close()
 
     def test_status_list_row_count_matches_pages(self, pdf_tab):
         """状态网格格子数应等于页数，每个携带 page_index。"""
-        import fitz
         from PySide6.QtCore import Qt
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
-
         pages = [PdfPageInfo(page_index=i) for i in range(4)]
-        doc = fitz.open()
-        for _ in range(4):
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -172,7 +160,6 @@ class TestPdfTabLayerStatus:
         for i in range(4):
             item = pdf_tab._layer_status_grid.item(i)
             assert item.data(Qt.ItemDataRole.UserRole) == i
-        doc.close()
 
     def test_sync_layer_grid_from_model_updates_colors(self, pdf_tab):
         """_sync_layer_grid_from_model 应按当前 model 重同步格子颜色，保留选中（Bug A）。
@@ -181,17 +168,10 @@ class TestPdfTabLayerStatus:
         但逐页 page_done 信号因取消未送达 → 格子仍灰。调用 _sync_layer_grid_from_model
         后，格子 _HAS_LAYER_ROLE 应与 model 一致。
         """
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
         from vibeocr.classic.views.tabs.pdf_tab import _HAS_LAYER_ROLE
 
         # 初始：4 页全部无文字层
         pages = [PdfPageInfo(page_index=i) for i in range(4)]
-        doc = fitz.open()
-        for _ in range(4):
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -223,22 +203,12 @@ class TestPdfTabLayerStatus:
         # 选中状态保留
         assert grid.item(1).isSelected() is True
         assert grid.item(3).isSelected() is True
-        doc.close()
 
 
 class TestPdfTabLayerStatusLinkage:
     """网格 ↔ 缩略图双向选中同步（按 page_index 匹配，重入保护防递归）。"""
 
     def _setup_session(self, pdf_tab):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import (
-            PdfDocument,
-            PdfPageInfo,
-            TextLayerInfo,
-        )
-        from vibeocr.backend.models.pdf_session import PdfSession
-
         pages = [
             PdfPageInfo(
                 page_index=2,
@@ -256,9 +226,6 @@ class TestPdfTabLayerStatusLinkage:
             PdfPageInfo(page_index=0),
             PdfPageInfo(page_index=1),
         ]
-        doc = fitz.open()
-        for _ in range(3):
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -267,71 +234,59 @@ class TestPdfTabLayerStatusLinkage:
         pdf_tab._session_mgr._active_path = "x.pdf"
         pdf_tab._refresh_thumbnails()
         pdf_tab._update_layer_status()
-        return doc
 
     def test_grid_selection_syncs_to_thumbnail(self, pdf_tab):
         """网格选中 → 缩略图选中相同 page_index（双向断言）。"""
         from PySide6.QtCore import QItemSelectionModel
 
-        doc = self._setup_session(pdf_tab)
-        try:
-            grid = pdf_tab._layer_status_grid
-            for row in range(grid.count()):
-                if grid.item(row).data(Qt.ItemDataRole.UserRole) == 1:
-                    grid.selectionModel().select(
-                        grid.model().index(row, 0), QItemSelectionModel.ClearAndSelect
-                    )
-                    break
-            # 缩略图应同步选中 page_index=1
-            assert pdf_tab._get_selected_page_indices() == [1]
-            # 网格本身仍保持该选中（未因同步被清除）
-            assert [i.data(Qt.ItemDataRole.UserRole) for i in grid.selectedItems()] == [
-                1
-            ]
-        finally:
-            doc.close()
+        self._setup_session(pdf_tab)
+        grid = pdf_tab._layer_status_grid
+        for row in range(grid.count()):
+            if grid.item(row).data(Qt.ItemDataRole.UserRole) == 1:
+                grid.selectionModel().select(
+                    grid.model().index(row, 0), QItemSelectionModel.ClearAndSelect
+                )
+                break
+        # 缩略图应同步选中 page_index=1
+        assert pdf_tab._get_selected_page_indices() == [1]
+        # 网格本身仍保持该选中（未因同步被清除）
+        assert [i.data(Qt.ItemDataRole.UserRole) for i in grid.selectedItems()] == [1]
 
     def test_thumbnail_selection_syncs_to_grid(self, pdf_tab):
         """缩略图选中 → 网格选中相同 page_index。"""
         from PySide6.QtCore import QItemSelectionModel
 
-        doc = self._setup_session(pdf_tab)
-        try:
-            lst = pdf_tab._thumbnail_list
-            model = lst.model()
-            for row in range(model.rowCount()):
-                if model.data(model.index(row, 0), Qt.ItemDataRole.UserRole) == 2:
-                    lst.selectionModel().select(
-                        model.index(row, 0), QItemSelectionModel.ClearAndSelect
-                    )
-                    break
-            grid = pdf_tab._layer_status_grid
-            cur = grid.selectedItems()
-            assert len(cur) == 1
-            assert cur[0].data(Qt.ItemDataRole.UserRole) == 2
-        finally:
-            doc.close()
+        self._setup_session(pdf_tab)
+        lst = pdf_tab._thumbnail_list
+        model = lst.model()
+        for row in range(model.rowCount()):
+            if model.data(model.index(row, 0), Qt.ItemDataRole.UserRole) == 2:
+                lst.selectionModel().select(
+                    model.index(row, 0), QItemSelectionModel.ClearAndSelect
+                )
+                break
+        grid = pdf_tab._layer_status_grid
+        cur = grid.selectedItems()
+        assert len(cur) == 1
+        assert cur[0].data(Qt.ItemDataRole.UserRole) == 2
 
     def test_no_infinite_recursion_on_sync(self, pdf_tab):
         """双向同步不应触发递归（_syncing_selection 保护 + finally 复位）。"""
         from PySide6.QtCore import QItemSelectionModel
 
-        doc = self._setup_session(pdf_tab)
-        try:
-            grid = pdf_tab._layer_status_grid
-            lst = pdf_tab._thumbnail_list
-            # 反复交替触发，不应崩溃/栈溢出
-            for _ in range(5):
-                grid.selectionModel().select(
-                    grid.model().index(0, 0), QItemSelectionModel.ClearAndSelect
-                )
-                lst.selectionModel().select(
-                    lst.model().index(0, 0), QItemSelectionModel.ClearAndSelect
-                )
-            # 同步完成后 guard 必须复位为 False（证明 finally 跑过，未卡死）
-            assert pdf_tab._syncing_selection is False
-        finally:
-            doc.close()
+        self._setup_session(pdf_tab)
+        grid = pdf_tab._layer_status_grid
+        lst = pdf_tab._thumbnail_list
+        # 反复交替触发，不应崩溃/栈溢出
+        for _ in range(5):
+            grid.selectionModel().select(
+                grid.model().index(0, 0), QItemSelectionModel.ClearAndSelect
+            )
+            lst.selectionModel().select(
+                lst.model().index(0, 0), QItemSelectionModel.ClearAndSelect
+            )
+        # 同步完成后 guard 必须复位为 False（证明 finally 跑过，未卡死）
+        assert pdf_tab._syncing_selection is False
 
 
 class TestPdfTabOcrCompletion:
@@ -382,9 +337,7 @@ class TestPdfTabOcrCompletion:
 class TestAddTextLayerForPagesWithoutLayer:
     """新按钮：一键为当前文件所有无文字层页添加文字层。"""
 
-    def _inject_session(self, pdf_tab, doc, pdf_doc):
-        from vibeocr.backend.models.pdf_session import PdfSession
-
+    def _inject_session(self, pdf_tab, pdf_doc):
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
         )
@@ -399,15 +352,9 @@ class TestAddTextLayerForPagesWithoutLayer:
 
     def test_all_have_layer_shows_info(self, pdf_tab, monkeypatch):
         """所有页都有文字层时点击按钮应弹 information 提示，不启动 OCR。"""
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-
         page_info = PdfPageInfo(page_index=0, has_text_layer=True)
-        doc = fitz.open()
-        doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=[page_info])
-        self._inject_session(pdf_tab, doc, pdf_doc)
+        self._inject_session(pdf_tab, pdf_doc)
 
         called = {"info": False, "start": False}
         import vibeocr.classic.views.tabs.pdf_tab as mod
@@ -427,7 +374,6 @@ class TestAddTextLayerForPagesWithoutLayer:
 
         assert called["info"] is True
         assert called["start"] is False
-        doc.close()
 
     def test_no_active_session_returns_silently(self, pdf_tab, monkeypatch):
         """未打开文件时点击按钮应静默返回（不报错、不弹框）。"""
@@ -447,14 +393,6 @@ class TestAddTextLayerSoftGuard:
     """现有"添加文字层"按钮：选中页含已有文字层时弹三选一框。"""
 
     def _inject(self, pdf_tab, pages):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
-
-        doc = fitz.open()
-        for _ in pages:
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -479,7 +417,6 @@ class TestAddTextLayerSoftGuard:
         self, pdf_tab, monkeypatch
     ):
         """选中页中部分已有文字层：弹框（has=1,total=2），选"跳过"→ overwrite=False。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=True),
@@ -525,8 +462,6 @@ class TestAddTextLayerSoftGuard:
     ):
         from PySide6.QtCore import QItemSelectionModel
 
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
-
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=True),
             PdfPageInfo(page_index=1, has_text_layer=False),
@@ -562,8 +497,6 @@ class TestAddTextLayerSoftGuard:
         """选中页全部无文字层：不弹防重复框，直接 overwrite=False。"""
         from PySide6.QtCore import QItemSelectionModel
 
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
-
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=False),
             PdfPageInfo(page_index=1, has_text_layer=False),
@@ -597,8 +530,6 @@ class TestAddTextLayerSoftGuard:
 
     def test_prompt_choice_cancel_aborts(self, pdf_tab, monkeypatch):
         from PySide6.QtCore import QItemSelectionModel
-
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=True),
@@ -635,14 +566,6 @@ class TestLayerStatusContextMenu:
     """状态列表右键菜单：为选中的无文字层页添加文字层。"""
 
     def _inject(self, pdf_tab, pages):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
-
-        doc = fitz.open()
-        for _ in pages:
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -656,8 +579,6 @@ class TestLayerStatusContextMenu:
     ):
         """无文字层页选中时，菜单应含"为 N 个无文字层页添加文字层"项。"""
         from PySide6.QtCore import QItemSelectionModel
-
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
         self._inject(pdf_tab, pages)
@@ -709,8 +630,6 @@ class TestLayerStatusContextMenu:
         """选中页均有文字层时，菜单应提示而非提供添加项。"""
         from PySide6.QtCore import QItemSelectionModel
 
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
-
         pages = [PdfPageInfo(page_index=0, has_text_layer=True)]
         self._inject(pdf_tab, pages)
         pdf_tab._update_layer_status()
@@ -757,14 +676,6 @@ class TestLayerStatusGrid:
     """文字层状态网格化（QListWidget IconMode + delegate）。"""
 
     def _inject(self, pdf_tab, pages):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
-
-        doc = fitz.open()
-        for _ in pages:
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -782,7 +693,6 @@ class TestLayerStatusGrid:
 
     def test_grid_cell_count_equals_pages(self, pdf_tab):
         """网格格子数应等于页数，每个携带 page_index。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=i) for i in range(5)]
         self._inject(pdf_tab, pages)
@@ -795,7 +705,6 @@ class TestLayerStatusGrid:
 
     def test_grid_has_summary_label(self, pdf_tab):
         """网格上方应有汇总 Label（共 N 页 / OCR文字层 / 原生文字层 / 无文字层）。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=True),
@@ -812,7 +721,6 @@ class TestLayerStatusGrid:
 
     def test_grid_tooltip_shows_block_count(self, pdf_tab):
         """有文字层格子的 tooltip 含块数。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo, TextLayerInfo
 
         pages = [
             PdfPageInfo(
@@ -838,7 +746,6 @@ class TestLayerStatusGrid:
 
     def test_grid_no_layer_cell_tooltip(self, pdf_tab):
         """无文字层格子的 tooltip 应提示"无文字层"。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
         self._inject(pdf_tab, pages)
@@ -947,14 +854,6 @@ class TestOcrPerPageFeedback:
     """OCR 逐页完成即时反馈：格子逐页变绿，缩略图不重渲染。"""
 
     def _inject(self, pdf_tab, pages):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
-
-        doc = fitz.open()
-        for _ in pages:
-            doc.new_page()
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -966,7 +865,6 @@ class TestOcrPerPageFeedback:
 
     def test_ocr_page_result_updates_grid_cell_to_green(self, pdf_tab):
         """ocr_page_done 后该格子 has_layer 应为 True（变绿）。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
         session = self._inject(pdf_tab, pages)
@@ -986,7 +884,6 @@ class TestOcrPerPageFeedback:
         不触发缩略图 IPC worker 请求。验证 ThumbnailModel.request_render
         不被调用。
         """
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
         session = self._inject(pdf_tab, pages)
@@ -1003,7 +900,6 @@ class TestOcrPerPageFeedback:
 
     def test_ocr_page_result_updates_summary_label(self, pdf_tab):
         """ocr_page_done 后汇总 Label 应反映新的计数。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=False),
@@ -1021,8 +917,6 @@ class TestOcrPerPageFeedback:
     def test_ocr_completion_preserves_selection(self, pdf_tab):
         """OCR 全部完成（ocr_done/ocr_stats_ready）不应清空用户选中（spec 第 6 节）。"""
         from PySide6.QtCore import QItemSelectionModel
-
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=False),
@@ -1050,7 +944,6 @@ class TestOcrPerPageFeedback:
 
     def test_update_layer_grid_page_sets_state_role(self, pdf_tab):
         """_update_layer_grid_page(state=...) 应把视觉态写入 _LAYER_STATE_ROLE。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, has_text_layer=False),
@@ -1067,7 +960,6 @@ class TestOcrPerPageFeedback:
 
     def test_update_layer_grid_page_no_state_leaves_role_unset(self, pdf_tab):
         """state=None 时不应写入 _LAYER_STATE_ROLE（保留 has_layer 推导语义）。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
         self._inject(pdf_tab, pages)
@@ -1079,8 +971,6 @@ class TestLoadDoneSidecarHint:
     """打开 PDF 时若检测到未完成 sidecar，状态栏提示续传（7C）。"""
 
     def _inject(self, pdf_tab, pages):
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
@@ -1094,14 +984,13 @@ class TestLoadDoneSidecarHint:
         self, pdf_tab, monkeypatch
     ):
         """restore_pending_pages 返回非空时，状态栏应显示续传提示文案。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=i) for i in range(4)]
         self._inject(pdf_tab, pages)
 
         # 模拟 sidecar 有 2 页已保存（未完成）
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar.restore_pending_pages",
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
             lambda file_path: {0: 0, 1: 0},
         )
         pdf_tab._on_load_done("x.pdf")
@@ -1111,13 +1000,12 @@ class TestLoadDoneSidecarHint:
 
     def test_load_done_no_hint_when_no_sidecar(self, pdf_tab, monkeypatch):
         """无 sidecar（restore_pending_pages 返回 None）时不显示续传提示。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=i) for i in range(3)]
         self._inject(pdf_tab, pages)
 
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar.restore_pending_pages",
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
             lambda file_path: None,
         )
         pdf_tab._on_load_done("x.pdf")
@@ -1127,7 +1015,6 @@ class TestLoadDoneSidecarHint:
 
     def test_load_done_sidecar_error_is_silent(self, pdf_tab, monkeypatch):
         """restore_pending_pages 抛异常时应静默（不影响正常加载文案）。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [PdfPageInfo(page_index=i) for i in range(2)]
         self._inject(pdf_tab, pages)
@@ -1135,7 +1022,10 @@ class TestLoadDoneSidecarHint:
         def _boom(file_path):
             raise RuntimeError("sidecar 读取出错")
 
-        monkeypatch.setattr("vibeocr.backend.utils.ocr_sidecar.restore_pending_pages", _boom)
+        monkeypatch.setattr(
+            "vibeocr.classic.views.tabs.pdf_tab.ocr_sidecar.restore_pending_pages",
+            _boom,
+        )
         pdf_tab._on_load_done("x.pdf")
         # 异常被吞掉，状态栏应仍是"加载完成"
         assert "加载完成" in pdf_tab._status_label.text()
@@ -1151,9 +1041,6 @@ class TestThumbnailIncrementalUpdate:
     """
 
     def _setup(self, pdf_tab, n_pages=3):
-
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pages = [
             PdfPageInfo(page_index=i, rect=(0.0, 0.0, 612.0, 792.0))
@@ -1233,8 +1120,6 @@ class TestPdfTabRotateAllAndAspectDeskew:
     """旋转全部（CW/CCW 两按钮）+ 横放/纵放摆正。"""
 
     def _setup(self, pdf_tab, pages=None):
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         if pages is None:
             pages = [
@@ -1276,7 +1161,6 @@ class TestPdfTabRotateAllAndAspectDeskew:
 
     def test_deskew_landscape_rotates_portrait_pages(self, pdf_tab, monkeypatch):
         """横放摆正：纵向页（高>宽）应被旋转，横向页不动。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         # 页0: 纵向 (612x792 高>宽)，页1: 横向 (792x612 宽>高)
         pages = [
@@ -1302,7 +1186,6 @@ class TestPdfTabRotateAllAndAspectDeskew:
 
     def test_deskew_portrait_rotates_landscape_pages(self, pdf_tab, monkeypatch):
         """纵放摆正：横向页（宽>高）应被旋转，纵向页不动。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(page_index=0, rect=(0.0, 0.0, 612.0, 792.0)),
@@ -1326,7 +1209,6 @@ class TestPdfTabRotateAllAndAspectDeskew:
 
     def test_deskew_by_aspect_respects_rotation(self, pdf_tab, monkeypatch):
         """横放摆正考虑 page.rotation：旋转90°的纵向页显示为横向，不应再旋。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         # 纵向 mediabox (612x792) + rotation=90 → 显示横向，横放摆正不应旋
         pages = [
@@ -1353,8 +1235,6 @@ class TestPdfTabLayerTypeIndicator:
     """文字层图示三态：OCR文字层（深绿）/ 原生文字层（浅绿）/ 无文字层（灰）。"""
 
     def _setup(self, pdf_tab, pages):
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
         session = PdfSession(
@@ -1367,7 +1247,6 @@ class TestPdfTabLayerTypeIndicator:
 
     def test_layer_type_ocr_when_blocks_present(self, pdf_tab):
         """ocr_text_blocks 非空 → _LAYER_TYPE_ROLE = "ocr"。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
         from vibeocr.classic.views.tabs.pdf_tab import _LAYER_TYPE_ROLE
 
         pages = [
@@ -1381,7 +1260,6 @@ class TestPdfTabLayerTypeIndicator:
 
     def test_layer_type_native_when_no_blocks(self, pdf_tab):
         """has_text_layer=True 但 ocr_text_blocks 空 → "native"。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
         from vibeocr.classic.views.tabs.pdf_tab import _LAYER_TYPE_ROLE
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=True)]
@@ -1391,7 +1269,6 @@ class TestPdfTabLayerTypeIndicator:
 
     def test_layer_type_none_when_no_layer(self, pdf_tab):
         """无文字层 → _LAYER_TYPE_ROLE = None。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
         from vibeocr.classic.views.tabs.pdf_tab import _LAYER_TYPE_ROLE
 
         pages = [PdfPageInfo(page_index=0, has_text_layer=False)]
@@ -1401,7 +1278,6 @@ class TestPdfTabLayerTypeIndicator:
 
     def test_summary_shows_three_categories(self, pdf_tab):
         """汇总 Label 应含 OCR文字层 / 原生文字层 / 无文字层 三个类别。"""
-        from vibeocr.backend.models.pdf_document import PdfPageInfo
 
         pages = [
             PdfPageInfo(
@@ -1421,8 +1297,6 @@ class TestPdfTabRotateNoSelectionFeedback:
     """旋转选中页无选中时应弹提示而非静默返回。"""
 
     def _setup(self, pdf_tab):
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pages = [PdfPageInfo(page_index=i) for i in range(3)]
         pdf_doc = PdfDocument(file_path="x.pdf", pages=pages)
@@ -1502,8 +1376,6 @@ class TestPdfTabDeleteTextLayerAsync:
 
     def test_delete_layer_done_syncs_stale_grid_from_model(self, pdf_tab):
         """逐页 mutate_done 丢失时，删除最终回调也必须把格子同步为无文字层。"""
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
         from vibeocr.classic.views.tabs.pdf_tab import _HAS_LAYER_ROLE
 
         document = PdfDocument(
@@ -1535,8 +1407,6 @@ class TestPdfTabDeleteTextLayerAsync:
         self, pdf_tab, monkeypatch
     ):
         """整批完成即使带 page=None，也不能误判成逐页完成。"""
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         session = PdfSession(
             file_path="x.pdf",
@@ -1583,9 +1453,6 @@ class TestPdfTabSaveContinuation:
     @staticmethod
     def _setup(pdf_tab, monkeypatch):
         from unittest.mock import MagicMock
-
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         doc = PdfDocument(file_path="a.pdf", pages=[PdfPageInfo(page_index=0)])
         session = PdfSession(file_path="a.pdf", session_id="sid-a", pdf_document=doc)
@@ -1799,13 +1666,6 @@ class TestPdfTabAutoDeskew:
     """自动摆正按钮：点击 → 调 manager.auto_deskew_async(selected_indices)。"""
 
     def _inject_single_page_session(self, pdf_tab):
-        import fitz
-
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
-
-        doc = fitz.open()
-        doc.new_page(width=200, height=300)
         pdf_doc = PdfDocument(file_path="x.pdf", pages=[PdfPageInfo(page_index=0)])
         session = PdfSession(
             file_path="x.pdf", session_id="test-sid", pdf_document=pdf_doc
@@ -1816,7 +1676,6 @@ class TestPdfTabAutoDeskew:
         # 直接注入底层字段不会触发 active_changed → 手动同步按钮启用态
         # （生产中由 _on_active_changed/_set_file_buttons_enabled 处理）。
         pdf_tab._set_file_buttons_enabled(True)
-        return doc
 
     def test_button_exists(self, pdf_tab):
         btn = getattr(pdf_tab, "_btn_auto_deskew", None)
@@ -1831,23 +1690,20 @@ class TestPdfTabAutoDeskew:
         monkeypatch.setattr(
             type(pdf_tab._session_mgr), "is_ocr_ready", property(lambda self: True)
         )
-        doc = self._inject_single_page_session(pdf_tab)
-        try:
-            # 选中第一页（ThumbnailListView 基于 QListView+ThumbnailModel，
-            # 用 selectionModel 选中第 0 行）
-            sm = pdf_tab._thumbnail_list.selectionModel()
-            model = pdf_tab._thumbnail_model
-            sm.select(
-                model.index(0, 0),
-                QItemSelectionModel.SelectionFlag.Select
-                | QItemSelectionModel.SelectionFlag.Current,
-            )
+        self._inject_single_page_session(pdf_tab)
+        # 选中第一页（ThumbnailListView 基于 QListView+ThumbnailModel，
+        # 用 selectionModel 选中第 0 行）
+        sm = pdf_tab._thumbnail_list.selectionModel()
+        model = pdf_tab._thumbnail_model
+        sm.select(
+            model.index(0, 0),
+            QItemSelectionModel.SelectionFlag.Select
+            | QItemSelectionModel.SelectionFlag.Current,
+        )
 
-            with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
-                pdf_tab._btn_auto_deskew.click()
-                mock_async.assert_called_once_with([0])
-        finally:
-            doc.close()
+        with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
+            pdf_tab._btn_auto_deskew.click()
+            mock_async.assert_called_once_with([0])
 
     def test_auto_deskew_no_selection_shows_info(self, pdf_tab, monkeypatch):
         """未选中页时点击应弹 information 提示，不调 auto_deskew_async。"""
@@ -1857,20 +1713,17 @@ class TestPdfTabAutoDeskew:
         monkeypatch.setattr(
             type(pdf_tab._session_mgr), "is_ocr_ready", property(lambda self: True)
         )
-        doc = self._inject_single_page_session(pdf_tab)
-        try:
-            import vibeocr.classic.views.tabs.pdf_tab as mod
+        self._inject_single_page_session(pdf_tab)
+        import vibeocr.classic.views.tabs.pdf_tab as mod
 
-            called = []
-            monkeypatch.setattr(
-                mod.QMessageBox, "information", lambda *a, **k: called.append(a)
-            )
-            with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
-                pdf_tab._btn_auto_deskew.click()
-                mock_async.assert_not_called()
-            assert len(called) == 1
-        finally:
-            doc.close()
+        called = []
+        monkeypatch.setattr(
+            mod.QMessageBox, "information", lambda *a, **k: called.append(a)
+        )
+        with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
+            pdf_tab._btn_auto_deskew.click()
+            mock_async.assert_not_called()
+        assert len(called) == 1
 
     def test_auto_deskew_no_ocr_service_shows_info(self, pdf_tab, monkeypatch):
         """无 OCR 服务时点击应弹 information 提示，不禁用按钮、不调 async。"""
@@ -1880,29 +1733,25 @@ class TestPdfTabAutoDeskew:
         monkeypatch.setattr(
             type(pdf_tab._session_mgr), "is_ocr_ready", property(lambda self: False)
         )
-        doc = self._inject_single_page_session(pdf_tab)
-        try:
-            import vibeocr.classic.views.tabs.pdf_tab as mod
+        self._inject_single_page_session(pdf_tab)
+        import vibeocr.classic.views.tabs.pdf_tab as mod
 
-            called = []
-            monkeypatch.setattr(
-                mod.QMessageBox, "information", lambda *a, **k: called.append(a)
-            )
-            # 按钮先启用，点击后应保持启用（不被禁用）
-            pdf_tab._btn_auto_deskew.setEnabled(True)
-            with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
-                pdf_tab._btn_auto_deskew.click()
-                mock_async.assert_not_called()
-            assert len(called) == 1
-            assert "未配置 OCR 服务" in called[0][2]
-            # 关键：按钮未被禁用（无 OCR 服务时静默 return 前置校验）
-            assert pdf_tab._btn_auto_deskew.isEnabled() is True
-        finally:
-            doc.close()
+        called = []
+        monkeypatch.setattr(
+            mod.QMessageBox, "information", lambda *a, **k: called.append(a)
+        )
+        # 按钮先启用，点击后应保持启用（不被禁用）
+        pdf_tab._btn_auto_deskew.setEnabled(True)
+        with patch.object(pdf_tab._session_mgr, "auto_deskew_async") as mock_async:
+            pdf_tab._btn_auto_deskew.click()
+            mock_async.assert_not_called()
+        assert len(called) == 1
+        assert "未配置 OCR 服务" in called[0][2]
+        # 关键：按钮未被禁用（无 OCR 服务时静默 return 前置校验）
+        assert pdf_tab._btn_auto_deskew.isEnabled() is True
 
 
 def test_layer_cell_tooltip_marks_deskewed():
-    from vibeocr.backend.models.pdf_document import PdfPageInfo
     from vibeocr.classic.views.tabs.pdf_tab import PdfTab
 
     p = PdfPageInfo(page_index=3)
@@ -1914,7 +1763,6 @@ def test_layer_cell_tooltip_marks_deskewed():
 
 
 def test_layer_cell_tooltip_no_deskew_when_false():
-    from vibeocr.backend.models.pdf_document import PdfPageInfo
     from vibeocr.classic.views.tabs.pdf_tab import PdfTab
 
     p = PdfPageInfo(page_index=0)
@@ -2054,8 +1902,6 @@ class TestThumbnailDetectionInProgress:
         模拟"打开新文件"路径:detecting=True 进入检测态,不启动 worker
         (worker 启动需要 manager,本辅助方法构造期无 manager)。
         """
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pages = [PdfPageInfo(page_index=i) for i in range(n_pages)]
         doc = PdfDocument(file_path="x.pdf", pages=pages)
@@ -2148,8 +1994,6 @@ class TestThumbnailAutoRenderAfterStateChange:
     """
 
     def _make_model_with_session(self, qtbot, n_pages=3):
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         pages = [PdfPageInfo(page_index=i) for i in range(n_pages)]
         doc = PdfDocument(file_path="x.pdf", pages=pages)
@@ -2307,9 +2151,6 @@ class TestThumbnailWorkerLifecycle:
     ):
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
-
         calls: list[str] = []
         model = ThumbnailModel()
         model._render_worker = MagicMock()
@@ -2345,8 +2186,6 @@ class TestThumbnailWorkerLifecycle:
     def test_late_detection_done_does_not_restart_after_shutdown(
         self, qapp, monkeypatch
     ):
-        from vibeocr.backend.models.pdf_document import PdfDocument
-        from vibeocr.backend.models.pdf_session import PdfSession
 
         model = ThumbnailModel()
         session = PdfSession(

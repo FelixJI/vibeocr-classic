@@ -46,18 +46,26 @@ if ($ReleaseInput) {
     if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
 }
 $protocol = Join-Path $inputs 'protocol'
+$protocolSdk = Join-Path $inputs 'protocol-sdk'
 $backend = Join-Path $inputs 'backend'
 $lock = Join-Path $inputs 'component-lock.json'
+$frontendProtocolLock = Join-Path $inputs 'frontend-protocol-lock.json'
 if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {
     throw 'resolved component-lock.json is required'
 }
+if (-not (Test-Path -LiteralPath $frontendProtocolLock -PathType Leaf)) {
+    throw 'resolved frontend-protocol-lock.json is required'
+}
 $componentLock = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
-$protocolVersion = [string]$componentLock.protocol.version
+$frontendProtocol = Get-Content -LiteralPath $frontendProtocolLock -Raw |
+  ConvertFrom-Json
 $protocolRepository = [string]$componentLock.protocol.repository
-$backendVersion = [string]$componentLock.backend.version
+$protocolSdkVersion = [string]$frontendProtocol.version
+$protocolSdkRepository = [string]$frontendProtocol.repository
 $backendRepository = [string]$componentLock.backend.repository
 foreach ($item in @(
     @{ path = $protocol; repo = $protocolRepository },
+    @{ path = $protocolSdk; repo = $protocolSdkRepository },
     @{ path = $backend; repo = $backendRepository }
 )) {
     Get-ChildItem -LiteralPath $item.path -File |
@@ -67,18 +75,38 @@ foreach ($item in @(
         if ($LASTEXITCODE -ne 0) { throw "attestation failed: $($_.Name)" }
       }
 }
+function Resolve-ProtocolSdkWheel {
+    param([string]$Distribution)
+    $matches = @(
+        $frontendProtocol.artifacts.PSObject.Properties.Name |
+          Where-Object {
+              $_ -like "$Distribution-$protocolSdkVersion-*.whl"
+          }
+    )
+    if ($matches.Count -ne 1) {
+        throw "frontend Protocol lock must select one $Distribution wheel"
+    }
+    $wheel = Join-Path $protocolSdk $matches[0]
+    if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) {
+        throw "frontend Protocol SDK wheel is missing: $($matches[0])"
+    }
+    return $wheel
+}
+$contractsWheel = Resolve-ProtocolSdkWheel 'vibeocr_runtime_contracts'
+$clientWheel = Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'
 python -m pip install build==1.5.0 hatchling==1.27.0 pyinstaller==6.21.0
 python -m pip install `
-  (Get-ChildItem $protocol -Filter "vibeocr_runtime_contracts-$protocolVersion-*.whl" | Select-Object -First 1).FullName `
-  (Get-ChildItem $protocol -Filter "vibeocr_runtime_client-$protocolVersion-*.whl" | Select-Object -First 1).FullName `
-  (Get-ChildItem $backend -Filter "vibeocr_backend-$backendVersion-*.whl" | Select-Object -First 1).FullName
-if ($LASTEXITCODE -ne 0) { throw 'verified upstream wheel install failed' }
+  $contractsWheel `
+  $clientWheel
+if ($LASTEXITCODE -ne 0) { throw 'verified frontend SDK wheel install failed' }
 python -m build --wheel --no-isolation (Join-Path $root 'apps/vibeocr-pyside') --outdir $build
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel build failed' }
 python -m pip install --force-reinstall --no-deps `
   (Get-ChildItem $build -Filter "vibeocr_classic-$Version-*.whl" | Select-Object -First 1).FullName
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel install failed' }
-python -m pip install pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1
+python -m pip install `
+  pyside6==6.11.1 qasync==0.28.0 numpy==2.5.1 `
+  httpx==0.28.1 pillow==12.3.0
 if ($LASTEXITCODE -ne 0) { throw 'Classic runtime dependency install failed' }
 $dist = Join-Path $build 'dist'
 $pyinstallerArgs = @(
@@ -91,9 +119,7 @@ $pyinstallerArgs = @(
     '--collect-submodules', 'vibeocr.classic',
     '--collect-submodules', 'vibeocr.runtime_client',
     '--collect-submodules', 'vibeocr.runtime_contracts',
-    '--collect-submodules', 'vibeocr.backend',
     '--collect-data', 'vibeocr.runtime_contracts',
-    '--collect-data', 'vibeocr.backend',
     '--add-data', "$root/resources;resources",
     '--add-data', "$root/CHANGELOG.md;."
 )
@@ -154,12 +180,16 @@ $zip = Join-Path $artifacts "VibeOCR-Classic-v$Version-win64.zip"
 python (Join-Path $root 'scripts/package_product_release.py') `
   --product-root $product --frontend classic --frontend-version $Version `
   --source-commit (git -C $root rev-parse HEAD).Trim() `
-  --component-lock $lock --protocol-release-dir $protocol `
+  --component-lock $lock --frontend-protocol-lock $frontendProtocolLock `
+  --frontend-protocol-release-dir $protocolSdk `
+  --protocol-release-dir $protocol `
   --backend-release-dir $backend --output $zip
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
 python (Join-Path $root 'scripts/verify_pyside_artifact.py') $zip
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
 Copy-Item -LiteralPath $lock -Destination (Join-Path $artifacts 'component-lock.json')
+Copy-Item -LiteralPath $frontendProtocolLock `
+  -Destination (Join-Path $artifacts 'frontend-protocol-lock.json')
 python (Join-Path $root 'scripts/build_release_checksums.py') $artifacts `
   --sidecar-for $zip
 if ($LASTEXITCODE -ne 0) { throw 'sidecar checksum build failed' }

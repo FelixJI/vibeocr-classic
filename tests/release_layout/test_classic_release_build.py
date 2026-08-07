@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -12,6 +13,7 @@ from scripts.verify_pyside_artifact import (
     _verify_archive_size,
     _verify_bound_python_archive,
     _verify_embedded_app_icon,
+    _verify_frontend_protocol_lock,
     _verify_product_file_closure,
     _verify_reduced_layout,
     _verify_runtime_layout,
@@ -126,17 +128,30 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "--phase finalize" in workflow
     assert "name: required" in workflow
     assert "[string]$ReleaseInput" in script
+    assert "Join-Path $inputs 'protocol-sdk'" in script
+    assert "frontend-protocol-lock.json" in script
+    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_contracts'" in script
+    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'" in script
+    assert "Get-ChildItem $protocolSdk -Filter" not in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow
-    assert "vibeocr-backend" in project["project"]["dependencies"]
     assert not any(
-        dependency.startswith("vibeocr-backend") and dependency != "vibeocr-backend"
+        dependency.startswith("vibeocr-backend")
         for dependency in project["project"]["dependencies"]
     )
+    assert "httpx>=0.28.1" in project["project"]["dependencies"]
+    assert "pillow>=12.3.0" in project["project"]["dependencies"]
+    assert "httpx==0.28.1" in script
+    assert "pillow==12.3.0" in script
+    assert "'--collect-submodules', 'vibeocr.backend'" not in script
+    assert "'--collect-data', 'vibeocr.backend'" not in script
+    assert "pip install --no-deps" not in script
+    assert "vibeocr_backend-$backendVersion" not in script
 
 
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    policy = json.loads((ROOT / "component-policy.json").read_text(encoding="utf-8"))
     project = tomllib.loads(
         (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
             encoding="utf-8"
@@ -147,8 +162,39 @@ def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
     dependencies = set(project["project"]["dependencies"])
 
     assert compatibility == {"supported_majors": [2], "minor_compatible": True}
-    assert "vibeocr-runtime-contracts>=2.0.0,<3.0.0" in dependencies
-    assert "vibeocr-runtime-client>=2.0.0,<3.0.0" in dependencies
+    assert policy["protocol"]["sdk_version"] == "2.4.0"
+    assert policy["protocol"]["version"] == "2.0.0"
+    assert "vibeocr-runtime-contracts>=2.4.0,<3.0.0" in dependencies
+    assert "vibeocr-runtime-client>=2.4.0,<3.0.0" in dependencies
+
+
+def test_artifact_frontend_protocol_lock_requires_hash_and_same_major(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "frontend-protocol-lock.json"
+    lock_path.write_text('{"version":"2.4.0"}', encoding="utf-8")
+    digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+
+    assert _verify_frontend_protocol_lock(
+        tmp_path,
+        {"frontend_protocol_lock_sha256": digest},
+        {"protocol": {"version": "2.3.0"}},
+    ) == {"version": "2.4.0"}
+
+    with pytest.raises(RuntimeError, match="majors differ"):
+        _verify_frontend_protocol_lock(
+            tmp_path,
+            {"frontend_protocol_lock_sha256": digest},
+            {"protocol": {"version": "3.0.0"}},
+        )
+
+    lock_path.write_text('{"version":"2.4.1"}', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        _verify_frontend_protocol_lock(
+            tmp_path,
+            {"frontend_protocol_lock_sha256": digest},
+            {"protocol": {"version": "2.3.0"}},
+        )
 
 
 def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None:

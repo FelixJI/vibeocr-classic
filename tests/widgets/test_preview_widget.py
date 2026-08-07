@@ -3,7 +3,7 @@
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QScrollArea
 
-from vibeocr.backend.models.ocr_result import TextBlock
+from vibeocr.classic.recognition_result import TextBlock
 from vibeocr.classic.widgets.preview_widget import PreviewWidget
 
 
@@ -819,9 +819,7 @@ def test_repeated_large_block_update_reuses_indexes_and_bounded_overlay(
     assert len(widget._block_screen_polys) <= MAX_INTERACTIVE_OVERLAY_BLOCKS
 
 
-def test_rapid_large_edits_and_resizes_keep_qt_heartbeat(
-    qapp, qtbot, sample_pixmap
-):
+def test_rapid_large_edits_and_resizes_keep_qt_heartbeat(qapp, qtbot, sample_pixmap):
     """A burst of edits and resize notifications must yield before 150 ms."""
     import time
 

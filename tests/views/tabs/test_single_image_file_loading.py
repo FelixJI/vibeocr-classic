@@ -8,7 +8,7 @@ from importlib import import_module
 from PySide6.QtGui import QColor, QGuiApplication, QImage
 
 from tests.qt_responsiveness import assert_qt_event_loop_responsive
-from vibeocr.backend.models.ocr_result import OCRResult
+from vibeocr.classic.recognition_result import OCRResult
 
 
 def _image(color: str) -> QImage:
@@ -140,9 +140,7 @@ def test_paste_invalidates_slow_file_decode(
             return sample_pixmap
 
     monkeypatch.setattr(module, "decode_image_file", slow_decode)
-    monkeypatch.setattr(
-        QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
-    )
+    monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
     recognize_calls = []
     monkeypatch.setattr(tab, "run_ocr", recognize_calls.append)
 
@@ -154,10 +152,9 @@ def test_paste_invalidates_slow_file_decode(
 
     assert recognize_calls == []
     assert tab._pending_pixmap is not None
-    assert (
-        tab._pending_pixmap.toImage().pixelColor(0, 0)
-        == sample_pixmap.toImage().pixelColor(0, 0)
-    )
+    assert tab._pending_pixmap.toImage().pixelColor(
+        0, 0
+    ) == sample_pixmap.toImage().pixelColor(0, 0)
 
 
 def test_busy_state_rejects_all_new_input_entrypoints(
@@ -188,9 +185,7 @@ def test_busy_state_rejects_all_new_input_entrypoints(
         def pixmap(self):
             return sample_pixmap
 
-    monkeypatch.setattr(
-        QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
-    )
+    monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
     screenshots = []
     tab.screenshot_requested.connect(lambda: screenshots.append(True))
 
@@ -216,15 +211,6 @@ def test_document_gpu_capability_unknown_does_not_probe_on_gui_thread(
     module = import_module("vibeocr.classic.views.tabs.single_recognition_tab")
     path = tmp_path / "cold.pdf"
     path.write_bytes(b"%PDF")
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager._runtime_gpu_capability_cache", None
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_runtime_gpu_capability",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("GUI 路径不应同步探测 GPU")
-        ),
-    )
     tab = module.SingleRecognitionTab(backend=object())
     qtbot.addWidget(tab)
     messages = []
@@ -295,15 +281,11 @@ def test_preprocessed_image_decode_is_responsive_and_latest_wins(
     tab._on_ocr_finished(_result_with_preprocessed_image(b"new"))
     qtbot.waitUntil(lambda: colors == ["#0000ff"], timeout=2000)
     release_old.set()
-    qtbot.waitUntil(
-        lambda: not tab._preprocessed_image_jobs.is_running, timeout=2000
-    )
+    qtbot.waitUntil(lambda: not tab._preprocessed_image_jobs.is_running, timeout=2000)
     assert colors == ["#0000ff"]
 
 
-def test_preprocessed_image_decode_drops_result_after_closing(
-    qapp, qtbot, monkeypatch
-):
+def test_preprocessed_image_decode_drops_result_after_closing(qapp, qtbot, monkeypatch):
     module = import_module("vibeocr.classic.views.tabs.single_recognition_tab")
     tab = module.SingleRecognitionTab(backend=object())
     qtbot.addWidget(tab)
@@ -326,15 +308,11 @@ def test_preprocessed_image_decode_drops_result_after_closing(
     assert entered.wait(timeout=1)
     tab.set_closing(True)
     release.set()
-    qtbot.waitUntil(
-        lambda: not tab._preprocessed_image_jobs.is_running, timeout=2000
-    )
+    qtbot.waitUntil(lambda: not tab._preprocessed_image_jobs.is_running, timeout=2000)
     assert applied == []
 
 
-def test_closing_propagates_and_drain_is_widget_free_poll(
-    qapp, qtbot, monkeypatch
-):
+def test_closing_propagates_and_drain_is_widget_free_poll(qapp, qtbot, monkeypatch):
     module = import_module("vibeocr.classic.views.tabs.single_recognition_tab")
     tab = module.SingleRecognitionTab(backend=object())
     qtbot.addWidget(tab)

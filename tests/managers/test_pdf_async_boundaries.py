@@ -13,10 +13,16 @@ from tests.fakes.sync_supervisor_job_client import (
     FakeSyncSupervisorJobClient,
 )
 from tests.qt_responsiveness import assert_qt_event_loop_responsive
-from vibeocr.backend.ipc.schemas import ModelDiff, PdfDocumentMirror, PdfPageInfoMirror
-from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
-from vibeocr.backend.models.pdf_session import PdfSession
+from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo, PdfSession
+from vibeocr.classic.pyside.pdf_ipc_worker import PdfIpcMutateWorker
 from vibeocr.classic.pyside.pdf_session_manager import PdfSessionManager
+from vibeocr.runtime_contracts.pdf import (
+    PdfDocumentMirror,
+    PdfModelDiff as ModelDiff,
+    PdfMutationResult,
+    PdfPageInfoMirror,
+    TextLayerInfoMirror,
+)
 
 
 def _session(path: str = "C:/fake.pdf", pages: int = 2) -> PdfSession:
@@ -43,8 +49,11 @@ def manager(qapp):
     # 它们「已 finished」并 spawn 真实 PdfIpcCloseWorker 线程，导致进程退出时
     # access violation。先把 mock 引用清掉，再走正常 shutdown。
     for attr in (
-        "_open_worker", "_mutate_worker", "_ocr_worker",
-        "_preflight_worker", "_preview_worker", "_export_worker",
+        "_open_worker",
+        "_mutate_worker",
+        "_ocr_worker",
+        "_preview_worker",
+        "_export_worker",
     ):
         worker = getattr(mgr, attr, None)
         if worker is not None and not hasattr(worker, "isFinished"):
@@ -55,9 +64,7 @@ def manager(qapp):
     mgr._draining_preview_workers = {
         w for w in mgr._draining_preview_workers if hasattr(w, "isFinished")
     }
-    mgr._control_workers = {
-        w for w in mgr._control_workers if hasattr(w, "isFinished")
-    }
+    mgr._control_workers = {w for w in mgr._control_workers if hasattr(w, "isFinished")}
     mgr.request_shutdown()
     assert mgr.drain(3000)
     # drain() proves native threads are finished, but workers and the manager
@@ -66,36 +73,6 @@ def manager(qapp):
     # crash the next nested pytest-qt event loop on Windows.
     mgr.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-
-
-def test_slow_mineru_preflight_keeps_event_loop_responsive(
-    manager, qtbot, monkeypatch
-):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_prepare(*_args, **_kwargs):
-        entered.set()
-        release.wait(2)
-        return True, "ok"
-
-    monkeypatch.setattr("vibeocr.backend.env_manager.ensure_mineru_models", slow_prepare)
-    monkeypatch.setattr(manager, "_is_mineru_first_use", lambda _opts: True)
-    manager._inference_client = object()
-
-    assert manager.start_ocr([0], ocr_options=object()) is True
-    qtbot.waitUntil(entered.is_set)
-    assert_qt_event_loop_responsive(
-        qtbot,
-        in_flight=lambda: manager._preflight_worker is not None
-        and manager._preflight_worker.isRunning(),
-    )
-
-    manager.cancel_ocr()
-    release.set()
-    qtbot.waitUntil(lambda: manager._preflight_worker is None)
-    assert manager._ocr_state == "cancelled"
-    manager._client.reset_cancel.assert_not_called()
 
 
 def test_slow_backend_start_for_open_runs_off_gui(manager, qtbot):
@@ -116,8 +93,9 @@ def test_slow_backend_start_for_open_runs_off_gui(manager, qtbot):
     qtbot.waitUntil(entered.is_set)
     assert_qt_event_loop_responsive(
         qtbot,
-        in_flight=lambda: manager._open_worker is not None
-        and manager._open_worker.isRunning(),
+        in_flight=lambda: (
+            manager._open_worker is not None and manager._open_worker.isRunning()
+        ),
     )
     release.set()
     qtbot.waitUntil(lambda: manager._open_worker is None)
@@ -136,18 +114,14 @@ def test_discarded_doc_opened_closes_orphan_session_in_background(manager, qtbot
     manager._client.close_session.side_effect = close_session
     manager._open_generation = 8
 
-    manager._on_doc_opened_guarded(
-        "C:/orphan.pdf", "orphan-sid", object(), object(), 7
-    )
+    manager._on_doc_opened_guarded("C:/orphan.pdf", "orphan-sid", object(), object(), 7)
     qtbot.waitUntil(lambda: not manager._close_workers)
 
     assert "C:/orphan.pdf" not in manager.session_paths
     assert close_threads and all(ident != main_thread for ident in close_threads)
 
 
-def test_drain_observes_close_worker_added_while_open_worker_finishes(
-    manager, qtbot
-):
+def test_drain_observes_close_worker_added_while_open_worker_finishes(manager, qtbot):
     """GUI poll 不能漏掉旧 open 结束边界新增的 orphan close。"""
     close_entered = threading.Event()
     release_close = threading.Event()
@@ -175,9 +149,7 @@ def test_drain_observes_close_worker_added_while_open_worker_finishes(
 
         late_open.finished = True
         manager._draining_open_workers.discard(late_open)
-        manager._on_doc_opened_guarded(
-            "C:/late.pdf", "late-sid", object(), object(), 1
-        )
+        manager._on_doc_opened_guarded("C:/late.pdf", "late-sid", object(), object(), 1)
         qtbot.waitUntil(close_entered.is_set)
         assert manager._close_workers
     finally:
@@ -225,7 +197,8 @@ def test_rapid_second_open_removes_and_closes_partially_loaded_first_session(
 
     assert first_path not in manager.session_paths
     assert any(
-        call.args == ("first-sid",) for call in manager._client.close_session.call_args_list
+        call.args == ("first-sid",)
+        for call in manager._client.close_session.call_args_list
     )
 
 
@@ -285,7 +258,8 @@ def test_shutdown_during_open_completion_closes_backend_session_exactly_once(
     qtbot.waitUntil(manager.is_drained, timeout=3000)
 
     close_calls = [
-        call for call in manager._client.close_session.call_args_list
+        call
+        for call in manager._client.close_session.call_args_list
         if call.args == ("race-sid",)
     ]
     assert len(close_calls) == 1
@@ -394,58 +368,6 @@ def test_open_start_failure_reports_every_path_and_finishes(manager, qtbot):
     assert [path for path, _error in failures] == ["C:/a.pdf", "C:/b.pdf"]
     assert all("backend unavailable" in error for _path, error in failures)
     qtbot.waitUntil(lambda: manager._open_worker is None)
-
-
-def test_preflight_late_success_is_ignored_after_shutdown(manager, qtbot, monkeypatch):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_prepare(*_args, **_kwargs):
-        entered.set()
-        release.wait(2)
-        return True, "late"
-
-    monkeypatch.setattr("vibeocr.backend.env_manager.ensure_mineru_models", slow_prepare)
-    monkeypatch.setattr(manager, "_is_mineru_first_use", lambda _opts: True)
-    manager._inference_client = object()
-    run_ocr = MagicMock()
-    monkeypatch.setattr(manager, "_run_ocr", run_ocr)
-
-    assert manager.start_ocr([0], ocr_options=object())
-    qtbot.waitUntil(entered.is_set)
-    manager.request_shutdown()
-    release.set()
-    qtbot.waitUntil(lambda: manager._preflight_worker is None)
-
-    run_ocr.assert_not_called()
-    assert manager._pending_ocr_request is None
-
-
-def test_preflight_cancel_defers_business_terminal_until_native_finished(manager):
-    path = manager.active_session.file_path
-    worker = MagicMock()
-    worker.is_cancelled = True
-    manager._preflight_worker = worker
-    manager._preflight_generation = 11
-    manager._pending_ocr_request = (path, [0], object(), object(), False)
-    manager._ocr_running = True
-    manager._ocr_state = "preflight"
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, ok, fail: done.append((p, ok, fail)))
-
-    manager.cancel_ocr()
-
-    assert manager._ocr_running is True
-    assert manager.is_ocr_running is True
-    assert done == []
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._preflight_worker is None
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-    assert done == [(path, 0, 0)]
-    worker.deleteLater.assert_called_once_with()
 
 
 def test_pdf_shutdown_request_creates_session_close_workers_on_gui_owner(
@@ -668,10 +590,6 @@ def test_is_ocr_running_and_pdf_write_busy(manager):
     assert manager._pdf_write_busy() is True
 
     manager._ocr_worker = None
-    manager._preflight_worker = MagicMock()
-    assert manager.is_ocr_running is True
-
-    manager._preflight_worker = None
     manager._mutate_worker = MagicMock()
     assert manager._pdf_write_busy() is True
 
@@ -720,8 +638,14 @@ def test_ocr_result_to_dict_serializes_text_blocks(manager):
 
     # 空 bbox/polygon → None；preproc_angle 缺省 0
     block2 = SimpleNamespace(
-        text="", score=0.0, bbox=None, polygon=None,
-        page_idx=None, is_manually_edited=False, label=None, order=None,
+        text="",
+        score=0.0,
+        bbox=None,
+        polygon=None,
+        page_idx=None,
+        is_manually_edited=False,
+        label=None,
+        order=None,
     )
     data2 = manager._ocr_result_to_dict(
         SimpleNamespace(text_blocks=[block2], preproc_angle=None)
@@ -737,7 +661,7 @@ def test_path_for_session_id_hit_and_miss(manager):
 
 
 def test_get_ocr_batch_budget_default_and_override(manager):
-    from vibeocr.backend.core.batch_budget import BatchBudget
+    from vibeocr.classic.pyside.batch_budget import BatchBudget
 
     default = manager._get_ocr_batch_budget()
     assert isinstance(default, BatchBudget)
@@ -766,7 +690,7 @@ def test_get_pages_without_text_layer(manager):
     assert manager.get_pages_without_text_layer("unknown") == []
 
 
-def test_is_current_open_and_preview_and_preflight_predicates(manager):
+def test_is_current_open_and_preview_predicates(manager):
     worker_open = MagicMock()
     manager._open_worker = worker_open
     manager._open_generation = 0
@@ -796,15 +720,6 @@ def test_is_current_open_and_preview_and_preflight_predicates(manager):
     assert manager._is_current_preview(MagicMock(), gen) is False
     assert manager._is_current_preview(preview_worker, gen + 1) is False
     manager._preview_worker = None
-
-    # preflight 谓词：仅匹配 worker+generation
-    preflight_worker = MagicMock()
-    manager._preflight_worker = preflight_worker
-    manager._preflight_generation = 5
-    assert manager._is_current_preflight(preflight_worker, 5) is True
-    assert manager._is_current_preflight(preflight_worker, 4) is False
-    assert manager._is_current_preflight(MagicMock(), 5) is False
-    manager._preflight_worker = None
 
 
 def test_is_current_mutate_allow_cancelling_branches(manager):
@@ -911,9 +826,7 @@ def test_on_preview_failed_emits_when_current(manager):
     gen = manager._preview_generation
 
     failures: list[tuple[str, int, int, str]] = []
-    manager.preview_failed.connect(
-        lambda p, idx, g, e: failures.append((p, idx, g, e))
-    )
+    manager.preview_failed.connect(lambda p, idx, g, e: failures.append((p, idx, g, e)))
 
     manager._on_preview_failed("sid", 3, gen, "render error", worker)
 
@@ -926,9 +839,7 @@ def test_on_preview_failed_ignored_when_stale(manager):
     manager._preview_worker = worker
 
     failures: list = []
-    manager.preview_failed.connect(
-        lambda p, idx, g, e: failures.append((p, idx, g, e))
-    )
+    manager.preview_failed.connect(lambda p, idx, g, e: failures.append((p, idx, g, e)))
 
     # 过期 generation
     manager._on_preview_failed("sid", 3, manager._preview_generation + 99, "e", worker)
@@ -983,9 +894,13 @@ def test_on_deskew_progress_ignored_for_stale_worker(manager):
     # 非当前 worker 被丢弃
     manager._on_deskew_progress_signal("sid", 1, 2, worker=MagicMock(), task_id=1)
     # 不匹配的 task_id 被丢弃
-    manager._on_deskew_progress_signal("sid", 1, 2, worker=manager._mutate_worker, task_id=99)
+    manager._on_deskew_progress_signal(
+        "sid", 1, 2, worker=manager._mutate_worker, task_id=99
+    )
     # session_id 不匹配（无对应 file_path）被丢弃
-    manager._on_deskew_progress_signal("nope", 1, 2, worker=manager._mutate_worker, task_id=1)
+    manager._on_deskew_progress_signal(
+        "nope", 1, 2, worker=manager._mutate_worker, task_id=1
+    )
 
     assert progress == []
 
@@ -1079,8 +994,6 @@ def test_on_ocr_all_done_signal_ignores_stale_task_id(manager):
 
 
 def test_on_ocr_all_done_signal_emits_stats_and_done(manager):
-    from vibeocr.backend.models.pdf_session import PdfSession
-
     manager._task_generation = 8
     manager._ocr_running = True
     manager._ocr_state = "running"
@@ -1131,84 +1044,6 @@ def test_on_ocr_worker_finished_when_completed_state(manager):
     assert manager._ocr_worker is None
     assert manager._ocr_state == "completed"
     worker.deleteLater.assert_called_once_with()
-
-
-def test_on_preflight_progress_emits_status(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "preflight"
-
-    statuses: list[str] = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == ["[download] 50%"]
-
-
-def test_on_preflight_progress_ignored_when_not_preflight_state(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "running"  # 非 preflight
-
-    statuses: list = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == []
-
-
-def test_on_preflight_progress_ignored_when_shutting_down(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 2
-    manager._ocr_state = "preflight"
-    manager._shutting_down = True
-
-    statuses: list = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_progress("download", "50%", worker, 2)
-
-    assert statuses == []
-
-
-def test_on_preflight_completed_stores_result(manager):
-    worker = MagicMock()
-    worker.is_cancelled = False
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 3)
-
-    assert manager._preflight_result == (True, "ok")
-
-
-def test_on_preflight_completed_ignored_when_cancelled(manager):
-    worker = MagicMock()
-    worker.is_cancelled = True
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 3)
-
-    assert manager._preflight_result is None
-
-
-def test_on_preflight_completed_ignored_when_stale_generation(manager):
-    worker = MagicMock()
-    manager._preflight_worker = worker
-    manager._preflight_generation = 3
-    manager._ocr_state = "preflight"
-
-    manager._on_preflight_completed(True, "ok", worker, 99)
-
-    assert manager._preflight_result is None
 
 
 def test_on_export_done_and_failed_store_pending(manager):
@@ -1318,12 +1153,6 @@ def test_switch_session_branches(manager):
 
 def test_on_mutate_all_done_applies_diff_and_signals(manager):
     """_on_mutate_all_done: 成功应用 diff、转发 save/delete_layer 专用信号。"""
-    from vibeocr.backend.ipc.schemas import (
-        ModelDiff,
-        PdfDocumentMirror,
-        PdfPageInfoMirror,
-    )
-
     worker = MagicMock()
     worker._op = "save"
     worker._params = {"path": "/out.pdf", "revision": 0}
@@ -1349,7 +1178,9 @@ def test_on_mutate_all_done_applies_diff_and_signals(manager):
     manager.save_done.connect(saves.append)
     manager.mutate_done.connect(lambda p, r: mutate_done.append((p, r)))
 
-    manager._on_mutate_all_done("sid", diff, {"path": "/out.pdf"}, task_id=9, worker=worker)
+    manager._on_mutate_all_done(
+        "sid", diff, {"path": "/out.pdf"}, task_id=9, worker=worker
+    )
 
     assert manager._mutate_terminal_received is True
     assert saves == ["C:/fake.pdf"]
@@ -1359,13 +1190,40 @@ def test_on_mutate_all_done_applies_diff_and_signals(manager):
     assert mutate_done[0][1]["op"] == "save"
 
 
-def test_on_mutate_all_done_delete_layer_branch(manager):
-    from vibeocr.backend.ipc.schemas import (
-        ModelDiff,
-        PdfDocumentMirror,
-        PdfPageInfoMirror,
+def test_protocol_operation_extra_flows_from_worker_to_manager(manager):
+    response = PdfMutationResult.from_payload(
+        {
+            "schema_version": 2,
+            "instance_id": "runtime-1",
+            "diff": {},
+            "extra": {"corrected_pages": [1]},
+            "future_response_hint": "kept-outside-operation-extra",
+        }
+    )
+    client = MagicMock()
+    client.rotate.return_value = response
+    worker = PdfIpcMutateWorker(client, "sid", "rotate", {"pages": [1], "angle": 90})
+    manager._mutate_worker = worker
+    manager._mutate_task_id = 9
+    manager._task_generation = 9
+    manager._mutate_state = "running"
+    results: list[dict[str, object]] = []
+    manager.mutate_done.connect(lambda _path, result: results.append(result))
+    worker.all_done.connect(
+        lambda session_id, diff, extra: manager._on_mutate_all_done(
+            session_id, diff, extra, task_id=9, worker=worker
+        )
     )
 
+    worker.run()
+
+    assert results[0]["extra"] == {"corrected_pages": [1]}
+    assert "future_response_hint" not in results[0]["extra"]
+    assert response.extra == {"future_response_hint": "kept-outside-operation-extra"}
+    manager._mutate_worker = None
+
+
+def test_on_mutate_all_done_delete_layer_branch(manager):
     worker = MagicMock()
     worker._op = "delete_text_layers"
     worker._params = {"pages": [0]}
@@ -1381,7 +1239,9 @@ def test_on_mutate_all_done_delete_layer_branch(manager):
     diff = ModelDiff(full_model=mirror)
 
     delete_layer_done: list[tuple[str, list]] = []
-    manager.delete_layer_done.connect(lambda p, pages: delete_layer_done.append((p, pages)))
+    manager.delete_layer_done.connect(
+        lambda p, pages: delete_layer_done.append((p, pages))
+    )
 
     manager._on_mutate_all_done(
         "sid", diff, {"residual_pages": [1]}, task_id=9, worker=worker
@@ -1440,12 +1300,6 @@ def test_on_mutate_worker_finished_ignored_for_foreign_worker(manager):
 
 
 def test_on_deskew_all_done_applies_diff_and_emits(manager):
-    from vibeocr.backend.ipc.schemas import (
-        ModelDiff,
-        PdfDocumentMirror,
-        PdfPageInfoMirror,
-    )
-
     worker = MagicMock()
     manager._mutate_worker = worker
     manager._mutate_task_id = 1
@@ -1527,8 +1381,14 @@ def test_save_async_and_delete_text_layers_and_rotate_wrappers_start_mutate(
     ops = [entry[0] for entry in started]
     params = started
     assert ops == [
-        "save", "delete_text_layers", "rotate", "delete_pages",
-        "insert_blank", "insert_from", "move_page", "reorder",
+        "save",
+        "delete_text_layers",
+        "rotate",
+        "delete_pages",
+        "insert_blank",
+        "insert_from",
+        "move_page",
+        "reorder",
     ]
     # 抽查几个参数
     assert params[0][1] == {"path": "/out.pdf", "pdf_settings": None}
@@ -1580,12 +1440,10 @@ def test_update_page_block_text_async_increments_revision(manager, monkeypatch):
 
 def test_apply_page_loaded_updates_session_model(manager):
     """_apply_page_loaded: dict mirror → 更新对应页 PageInfo。"""
-    from vibeocr.backend.ipc.schemas import PdfPageInfoMirror
-
     session = manager.active_session
     page_mirror = PdfPageInfoMirror(
         page_index=0, rotation=90, has_text_layer=True
-    ).model_dump(mode="json")
+    ).to_payload()
 
     assert 0 not in session.loaded_pages
     manager._apply_page_loaded(session, 0, page_mirror)
@@ -1603,21 +1461,15 @@ def test_apply_page_loaded_ignores_non_dict(manager):
 
 
 def test_apply_page_loaded_ignores_out_of_range_index(manager):
-    from vibeocr.backend.ipc.schemas import PdfPageInfoMirror
-
     session = manager.active_session
-    page_mirror = PdfPageInfoMirror(page_index=99).model_dump(mode="json")
+    page_mirror = PdfPageInfoMirror(page_index=99).to_payload()
 
     manager._apply_page_loaded(session, 99, page_mirror)
     assert 99 not in session.loaded_pages
 
 
 def test_on_page_loaded_emits_signals(manager):
-    from vibeocr.backend.ipc.schemas import PdfPageInfoMirror
-
-    page_mirror = PdfPageInfoMirror(page_index=0, has_text_layer=True).model_dump(
-        mode="json"
-    )
+    page_mirror = PdfPageInfoMirror(page_index=0, has_text_layer=True).to_payload()
     loaded: list[tuple[str, int]] = []
     progress: list[tuple[str, int, int]] = []
     manager.page_loaded.connect(lambda p, idx: loaded.append((p, idx)))
@@ -1639,8 +1491,6 @@ def test_on_page_loaded_ignored_when_session_missing(manager):
 
 def test_on_doc_opened_creates_session_and_sets_active(manager):
     """_on_doc_opened: 创建占位 session + emit session_added/active_changed。"""
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror, PdfPageInfoMirror
-
     # 清掉活跃会话，使新会话成为首个 active
     manager._sessions.clear()
     manager._active_path = None
@@ -1667,8 +1517,6 @@ def test_on_doc_opened_creates_session_and_sets_active(manager):
 
 
 def test_on_doc_opened_does_not_change_active_when_one_exists(manager):
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror, PdfPageInfoMirror
-
     full_model = PdfDocumentMirror(
         file_path="C:/new.pdf", pages=[PdfPageInfoMirror(page_index=0)]
     )
@@ -1682,21 +1530,23 @@ def test_on_doc_opened_does_not_change_active_when_one_exists(manager):
 
 def test_on_preview_completed_updates_text_layers_and_emits(manager):
     """_on_preview_completed: layers 非 None → 更新 page.text_layers。"""
-    from vibeocr.backend.ipc.schemas import TextLayerInfoMirror
-
     worker = MagicMock()
     manager._preview_worker = worker
     gen = manager._preview_generation
 
     ready: list[tuple[str, int, int, object]] = []
-    manager.preview_ready.connect(
-        lambda p, idx, g, png: ready.append((p, idx, g, png))
-    )
+    manager.preview_ready.connect(lambda p, idx, g, png: ready.append((p, idx, g, png)))
 
     png_bytes = b"\x89PNG"
-    layers = [TextLayerInfoMirror(
-        index=0, text_preview="hello", char_count=5, bbox=(0.0, 0.0, 1.0, 1.0), color_id=1
-    )]
+    layers = [
+        TextLayerInfoMirror(
+            index=0,
+            text_preview="hello",
+            char_count=5,
+            bbox=(0.0, 0.0, 1.0, 1.0),
+            color_id=1,
+        )
+    ]
 
     manager._on_preview_completed("sid", 0, gen, png_bytes, layers, worker)
 
@@ -1728,7 +1578,9 @@ def test_on_preview_completed_ignored_when_stale(manager):
 
     # 过期 generation + 过期 worker
     manager._on_preview_completed("sid", 0, 99, b"png", None, worker)
-    manager._on_preview_completed("sid", 0, manager._preview_generation, b"png", None, MagicMock())
+    manager._on_preview_completed(
+        "sid", 0, manager._preview_generation, b"png", None, MagicMock()
+    )
 
     assert ready == []
 
@@ -1757,7 +1609,9 @@ def test_export_all_modified_skips_unmodified_and_handles_cancel(manager, tmp_pa
     manager._sessions[second_path] = second
 
     exported: list[str] = []
-    manager._client.save.side_effect = lambda sid, path, pdf_settings=None: exported.append(path)
+    manager._client.save.side_effect = lambda sid, path, pdf_settings=None: (
+        exported.append(path)
+    )
 
     result = manager.export_all_modified(str(tmp_path))
 
@@ -1945,7 +1799,8 @@ def test_request_backend_cancel_async_starts_cancel_worker(manager, monkeypatch)
             return True
 
     monkeypatch.setattr(
-        "vibeocr.classic.pyside.pdf_session_manager.PdfIpcCancelWorker", FakeCancelWorker
+        "vibeocr.classic.pyside.pdf_session_manager.PdfIpcCancelWorker",
+        FakeCancelWorker,
     )
 
     manager._request_backend_cancel_async("sid")
@@ -1977,9 +1832,7 @@ def test_auto_deskew_async_rejects_when_no_session(manager):
 
 def test_auto_deskew_async_rejects_when_not_ocr_ready(manager, monkeypatch):
     # is_ocr_ready 是 property；monkeypatch 自动还原
-    monkeypatch.setattr(
-        type(manager), "is_ocr_ready", property(lambda self: False)
-    )
+    monkeypatch.setattr(type(manager), "is_ocr_ready", property(lambda self: False))
     assert manager.auto_deskew_async([0]) is False
 
 
@@ -2037,165 +1890,6 @@ def test_export_all_async_emits_empty_when_no_modified(manager):
 
 
 # =============================================================================
-# _on_preflight_finished 各分支（cancelled / 无 request / 失败 / 成功切走 / 成功启动）
-# =============================================================================
-
-
-def _setup_preflight(manager):
-    """构造一个匹配当前 preflight generation 的 worker + 状态。"""
-    worker = MagicMock()
-    worker.is_cancelled = False
-    manager._preflight_worker = worker
-    manager._preflight_generation = 11
-    manager._ocr_running = True
-    manager._ocr_state = "preflight"
-    manager._pending_ocr_request = (
-        "C:/fake.pdf", [0], object(), object(), False
-    )
-    manager._preflight_result = (True, "ok")
-    manager._preflight_cancel_path = None
-    return worker
-
-
-def test_on_preflight_finished_stale_generation_deleteLater(manager):
-    worker = _setup_preflight(manager)
-    # 过期 generation → deleteLater 返回
-    manager._on_preflight_finished(worker, 99)
-    worker.deleteLater.assert_called_once_with()
-    assert manager._preflight_worker is worker  # 未清理（非当前）
-
-
-def test_on_preflight_finished_worker_cancelled(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = "C:/fake.pdf"
-
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-    assert manager._preflight_worker is None
-    assert done == [("C:/fake.pdf", 0, 0)]
-
-
-def test_on_preflight_finished_cancelled_with_path_but_shutting_down(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = "C:/fake.pdf"
-    manager._shutting_down = True
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    # shutting_down 时不发 ocr_done
-    assert done == []
-    assert manager._ocr_state == "cancelled"
-
-
-def test_on_preflight_finished_cancelled_no_path(manager):
-    worker = _setup_preflight(manager)
-    worker.is_cancelled = True
-    manager._preflight_cancel_path = None  # 无 cancel_path
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert done == []  # 无 path 不发
-
-
-def test_on_preflight_finished_no_request(manager):
-    worker = _setup_preflight(manager)
-    manager._pending_ocr_request = None
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_running is False
-    assert manager._ocr_state == "cancelled"
-
-
-def test_on_preflight_finished_failed_result(manager):
-    worker = _setup_preflight(manager)
-    manager._preflight_result = (False, "download error")
-
-    done: list[tuple[str, int, int]] = []
-    statuses: list[str] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert manager._ocr_state == "completed"
-    assert done == [("C:/fake.pdf", 0, 1)]
-    assert any("download error" in s for s in statuses)
-
-
-def test_on_preflight_finished_none_result(manager):
-    worker = _setup_preflight(manager)
-    manager._preflight_result = None
-
-    statuses: list[str] = []
-    done: list = []
-    manager.mineru_models_status.connect(statuses.append)
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert done == [("C:/fake.pdf", 0, 1)]
-    assert any("未返回结果" in s for s in statuses)
-
-
-def test_on_preflight_finished_success_active_changed(manager):
-    """成功但 active_path 已切走 → cancelled + ocr_done(0,0)。"""
-    worker = _setup_preflight(manager)
-    # 把 request 的 path 设成与当前 active 不同
-    manager._pending_ocr_request = (
-        "C:/other.pdf", [0], object(), object(), False
-    )
-
-    done: list[tuple[str, int, int]] = []
-    manager.ocr_done.connect(lambda p, s, f: done.append((p, s, f)))
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_state == "cancelled"
-    assert done == [("C:/other.pdf", 0, 0)]
-
-
-def test_on_preflight_finished_success_starts_ocr(manager, monkeypatch):
-    """成功且 active 匹配 → 调 start_ocr。"""
-    worker = _setup_preflight(manager)
-    monkeypatch.setattr(manager, "start_ocr", lambda *args, **kw: True)
-
-    statuses: list[str] = []
-    manager.mineru_models_status.connect(statuses.append)
-
-    manager._on_preflight_finished(worker, 11)
-
-    assert any("就绪" in s for s in statuses)
-    assert manager._ocr_running is False
-
-
-def test_on_preflight_finished_success_start_ocr_fails(manager, monkeypatch):
-    """start_ocr 返回 False → cancelled + ocr_done(0,0)。"""
-    worker = _setup_preflight(manager)
-    monkeypatch.setattr(manager, "start_ocr", lambda *args, **kw: False)
-
-    done: list = []
-    manager.ocr_done.connect(lambda *args: done.append(args))
-
-    manager._on_preflight_finished(worker, 11)
-    assert manager._ocr_state == "cancelled"
-    assert done == [("C:/fake.pdf", 0, 0)]
-
-
-def test_is_mineru_first_use_none_options(manager):
-    """ocr_options 为 None → False。"""
-    assert manager._is_mineru_first_use(None) is False
-
-
-# =============================================================================
 # _run_deskew 早退分支（session 不匹配 / 空页列表）
 # =============================================================================
 
@@ -2237,7 +1931,6 @@ def test_run_deskew_happy_path_rotates_and_emits(manager, monkeypatch):
     ]
     monkeypatch.setattr(manager, "_recognize_images_via_job", lambda *a, **k: results)
 
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror
     manager._client.get_model.return_value = PdfDocumentMirror(
         file_path="C:/fake.pdf", pages=[]
     )
@@ -2275,7 +1968,6 @@ def test_run_deskew_render_failure_marks_page_failed(manager, monkeypatch):
     monkeypatch.setattr(
         manager, "_recognize_images_via_job", lambda *a, **k: recognized.extend(a) or []
     )
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror
     manager._client.get_model.return_value = PdfDocumentMirror(
         file_path="C:/fake.pdf", pages=[]
     )
@@ -2303,7 +1995,6 @@ def test_run_deskew_recognize_failure_marks_all_failed(manager, monkeypatch):
         raise RuntimeError("recognize failed")
 
     monkeypatch.setattr(manager, "_recognize_images_via_job", boom)
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror
     manager._client.get_model.return_value = PdfDocumentMirror(
         file_path="C:/fake.pdf", pages=[]
     )
@@ -2333,7 +2024,6 @@ def test_run_deskew_rotate_failure_emits_not_corrected(manager, monkeypatch):
         lambda *a, **k: [SimpleNamespace(preproc_angle=90)],
     )
     manager._client.rotate.side_effect = RuntimeError("rotate broke")
-    from vibeocr.backend.ipc.schemas import PdfDocumentMirror
     manager._client.get_model.return_value = PdfDocumentMirror(
         file_path="C:/fake.pdf", pages=[]
     )
@@ -2410,9 +2100,7 @@ def test_run_ocr_happy_path_writes_layer_and_emits(manager, monkeypatch):
 
     覆盖主循环、写层成功、sidecar mark_pages_saved/mark_completed、终态 all_done。
     """
-    from types import SimpleNamespace
-
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     session = manager.active_session
     runner = MagicMock()
@@ -2429,13 +2117,24 @@ def test_run_ocr_happy_path_writes_layer_and_emits(manager, monkeypatch):
     )
 
     # 写层返回 saved=True（触发 sidecar mark_pages_saved + mark_completed）
-    manager._client.add_text_layer_batch.return_value = SimpleNamespace(
-        diff=None, extra={"saved": True}
+    manager._client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+        {
+            "schema_version": 2,
+            "instance_id": "runtime-1",
+            "diff": {},
+            "extra": {"saved": True},
+        }
     )
 
     # sidecar 文件系统操作 → monkeypatch 成 no-op
-    monkeypatch.setattr("vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_pages_saved", lambda *a, **k: None)
-    monkeypatch.setattr("vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_completed", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_pages_saved",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_completed",
+        lambda *a, **k: None,
+    )
 
     page_done_emits: list = []
     runner.page_done.emit.side_effect = lambda *a: page_done_emits.append(a)
@@ -2462,7 +2161,7 @@ def test_run_ocr_empty_result_page_counted_as_fail(manager, monkeypatch):
 
     注：空结果页只更新 ocr_stats(skipped)，不计入 all_done 的 success/fail 计数。
     """
-    from vibeocr.backend.models.ocr_result import OCRResult
+    from vibeocr.classic.recognition_result import OCRResult
 
     session = manager.active_session
     runner = MagicMock()
@@ -2519,9 +2218,7 @@ def test_run_ocr_render_failure_marks_page_failed(manager, monkeypatch):
 
 def test_run_ocr_write_layer_failure_triggers_final_save(manager, monkeypatch):
     """写层失败(saved=False) + 有 success → 末尾全量 save。"""
-    from types import SimpleNamespace
-
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     session = manager.active_session
     runner = MagicMock()
@@ -2531,15 +2228,31 @@ def test_run_ocr_write_layer_failure_triggers_final_save(manager, monkeypatch):
 
     block = TextBlock(text="hi", score=0.9, bbox=(0.0, 0.0, 1.0, 1.0))
     monkeypatch.setattr(
-        manager, "_recognize_images_via_job", lambda *a, **k: [OCRResult(text_blocks=[block])]
+        manager,
+        "_recognize_images_via_job",
+        lambda *a, **k: [OCRResult(text_blocks=[block])],
     )
     # 写层返回 saved=False（触发末尾 save）
-    manager._client.add_text_layer_batch.return_value = SimpleNamespace(
-        extra={"saved": False}
+    manager._client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+        {
+            "schema_version": 2,
+            "instance_id": "runtime-1",
+            "diff": {},
+            "extra": {"saved": False},
+        }
     )
-    monkeypatch.setattr("vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_pages_saved", lambda *a, **k: None)
-    monkeypatch.setattr("vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.refresh_baseline", lambda *a, **k: None)
-    monkeypatch.setattr("vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_completed", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_pages_saved",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.refresh_baseline",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.pyside.pdf_session_manager.ocr_sidecar.mark_completed",
+        lambda *a, **k: None,
+    )
 
     manager._run_ocr(runner, session.session_id, [0], None, {}, False)
 

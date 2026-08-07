@@ -1,20 +1,15 @@
 import pytest
 
-import vibeocr.backend.tables.html_adapter as html_adapter
-from vibeocr.backend.tables.blocks import (
-    canonicalize_table_block,
-    table_model_from_block,
-    validate_table_blocks,
-)
-from vibeocr.backend.tables.html_adapter import (
+import vibeocr.classic.table_model as html_adapter
+from vibeocr.classic.table_model import (
     parse_table_source_layout,
+    table_model_from_block,
     table_model_from_html,
-    table_model_to_html,
-)
-from vibeocr.backend.tables.projections import (
     table_model_to_grid,
+    table_model_to_html,
     table_model_to_markdown,
     table_model_to_tsv,
+    validate_table_blocks,
 )
 from vibeocr.runtime_contracts.contracts.tables import TableCellV1, TableModelV1
 
@@ -49,7 +44,7 @@ def test_html_adapter_preserves_mixed_row_and_column_spans():
     assert table_model_from_html(table_model_to_html(table), table_id="mixed") == table
 
 
-def test_legacy_table_block_is_upgraded_without_losing_source_html():
+def test_legacy_table_block_is_adapted_without_mutating_source_html():
     source_html = (
         '<table><tr><td rowspan="2">A</td><td>B</td></tr><tr><td>C</td></tr></table>'
     )
@@ -59,15 +54,14 @@ def test_legacy_table_block_is_upgraded_without_losing_source_html():
         "bbox": [0, 0, 100, 50],
     }
 
-    upgraded = canonicalize_table_block(
+    table = table_model_from_block(
         block,
-        table_id="legacy-table",
-        pipeline="MinerU",
+        fallback_table_id="legacy-table",
     )
 
-    assert upgraded["source"]["source_html"] == source_html
-    assert upgraded["table"]["schema_version"] == 1
-    assert table_model_from_block(upgraded).merged_ranges() == ((0, 0, 1, 0),)
+    assert table.table_id == "legacy-table"
+    assert table.merged_ranges() == ((0, 0, 1, 0),)
+    assert block["table_body"] == source_html
 
 
 def test_table_grid_projection_keeps_merged_positions_empty():
@@ -164,26 +158,22 @@ def test_canonical_html_roundtrip_preserves_whitespace_empty_rows_and_cell_ids()
     )
 
 
-def test_canonical_first_block_is_not_mislabeled_as_legacy():
+def test_canonical_block_is_preferred_over_stale_legacy_html():
     table = TableModelV1(
         table_id="canonical",
         row_count=1,
         column_count=1,
         cells=(TableCellV1(cell_id="cell", row=0, column=0, text="fresh"),),
     )
-    upgraded = canonicalize_table_block(
+    adapted = table_model_from_block(
         {
             "type": "table",
             "table": table.to_payload(),
             "table_body": "<table><tr><td>stale</td></tr></table>",
-        },
-        table_id="canonical",
-        pipeline="MINERU",
+        }
     )
 
-    assert upgraded["table"]["cells"][0]["text"] == "fresh"
-    assert upgraded["table"]["provenance"]["provider_schema"] == "canonical-v1"
-    assert upgraded["table"]["provenance"]["warnings"] == []
+    assert adapted.cells[0].text == "fresh"
 
 
 def test_display_mode_can_fallback_from_unknown_canonical_to_legacy_html():
@@ -267,37 +257,6 @@ class TestBlocksHelpers:
         with pytest.raises(ValueError, match="neither canonical table nor legacy HTML"):
             table_model_from_block({"type": "table", "table_body": "   "})
 
-    def test_canonicalize_renames_table_id_when_mismatch(self):
-        """canonicalize 把 table_id 强制对齐到传入的 table_id（line 54 replace 分支）。"""
-        block = {
-            "type": "table",
-            "table_body": "<table><tr><td>A</td></tr></table>",
-            "table_id": "original-id",
-        }
-        result = canonicalize_table_block(block, table_id="forced-id", pipeline="MinerU")
-        assert result["table"]["table_id"] == "forced-id"
-        assert result["block_id"] == "forced-id"
-
-    def test_canonicalize_adds_legacy_provenance_when_absent(self):
-        block = {"type": "table", "table_body": "<table><tr><td>A</td></tr></table>"}
-        result = canonicalize_table_block(block, table_id="t1", pipeline="MinerU")
-        prov = result["table"]["provenance"]
-        assert prov["pipeline"] == "MinerU"
-        assert prov["provider_schema"] == "legacy-html"
-        assert "legacy_html_adapted" in prov["warnings"]
-
-    def test_canonicalize_marks_canonical_provider_when_table_present(self):
-        canonical = TableModelV1(
-            table_id="c1",
-            row_count=1,
-            column_count=1,
-            cells=(TableCellV1(cell_id="a", row=0, column=0, text="X"),),
-        ).to_payload()
-        block = {"type": "table", "table": canonical}
-        result = canonicalize_table_block(block, table_id="c1", pipeline="OCR")
-        prov = result["table"]["provenance"]
-        assert prov["provider_schema"] == "canonical-v1"
-
     def test_validate_table_blocks_ignores_non_sequence(self):
         """非 list/tuple 输入直接返回，不报错。"""
         validate_table_blocks(None)  # no raise
@@ -342,14 +301,14 @@ class TestHtmlAdapterEdgeCases:
 
     def test_row_count_exceeds_limit_raises(self):
         """行数超过 MAX_TABLE_DIMENSION 时 raise（line 127）。"""
-        from vibeocr.backend.tables.html_adapter import MAX_TABLE_DIMENSION
+        from vibeocr.classic.table_model import MAX_TABLE_DIMENSION
         rows = "<tr><td>x</td></tr>" * (MAX_TABLE_DIMENSION + 1)
         with pytest.raises(ValueError, match="row count"):
             table_model_from_html(f"<table>{rows}</table>", table_id="too-many-rows")
 
     def test_cell_coverage_exceeds_limit_raises(self):
         """单元格覆盖总数超 MAX_TABLE_COVERAGE 时 raise（line 176）。"""
-        from vibeocr.backend.tables.html_adapter import MAX_TABLE_COVERAGE
+        from vibeocr.classic.table_model import MAX_TABLE_COVERAGE
         huge = MAX_TABLE_COVERAGE + 1
         with pytest.raises(ValueError):
             table_model_from_html(

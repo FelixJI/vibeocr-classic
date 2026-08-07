@@ -40,12 +40,14 @@ class SupervisorStartTask(QRunnable):
         python_exe: str | Path | None = None,
         *,
         installer_client: RuntimeInstallerClient | None = None,
+        required_capabilities: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         if python_exe is None and installer_client is None:
             raise ValueError("python_exe or installer_client is required")
         self._python_exe = str(python_exe) if python_exe is not None else None
         self._installer_client = installer_client
+        self.required_capabilities = required_capabilities
         self._cancelled = threading.Event()
         self.signals = SubprocessStartSignals()
         self.supervisor_proc: Any = None
@@ -68,6 +70,7 @@ class SupervisorStartTask(QRunnable):
                 launch = self._installer_client.ensure(
                     progress=self.signals.progress.emit,
                     cancel_event=self._cancelled,
+                    required_capabilities=self.required_capabilities,
                 )
             proc = SupervisorProcess.launch(
                 python_exe=(
@@ -147,11 +150,23 @@ class SubprocessManager(QObject):
             return
 
         self._shutdown_requested = False
+        try:
+            required_capabilities = self._installer_client.required_capabilities()
+        except Exception:
+            logger.exception("[SubprocessManager] 产品 capability 锁读取失败")
+            self.service_ready.emit(False)
+            return
         test_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
         if os.environ.get("VIBEOCR_SELF_TEST_SMOKE") == "t6" and test_python:
-            task = SupervisorStartTask(test_python)
+            task = SupervisorStartTask(
+                test_python,
+                required_capabilities=required_capabilities,
+            )
         else:
-            task = SupervisorStartTask(installer_client=self._installer_client)
+            task = SupervisorStartTask(
+                installer_client=self._installer_client,
+                required_capabilities=required_capabilities,
+            )
         self._start_task = task
         task.signals.started.connect(self._on_started)
         task.signals.progress.connect(self.progress_update.emit)
@@ -167,7 +182,10 @@ class SubprocessManager(QObject):
         if success:
             process = task.supervisor_proc
             try:
-                self._install_runtime_adapter(process)
+                self._install_runtime_adapter(
+                    process,
+                    required_capabilities=task.required_capabilities,
+                )
             except Exception:
                 logger.exception("[SubprocessManager] Supervisor 适配器初始化失败")
                 success = False
@@ -190,7 +208,11 @@ class SubprocessManager(QObject):
             logger.warning("[SubprocessManager] Supervisor 启动失败")
 
     @staticmethod
-    def _install_runtime_adapter(proc: Any) -> None:
+    def _install_runtime_adapter(
+        proc: Any,
+        *,
+        required_capabilities: tuple[str, ...] = (),
+    ) -> None:
         """在 GUI 线程创建并安装 Qt adapter。
 
         Supervisor 的阻塞启动仍在 QThreadPool；QObject 必须等 ready signal
@@ -198,47 +220,24 @@ class SubprocessManager(QObject):
         """
         if proc is None:
             raise RuntimeError("Supervisor ready 但进程句柄为空")
+        ready_capabilities = getattr(proc.ready, "capabilities", ())
+        if not isinstance(ready_capabilities, tuple):
+            ready_capabilities = tuple(ready_capabilities)
+        missing = sorted(set(required_capabilities).difference(ready_capabilities))
+        if missing:
+            raise RuntimeError(
+                "Supervisor ready 缺少产品必需 capability: " + ", ".join(missing)
+            )
 
-        from vibeocr.classic.pdf_client import SyncPdfSupervisorClient
         from vibeocr.classic.pyside.supervisor_adapter import (
             SupervisorClientAdapter,
             set_supervisor_adapter,
         )
-        from vibeocr.runtime_client.client import SupervisorClient
-        from vibeocr.runtime_client.client import RuntimeHttpClient
-        from vibeocr.runtime_client.sync_client import SyncSupervisorClient
 
-        def pdf_factory() -> SyncPdfSupervisorClient:
-            return SyncPdfSupervisorClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                instance_id=proc.ready.instance_id,
-            )
-
-        def inference_factory() -> SyncSupervisorClient:
-            return SyncSupervisorClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                instance_id=proc.ready.instance_id,
-            )
-
-        def runtime_status_factory() -> RuntimeHttpClient:
-            return RuntimeHttpClient(
-                base_url=proc.base_url,
-                session_token=proc.session_token,
-                timeout=10.0,
-            )
-
-        client = SupervisorClient(
+        adapter = SupervisorClientAdapter.from_runtime_endpoint(
             base_url=proc.base_url,
             session_token=proc.session_token,
             instance_id=proc.ready.instance_id,
-        )
-        adapter = SupervisorClientAdapter(
-            client_factory=lambda: client,
-            pdf_sync_client_factory=pdf_factory,
-            inference_sync_client_factory=inference_factory,
-            runtime_status_client_factory=runtime_status_factory,
         )
         set_supervisor_adapter(adapter)
         adapter.start()

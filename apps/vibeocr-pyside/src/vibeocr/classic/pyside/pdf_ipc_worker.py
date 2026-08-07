@@ -21,44 +21,6 @@ from PySide6.QtGui import QImage
 logger = logging.getLogger(__name__)
 
 
-class MinerUPreflightWorker(QThread):
-    """在后台准备 MinerU 模型；取消后不再发布进度或成功结果。"""
-
-    progress = Signal(str, str)
-    completed = Signal(bool, str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._cancelled = False
-
-    def cancel(self) -> None:
-        self._cancelled = True
-        self.requestInterruption()
-
-    @property
-    def is_cancelled(self) -> bool:
-        return self._cancelled
-
-    def run(self) -> None:
-        from vibeocr.backend.env_manager import ensure_mineru_models, get_project_root
-
-        def report(stage: str, message: str) -> None:
-            if not self._cancelled:
-                self.progress.emit(stage, message)
-
-        try:
-            ok, message = ensure_mineru_models(
-                get_project_root(), progress_callback=report
-            )
-        except Exception as exc:
-            ok, message = False, str(exc)
-        # cancel() 只能协作式中断底层下载；若调用已越过取消检查点，run()
-        # 仍可能自然返回。取消后的业务结果必须丢弃，最终状态由原生
-        # QThread.finished 统一发布，避免 UI 在 worker 尚存活时解除 busy。
-        if not self._cancelled:
-            self.completed.emit(bool(ok), str(message))
-
-
 class PdfIpcPreviewWorker(QThread):
     """后台渲染预览，并按需获取文字层详情。"""
 
@@ -279,8 +241,8 @@ class PdfIpcOpenWorker(QThread):
                             self.load_progress.emit(path, ev.current, ev.total)
                         if ev.message == "done":
                             break
-                    cancelled_session_id = (
-                        self._complete_load_or_keep_cancel_ownership(path)
+                    cancelled_session_id = self._complete_load_or_keep_cancel_ownership(
+                        path
                     )
                     if cancelled_session_id is not None:
                         # doc_opened 可能已被 GUI 接纳；取消的半加载会话不能继续
@@ -289,9 +251,7 @@ class PdfIpcOpenWorker(QThread):
                         try:
                             self._client.close_session(cancelled_session_id)
                         except Exception:
-                            logger.debug(
-                                "[ipc-open] 回收半加载会话失败", exc_info=True
-                            )
+                            logger.debug("[ipc-open] 回收半加载会话失败", exc_info=True)
                         break
                 except Exception as e:
                     logger.error("[ipc-open] 打开 %s 失败: %s", path, e)
@@ -365,25 +325,38 @@ class PdfIpcMutateWorker(QThread):
             if self._op == "delete_text_layers":
                 # 流式:迭代 ProgressEvent
                 pages = self._params.get("pages", [])
-                for ev in self._client.delete_text_layers_stream(self._session_id, pages):
+                for ev in self._client.delete_text_layers_stream(
+                    self._session_id, pages
+                ):
                     if self._cancelled:
                         break
                     if ev.page_index is not None:
-                        self.page_done.emit(self._session_id, ev.page_index, ev.page_payload)
+                        self.page_done.emit(
+                            self._session_id, ev.page_index, ev.page_payload
+                        )
                     if ev.total > 0:
                         self.progress.emit(self._session_id, ev.current, ev.total)
                 # 流结束后取一次 model 拿 diff(删除文字层改变 has_text_layer)
                 # 简化:用 get_model 构造 full diff
-                from vibeocr.backend.ipc.schemas import ModelDiff
+                from vibeocr.runtime_contracts.pdf import PdfModelDiff
+
                 full_model = self._client.get_model(self._session_id)
                 extra = {"residual_pages": []}
-                self.all_done.emit(self._session_id, ModelDiff(full_model=full_model), extra)
+                self.all_done.emit(
+                    self._session_id,
+                    PdfModelDiff(full_model=full_model),
+                    extra,
+                )
                 return
 
             # 非流式:单次调用
             resp = self._call_op()
             diff = getattr(resp, "diff", None)
-            extra = getattr(resp, "extra", None)
+            if hasattr(resp, "operation_extra"):
+                extra = resp.operation_extra
+            else:
+                # Transitional fake/legacy adapters used ``extra`` directly.
+                extra = getattr(resp, "extra", None)
             # 保存的 path 字段
             if hasattr(resp, "path"):
                 extra = {"path": resp.path}
@@ -401,7 +374,9 @@ class PdfIpcMutateWorker(QThread):
         if self._op == "delete_pages":
             return c.delete_pages(sid, p["pages"])
         if self._op == "insert_blank":
-            return c.insert_blank(sid, p["after_index"], p.get("width", 612.0), p.get("height", 792.0))
+            return c.insert_blank(
+                sid, p["after_index"], p.get("width", 612.0), p.get("height", 792.0)
+            )
         if self._op == "insert_from":
             return c.insert_from(sid, p["source_path"], p["after_index"])
         if self._op == "move_page":
@@ -411,9 +386,21 @@ class PdfIpcMutateWorker(QThread):
         if self._op == "save":
             return c.save(sid, p.get("path"), p.get("pdf_settings"))
         if self._op == "add_text_layer":
-            return c.add_text_layer(sid, p["page"], p["ocr_result"], p.get("pdf_settings"), p.get("overwrite", False))
+            return c.add_text_layer(
+                sid,
+                p["page"],
+                p["ocr_result"],
+                p.get("pdf_settings"),
+                p.get("overwrite", False),
+            )
         if self._op == "rewrite_text_layer":
-            return c.rewrite_text_layer(sid, p["page"], p["text_blocks"], p.get("preproc_angle", 0), p.get("pdf_settings"))
+            return c.rewrite_text_layer(
+                sid,
+                p["page"],
+                p["text_blocks"],
+                p.get("preproc_angle", 0),
+                p.get("pdf_settings"),
+            )
         if self._op == "update_block_text":
             return c.update_block_text(sid, p["page"], p["block_index"], p["new_text"])
         raise ValueError(f"未知 op: {self._op}")

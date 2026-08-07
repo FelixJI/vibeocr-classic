@@ -12,7 +12,7 @@
 import pytest
 from PySide6.QtWidgets import QComboBox
 
-from vibeocr.backend.core.pipelines import OCRPipeline
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.utils.ocr_preferences import OCRPreferences
 from vibeocr.classic.widgets.screenshot_options_widget import ScreenshotOptionsWidget
 
@@ -27,14 +27,8 @@ _PIPELINES_WITH_PREPROCESS = {
 
 
 @pytest.fixture
-def widget(qtbot, tmp_path, monkeypatch):
-    """创建组件，并初始化 OCRPreferences（用 tmp_path 隔离）。
-
-    强制 GPU 缓存未就绪，避免构造时自动门控干扰断言。
-    """
-    import vibeocr.backend.env_manager as em
-
-    monkeypatch.setattr(em, "_runtime_gpu_capability_cache", None)
+def widget(qtbot, tmp_path):
+    """创建组件，并初始化 OCRPreferences（用 tmp_path 隔离）。"""
     OCRPreferences.reset_instance()
     OCRPreferences.instance(tmp_path)
     w = ScreenshotOptionsWidget()
@@ -67,9 +61,9 @@ class TestGroupStructure:
             OCRPipeline.TABLE_RECOGNITION,
             OCRPipeline.FORMULA_RECOGNITION,
         ):
-            assert (
-                "use_textline_orientation" not in widget._groups[pipeline].checks
-            ), f"{pipeline} 不支持文本行方向"
+            assert "use_textline_orientation" not in widget._groups[pipeline].checks, (
+                f"{pipeline} 不支持文本行方向"
+            )
 
 
 class TestPersistence:
@@ -80,9 +74,7 @@ class TestPersistence:
         cb.setChecked(False)
 
         prefs = OCRPreferences.instance()
-        stored = prefs.get_pipeline_options(
-            "screenshot", OCRPipeline.TABLE_RECOGNITION
-        )
+        stored = prefs.get_pipeline_options("screenshot", OCRPipeline.TABLE_RECOGNITION)
         assert stored.use_doc_orientation_classify is False
 
     def test_persisted_pipeline_field_matches_group(self, widget):
@@ -113,12 +105,10 @@ class TestPersistence:
         assert ocr_stored.use_doc_orientation_classify is False
         assert struct_stored.use_doc_orientation_classify is True
 
-    def test_load_populates_from_persisted(self, tmp_path, monkeypatch):
+    def test_load_populates_from_persisted(self, tmp_path):
         """构造后各块回填 screenshot 源已存的参数"""
-        import vibeocr.backend.env_manager as em
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
-        monkeypatch.setattr(em, "_runtime_gpu_capability_cache", None)
         OCRPreferences.reset_instance()
         prefs = OCRPreferences.instance(tmp_path)
         prefs.set_pipeline_options(
@@ -140,6 +130,16 @@ class TestPersistence:
 
 
 class TestGpuGating:
+    def test_new_widget_waits_for_explicit_gpu_state(self, widget):
+        """unknown 时不提前禁用，显式广播后可反复更新。"""
+        assert all(group.box.isEnabled() for group in widget._groups.values())
+
+        widget.apply_gpu_gating(False)
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is False
+
+        widget.apply_gpu_gating(True)
+        assert all(group.box.isEnabled() for group in widget._groups.values())
+
     def test_no_gpu_disables_paddlocr_vl_group(self, widget):
         """无 GPU 时 PaddleOCR-VL 块灰显"""
         widget.apply_gpu_gating(False)
@@ -160,6 +160,6 @@ class TestGpuGating:
             OCRPipeline.TABLE_RECOGNITION,
             OCRPipeline.FORMULA_RECOGNITION,
         ):
-            assert (
-                widget._groups[pipeline].box.isEnabled() is True
-            ), f"{pipeline} 不应受 GPU 门控影响"
+            assert widget._groups[pipeline].box.isEnabled() is True, (
+                f"{pipeline} 不应受 GPU 门控影响"
+            )

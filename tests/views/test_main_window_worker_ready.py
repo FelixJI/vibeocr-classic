@@ -79,6 +79,17 @@ def test_t6_smoke_starts_supervisor_without_ocr_dependency_probe() -> None:
     window._start_supervisor.assert_called_once_with()
 
 
+def test_supervisor_start_does_not_wait_for_gpu_ui_probe() -> None:
+    window = _ReadyWindow()
+    window._runtime_gpu_capability = None
+    window._subprocess_manager = MagicMock()
+
+    MainWindow._start_supervisor(window)
+
+    window._subprocess_manager.start_supervisor.assert_called_once_with()
+    window._statusbar.showMessage.assert_called_once_with("Supervisor 启动中")
+
+
 def test_subprocess_progress_names_process_and_handshake_stage() -> None:
     window = _ReadyWindow()
 

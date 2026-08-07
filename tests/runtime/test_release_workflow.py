@@ -46,6 +46,7 @@ def test_project_declares_protocol_compatibility_and_one_build_command() -> None
     assert len(project["ci"]["release_build"]) == 1
     assert "-ArtifactsDir" in project["ci"]["release_build"][0]
     assert "component-lock.json" in project["release"]["required_assets"]
+    assert "frontend-protocol-lock.json" in project["release"]["required_assets"]
     assert project["release"]["identity_asset"] == "component-lock.json"
     assert "release-manifest.json" not in project["release"]["required_assets"]
     assert "SHA256SUMS" not in project["release"]["required_assets"]

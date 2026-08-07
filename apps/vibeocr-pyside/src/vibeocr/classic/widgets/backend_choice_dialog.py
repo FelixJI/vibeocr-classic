@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend import env_manager
+from vibeocr.classic.hardware_probe import detect_gpu_info
 from vibeocr.classic.utils.dialog_workers import track_dialog_worker
 from vibeocr.classic.widgets.install_dialog import InstallWorker
 
@@ -148,7 +148,7 @@ class BackendChoiceDialog(QDialog):
 
     def _detect_and_set_default(self) -> None:
         self._install_button.setEnabled(False)
-        self._gpu_detect_task = _GpuDetectTask(env_manager.detect_gpu_info)
+        self._gpu_detect_task = _GpuDetectTask(detect_gpu_info)
         self._gpu_detect_task.signals.finished.connect(self._apply_gpu_info)
         QThreadPool.globalInstance().start(self._gpu_detect_task)
 

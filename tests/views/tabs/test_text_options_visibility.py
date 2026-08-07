@@ -11,8 +11,8 @@ content_list 逐块渲染成独立 <div class="ocr-block">，永远不走 raw_te
 ``.ocr-block``，只是视觉分组（keep 逐行 / merge 段内横排 / smart 段落）。
 """
 
-from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
-from vibeocr.backend.models.text_block_options import (
+from vibeocr.classic.recognition_result import OCRResult, TextBlock
+from vibeocr.classic.recognition_settings import (
     LINE_MODE_KEEP,
     LINE_MODE_MERGE,
     LINE_MODE_SMART,
@@ -74,9 +74,7 @@ class TestTextLayoutPreservesBlockIdentity:
             ],
             text_with_scores=[("甲", 0.9), ("   ", 0.9), ("乙", 0.9)],
         )
-        opts = TextBlockOptions(
-            line_mode=LINE_MODE_MERGE, drop_blank_blocks=True
-        )
+        opts = TextBlockOptions(line_mode=LINE_MODE_MERGE, drop_blank_blocks=True)
         html = _build_text_layout_html(result.text_blocks, opts)
 
         # 空白块被过滤，但保留下来的两块 index 仍是原始的 0 和 2
@@ -117,9 +115,7 @@ class TestTextLayoutVisualModes:
                 TextBlock(text="段1行2", score=0.9, bbox=(0, 210, 100, 310)),
                 TextBlock(text="段2行1", score=0.9, bbox=(0, 511, 100, 611)),
             ],
-            text_with_scores=[
-                ("段1行1", 0.9), ("段1行2", 0.9), ("段2行1", 0.9)
-            ],
+            text_with_scores=[("段1行1", 0.9), ("段1行2", 0.9), ("段2行1", 0.9)],
             image_height=800,
         )
         opts = TextBlockOptions(line_mode=LINE_MODE_SMART)
@@ -132,9 +128,7 @@ class TestTextLayoutVisualModes:
     def test_block_join_space_inserts_separator(self):
         """块间加空格：段内块之间插入空格文本节点。"""
         result = _plain_text_result()
-        opts = TextBlockOptions(
-            line_mode=LINE_MODE_MERGE, block_join_space=True
-        )
+        opts = TextBlockOptions(line_mode=LINE_MODE_MERGE, block_join_space=True)
         html = _build_text_layout_html(result.text_blocks, opts)
 
         # 段内两块之间应有空格（</p></div> 后跟空格再 <div）
@@ -143,9 +137,7 @@ class TestTextLayoutVisualModes:
     def test_block_no_space_no_separator(self):
         """不加空格：段内块直接相邻（无空格文本节点）。"""
         result = _plain_text_result()
-        opts = TextBlockOptions(
-            line_mode=LINE_MODE_MERGE, block_join_space=False
-        )
+        opts = TextBlockOptions(line_mode=LINE_MODE_MERGE, block_join_space=False)
         html = _build_text_layout_html(result.text_blocks, opts)
 
         assert "</div> <div" not in html
@@ -153,9 +145,7 @@ class TestTextLayoutVisualModes:
     def test_chinese_indent_at_first_segment_first_block(self):
         """中文缩进：首段首块前置两个全角空格。"""
         result = _plain_text_result()
-        opts = TextBlockOptions(
-            line_mode=LINE_MODE_MERGE, chinese_indent=True
-        )
+        opts = TextBlockOptions(line_mode=LINE_MODE_MERGE, chinese_indent=True)
         html = _build_text_layout_html(result.text_blocks, opts)
 
         assert "\u3000\u3000第一行" in html
@@ -172,9 +162,7 @@ class TestTextLayoutVisualModes:
             text_with_scores=[("段1", 0.9), ("段2", 0.9)],
             image_height=800,
         )
-        opts = TextBlockOptions(
-            line_mode=LINE_MODE_SMART, chinese_indent=True
-        )
+        opts = TextBlockOptions(line_mode=LINE_MODE_SMART, chinese_indent=True)
         html = _build_text_layout_html(result.text_blocks, opts)
 
         assert "\u3000\u3000段1" in html
@@ -222,7 +210,7 @@ class TestEditPathInLayoutMode:
     def test_edit_block_2_updates_correct_text_block(self, qapp, monkeypatch):
         """drop_blank 过滤掉中间空白块后，编辑保留下来的「乙」（原始 index=2）
         应更新 text_blocks[2]，而非 text_blocks[0]。"""
-        from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+        from vibeocr.classic.recognition_result import OCRResult, TextBlock
         from vibeocr.classic.views.tabs.single_recognition_tab import (
             SingleRecognitionTab,
         )
@@ -246,7 +234,9 @@ class TestEditPathInLayoutMode:
         monkeypatch.setattr(
             tab._result_widget, "update_block_text", lambda *a, **k: None
         )
-        monkeypatch.setattr(tab._preview_widget, "set_text_blocks", lambda *a, **k: None)
+        monkeypatch.setattr(
+            tab._preview_widget, "set_text_blocks", lambda *a, **k: None
+        )
 
         # 用户在排版视图双击「乙」（原始 index=2）改为「乙改」
         tab._on_result_block_edited(2, "乙改")

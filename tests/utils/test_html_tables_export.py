@@ -1,7 +1,7 @@
 """Tests for table-extraction helpers used by export + copy.
 
-These pure functions live in ``vibeocr.backend.utils.html_tables`` so they can be
-shared between the backend export service and the PySide6 clipboard path.
+These pure functions live in ``vibeocr.classic.table_model`` and provide the
+Classic clipboard/export presentation seam.
 They guarantee that tables survive Excel export and Excel/Word paste even
 when the structured ``content_list`` is empty but the table HTML only lives
 in ``html_text`` / ``markdown_text`` / ``text_blocks``.
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from vibeocr.backend.utils.html_tables import (
+from vibeocr.classic.table_model import (
     html_tables_to_cell_grid,
     tables_from_result,
 )

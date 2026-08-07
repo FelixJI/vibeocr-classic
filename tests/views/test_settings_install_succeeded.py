@@ -61,10 +61,6 @@ def controller(qtbot, tmp_path):
             return_value=(False, None),
         ),
         patch("vibeocr.classic.managers.config_manager.ConfigManager") as mock_cm,
-        patch(
-            "vibeocr.backend.core.pipelines.get_preloadable_pipelines",
-            return_value=[],
-        ),
     ):
         mock_cm.instance.return_value = MagicMock(
             get_pipeline_ttls=MagicMock(

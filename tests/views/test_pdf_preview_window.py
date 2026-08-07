@@ -117,7 +117,7 @@ class TestPreviewCanvasOcrBlocks:
         """set_ocr_blocks 存储 OCR 块列表和 pixmap。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()
@@ -137,7 +137,7 @@ class TestPreviewCanvasOcrBlocks:
         """有 pixmap + OCR 块时 paintEvent 不崩溃。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(200, 200)
         pm.fill()
@@ -153,7 +153,7 @@ class TestPreviewCanvasOcrBlocks:
         """设置 OCR 块时清除旧的 text_layers 高亮（避免两种高亮叠加）。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         page_rect = fitz.Rect(0, 0, 612, 792)
         canvas.set_highlight_layers(
@@ -178,7 +178,7 @@ class TestPreviewCanvasSetPixmapClears:
         """先设 OCR 块，再 set_pixmap 裸 pixmap → OCR 块应被清除。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm1 = QPixmap(200, 200)
         pm1.fill()
@@ -225,7 +225,7 @@ class TestPreviewCanvasBlockEdit:
         """结束内联编辑时 emit block_text_edited(page_index, block_index, text)。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()
@@ -249,7 +249,7 @@ class TestPreviewCanvasBlockEdit:
         """文字未变时不 emit 信号。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(200, 200)
         pm.fill()
@@ -291,7 +291,7 @@ class TestPreviewCanvasScaleBehavior:
         """
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()
@@ -312,7 +312,7 @@ class TestPreviewCanvasScaleBehavior:
         """缩放后 editor.setGeometry 应 × scale（child widget 走 widget 像素空间）。"""
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()
@@ -334,7 +334,7 @@ class TestPreviewCanvasScaleBehavior:
         from PySide6.QtCore import QPointF
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()
@@ -360,7 +360,7 @@ class TestPreviewCanvasScaleBehavior:
         from PySide6.QtCore import Qt as QtConst
         from PySide6.QtGui import QPixmap
 
-        from vibeocr.backend.models.ocr_result import TextBlock
+        from vibeocr.classic.recognition_result import TextBlock
 
         pm = QPixmap(1000, 800)
         pm.fill()

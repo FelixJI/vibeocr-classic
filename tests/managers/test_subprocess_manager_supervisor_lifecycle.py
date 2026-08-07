@@ -11,14 +11,20 @@ def test_started_transfers_process_owner_before_task_is_released(
 ) -> None:
     manager = SubprocessManager(tmp_path)
     process = Mock()
-    task = SimpleNamespace(supervisor_proc=process)
+    task = SimpleNamespace(
+        supervisor_proc=process,
+        required_capabilities=("ocr.recognition.v2",),
+    )
     manager._start_task = task
     install_adapter = Mock()
     monkeypatch.setattr(manager, "_install_runtime_adapter", install_adapter)
 
     manager._on_started(True)
 
-    install_adapter.assert_called_once_with(process)
+    install_adapter.assert_called_once_with(
+        process,
+        required_capabilities=("ocr.recognition.v2",),
+    )
     assert manager.is_ready is True
     assert manager._supervisor_process is process
     assert task.supervisor_proc is None

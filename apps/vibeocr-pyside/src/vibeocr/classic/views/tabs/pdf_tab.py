@@ -42,7 +42,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vibeocr.classic import ocr_sidecar
 from vibeocr.classic.pyside.pdf_session_manager import PdfSessionManager
+from vibeocr.classic.recognition_settings import OCROptions, PdfGlobalSettings
 from vibeocr.classic.ui.theme import Colors
 from vibeocr.classic.utils.thumbnail_lru_cache import ThumbnailLruCache
 from vibeocr.classic.views.pdf_preview_window import PdfPreviewWindow
@@ -51,9 +53,7 @@ from vibeocr.runtime_contracts.contracts.frontend import (
 )
 
 if TYPE_CHECKING:
-    from vibeocr.backend.models.ocr_options import OCROptions
-    from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-    from vibeocr.backend.models.pdf_session import PdfSession
+    from vibeocr.classic.pdf_workspace import PdfSession
     from vibeocr.classic.pyside.pdf_render_thumb_worker import ThumbnailIpcWorker
 
 logger = logging.getLogger(__name__)
@@ -1005,7 +1005,6 @@ class PdfTab(QWidget):
         mgr.ocr_done.connect(self._on_ocr_finished)
         mgr.ocr_stats_ready.connect(self._on_ocr_stats_ready)
         mgr.ocr_write_error.connect(self._on_ocr_write_error)
-        mgr.mineru_models_status.connect(self._on_mineru_models_status)
         mgr.mutate_progress.connect(self._on_mutate_progress)
         mgr.mutate_done.connect(self._on_mutate_done)
         mgr.mutate_failed.connect(self._on_mutate_failed)
@@ -1130,10 +1129,8 @@ class PdfTab(QWidget):
             )
         # 续传检测：若有未完成 sidecar，提示用户可继续 OCR
         try:
-            from vibeocr.backend.utils.ocr_sidecar import restore_pending_pages
-
             if file_path:
-                pending = restore_pending_pages(file_path)
+                pending = ocr_sidecar.restore_pending_pages(file_path)
                 if pending:
                     total_pages = len(session.pdf_document.pages) if session else 0
                     self._status_label.setText(
@@ -1170,13 +1167,6 @@ class PdfTab(QWidget):
         self.task_status_changed.emit(
             f"PDF OCR · {pct}% · {pages_done}/{pages_total} 页"
         )
-
-    def _on_mineru_models_status(self, message: str) -> None:
-        """MinerU 模型下载状态提示（首次使用文档解析时）"""
-        self._status_label.setText(message)
-        # 下载期间显示不确定进度条（无具体百分比）
-        self._progress_bar.setRange(0, 0)
-        self._progress_bar.setVisible(True)
 
     def on_ocr_queued(self, message: str) -> None:
         """OCR worker 忙碌（如预热中）时，识别请求已排队。
@@ -1258,7 +1248,7 @@ class PdfTab(QWidget):
     def _after_structural_change(self) -> None:
         """结构变更(删页/插页/重排/旋转全部)后统一刷新 UI。
 
-        model 的 pages 已由 manager apply_diff 刷新,缩略图模型读取同一列表,
+        model 的 pages 已由 manager apply_model_diff 刷新,缩略图模型读取同一列表,
         故只需 beginResetModel/endResetModel 通知视图重读,并刷新文字层网格。
         """
         session = self._session_mgr.active_session
@@ -1297,7 +1287,7 @@ class PdfTab(QWidget):
             return
         self._progress_bar.setVisible(False)
         self._set_file_buttons_enabled(True)
-        # 专用完成信号在 manager 应用 ModelDiff 后发出。逐页 mutate_done
+        # 专用完成信号在 manager 应用 PdfModelDiff 后发出。逐页 mutate_done
         # 可能因取消/队列时序未送达，因此终态必须从权威模型全量校正。
         self._sync_layer_grid_from_model()
         self._update_status()
@@ -2402,8 +2392,6 @@ class PdfTab(QWidget):
             prefs = OCRPreferences.instance()
             return prefs.get_pdf_settings(), prefs.get_pdf_pipeline_options()
         except RuntimeError:
-            from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
-
             return PdfGlobalSettings(), None
 
     def _begin_ocr_ui(self, indices: list[int]) -> None:

@@ -80,9 +80,7 @@ def test_call_op_reorder():
 
 
 def test_call_op_save():
-    worker = _make_mutate_worker(
-        "save", {"path": "/out.pdf", "pdf_settings": {"a": 1}}
-    )
+    worker = _make_mutate_worker("save", {"path": "/out.pdf", "pdf_settings": {"a": 1}})
     worker._call_op()
     worker._client.save.assert_called_once_with("sid", "/out.pdf", {"a": 1})
 
@@ -96,7 +94,12 @@ def test_call_op_save_with_none_path_and_settings():
 def test_call_op_add_text_layer():
     worker = _make_mutate_worker(
         "add_text_layer",
-        {"page": 0, "ocr_result": {"blocks": []}, "pdf_settings": {"x": 1}, "overwrite": True},
+        {
+            "page": 0,
+            "ocr_result": {"blocks": []},
+            "pdf_settings": {"x": 1},
+            "overwrite": True,
+        },
     )
     worker._call_op()
     worker._client.add_text_layer.assert_called_once_with(
@@ -105,9 +108,7 @@ def test_call_op_add_text_layer():
 
 
 def test_call_op_add_text_layer_default_overwrite():
-    worker = _make_mutate_worker(
-        "add_text_layer", {"page": 1, "ocr_result": {}}
-    )
+    worker = _make_mutate_worker("add_text_layer", {"page": 1, "ocr_result": {}})
     worker._call_op()
     worker._client.add_text_layer.assert_called_once_with("sid", 1, {}, None, False)
 
@@ -118,7 +119,9 @@ def test_call_op_rewrite_text_layer():
         {"page": 2, "text_blocks": [], "preproc_angle": 90, "pdf_settings": {"s": 1}},
     )
     worker._call_op()
-    worker._client.rewrite_text_layer.assert_called_once_with("sid", 2, [], 90, {"s": 1})
+    worker._client.rewrite_text_layer.assert_called_once_with(
+        "sid", 2, [], 90, {"s": 1}
+    )
 
 
 def test_call_op_rewrite_text_layer_defaults():
@@ -149,7 +152,7 @@ def test_call_op_unknown_op_raises():
 
 def test_mutate_run_delete_text_layers_streams_and_emits_all_done(monkeypatch):
     """run() delete_text_layers 分支：迭代流 + get_model → all_done。"""
-    from vibeocr.backend.ipc.schemas import ModelDiff, PdfDocumentMirror
+    from vibeocr.runtime_contracts.pdf import PdfDocumentMirror, PdfModelDiff
 
     worker = PdfIpcMutateWorker.__new__(PdfIpcMutateWorker)
     client = MagicMock()
@@ -157,8 +160,12 @@ def test_mutate_run_delete_text_layers_streams_and_emits_all_done(monkeypatch):
     client.reset_cancel.side_effect = RuntimeError("reset failed")
     # 流式事件
     progress_events = [
-        SimpleNamespaceProgress(page_index=0, current=1, total=2, page_payload={"p": 0}),
-        SimpleNamespaceProgress(page_index=1, current=2, total=2, page_payload={"p": 1}),
+        SimpleNamespaceProgress(
+            page_index=0, current=1, total=2, page_payload={"p": 0}
+        ),
+        SimpleNamespaceProgress(
+            page_index=1, current=2, total=2, page_payload={"p": 1}
+        ),
     ]
     client.delete_text_layers_stream.return_value = iter(progress_events)
     full_model = PdfDocumentMirror(file_path="/f.pdf", pages=[])
@@ -194,7 +201,7 @@ def test_mutate_run_delete_text_layers_streams_and_emits_all_done(monkeypatch):
     assert len(all_done_emits) == 1
     sid, diff, extra = all_done_emits[0]
     assert sid == "sid"
-    assert isinstance(diff, ModelDiff)
+    assert isinstance(diff, PdfModelDiff)
     assert extra == {"residual_pages": []}
     assert failed_emits == []
 
@@ -269,6 +276,41 @@ def test_mutate_run_non_stream_emits_all_done_with_path():
     assert sid == "sid"
     assert diff is resp.diff
     assert extra == {"path": "/out.pdf"}
+
+
+def test_mutate_run_uses_protocol_operation_extra() -> None:
+    from vibeocr.runtime_contracts.pdf import PdfMutationResult
+
+    worker = PdfIpcMutateWorker.__new__(PdfIpcMutateWorker)
+    client = MagicMock()
+    response = PdfMutationResult.from_payload(
+        {
+            "schema_version": 2,
+            "instance_id": "runtime-1",
+            "diff": {},
+            "extra": {"corrected_pages": [1]},
+            "future_optional": True,
+        }
+    )
+    client.rotate.return_value = response
+    worker._client = client
+    worker._session_id = "sid"
+    worker._op = "rotate"
+    worker._params = {"pages": [1], "angle": 90}
+    worker._cancelled = False
+    emitted: list[tuple[object, ...]] = []
+    worker.all_done = MagicMock()
+    worker.all_done.emit = lambda *args: emitted.append(args)
+    worker.failed = MagicMock()
+    worker.page_done = MagicMock()
+    worker.progress = MagicMock()
+
+    worker.run()
+
+    assert emitted == [
+        ("sid", response.diff, {"corrected_pages": [1]}),
+    ]
+    assert response.extra == {"future_optional": True}
 
 
 def test_mutate_run_cancelled_before_op_returns_without_emit():
@@ -376,141 +418,6 @@ def test_cancel_worker_run_swallows_exception():
     # 不应抛出
     worker.run()
     client.cancel.assert_called_once_with("sid")
-
-
-# =============================================================================
-# MinerUPreflightWorker.run —— ensure_mineru_models 成功/失败/取消分支
-# =============================================================================
-
-
-def test_mineru_preflight_run_success_emits_progress_and_completed(monkeypatch):
-    from vibeocr.classic.pyside.pdf_ipc_worker import MinerUPreflightWorker
-
-    def fake_ensure(root, *, progress_callback=None):
-        # 模拟底层通过 progress_callback 上报进度
-        if progress_callback is not None:
-            progress_callback("download", "50%")
-            progress_callback("verify", "done")
-        return True, "ok"
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", fake_ensure
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_project_root", lambda: "/root"
-    )
-
-    worker = MinerUPreflightWorker.__new__(MinerUPreflightWorker)
-    worker._cancelled = False
-    progress_emits: list = []
-    completed_emits: list = []
-    worker.progress = MagicMock()
-    worker.progress.emit = lambda *a: progress_emits.append(a)
-    worker.completed = MagicMock()
-    worker.completed.emit = lambda *a: completed_emits.append(a)
-
-    worker.run()
-
-    # progress callback 通过 report 转发（两条 stage 消息）
-    assert ("download", "50%") in progress_emits
-    assert ("verify", "done") in progress_emits
-    assert completed_emits == [(True, "ok")]
-
-
-def test_mineru_preflight_run_failure_emits_completed_false(monkeypatch):
-    from vibeocr.classic.pyside.pdf_ipc_worker import MinerUPreflightWorker
-
-    def fake_ensure(root, *, progress_callback=None):
-        return False, "network down"
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", fake_ensure
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_project_root", lambda: "/root"
-    )
-
-    worker = MinerUPreflightWorker.__new__(MinerUPreflightWorker)
-    worker._cancelled = False
-    completed_emits: list = []
-    worker.progress = MagicMock()
-    worker.progress.emit = lambda *a: None
-    worker.completed = MagicMock()
-    worker.completed.emit = lambda *a: completed_emits.append(a)
-
-    worker.run()
-    assert completed_emits == [(False, "network down")]
-
-
-def test_mineru_preflight_run_exception_becomes_failure(monkeypatch):
-    from vibeocr.classic.pyside.pdf_ipc_worker import MinerUPreflightWorker
-
-    def fake_ensure(root, *, progress_callback=None):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", fake_ensure
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_project_root", lambda: "/root"
-    )
-
-    worker = MinerUPreflightWorker.__new__(MinerUPreflightWorker)
-    worker._cancelled = False
-    completed_emits: list = []
-    worker.progress = MagicMock()
-    worker.progress.emit = lambda *a: None
-    worker.completed = MagicMock()
-    worker.completed.emit = lambda *a: completed_emits.append(a)
-
-    worker.run()
-    # 异常被捕获，转成 (False, message)
-    assert len(completed_emits) == 1
-    assert completed_emits[0][0] is False
-    assert "disk full" in completed_emits[0][1]
-
-
-def test_mineru_preflight_run_cancelled_swallows_completed(monkeypatch):
-    """取消后 run() 自然返回也不发 completed。"""
-    from vibeocr.classic.pyside.pdf_ipc_worker import MinerUPreflightWorker
-
-    def fake_ensure(root, *, progress_callback=None):
-        # 模拟越过取消检查点后自然返回成功
-        return True, "late"
-
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.ensure_mineru_models", fake_ensure
-    )
-    monkeypatch.setattr(
-        "vibeocr.backend.env_manager.get_project_root", lambda: "/root"
-    )
-
-    worker = MinerUPreflightWorker.__new__(MinerUPreflightWorker)
-    worker._cancelled = True  # 已取消
-    progress_emits: list = []
-    completed_emits: list = []
-    worker.progress = MagicMock()
-    worker.progress.emit = lambda *a: progress_emits.append(a)
-    worker.completed = MagicMock()
-    worker.completed.emit = lambda *a: completed_emits.append(a)
-
-    worker.run()
-    # 取消后 progress/completed 均不发
-    assert progress_emits == []
-    assert completed_emits == []
-
-
-def test_mineru_preflight_cancel_sets_flag_and_requests_interruption(monkeypatch):
-    from vibeocr.classic.pyside.pdf_ipc_worker import MinerUPreflightWorker
-
-    worker = MinerUPreflightWorker.__new__(MinerUPreflightWorker)
-    worker._cancelled = False
-    # requestInterruption 需要 QObject；monkeypatch 掉
-    monkeypatch.setattr(worker, "requestInterruption", lambda: None)
-
-    worker.cancel()
-    assert worker._cancelled is True
-    assert worker.is_cancelled is True
 
 
 # =============================================================================

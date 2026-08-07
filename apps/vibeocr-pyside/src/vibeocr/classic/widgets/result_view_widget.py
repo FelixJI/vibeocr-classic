@@ -15,7 +15,7 @@ import html as html_lib
 import json
 import logging
 import time
-from dataclasses import is_dataclass, replace
+from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QMimeData, QObject, QTimer, QUrl, Signal, Slot
@@ -30,12 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend.models.ocr_result import DISCARDED_BLOCK_TYPES
-from vibeocr.backend.utils.html_tables import (
+from vibeocr.classic.table_model import (
     html_tables_to_cell_grid,
     normalize_table_html,
     tables_from_result,
 )
+from vibeocr.classic.app_paths import get_bundled_resources_dir
+from vibeocr.classic.recognition_result import DISCARDED_BLOCK_TYPES
 from vibeocr.classic.utils.export_jobs import (
     ExportJobCancelled,
     ExportSaveJob,
@@ -62,13 +63,11 @@ _DOCUMENT_TOKEN_PLACEHOLDER = "__VIBEOCR_DOCUMENT_TOKEN_8E2C4A75__"
 def _get_resources_dir() -> Path:
     """获取 resources 目录路径（打包态/开发态通用）
 
-    委托 env_manager.get_bundled_resources_dir() 作为 SSOT：
+    委托 Classic app_paths.get_bundled_resources_dir() 作为 SSOT：
     打包态 resources 由 ``--add-data`` 打入 ``sys._MEIPASS``（``_internal/resources``），
     而非 exe 同级；开发态位于仓库根。
-    采用函数惰性求值，避免模块导入时触发 env_manager 的循环导入。
+    采用函数惰性求值，保留现有测试替换 seam。
     """
-    from vibeocr.backend.env_manager import get_bundled_resources_dir
-
     return get_bundled_resources_dir()
 
 
@@ -135,8 +134,6 @@ def _render_title(block: dict, index: int) -> str:
 
 
 def _render_table(block: dict, index: int) -> str:
-    from vibeocr.backend.utils.html_tables import normalize_table_html
-
     parts: list[str] = []
     captions = block.get("table_caption") or []
     if captions:
@@ -145,8 +142,10 @@ def _render_table(block: dict, index: int) -> str:
         )
     canonical_table = ""
     if isinstance(block.get("table"), dict):
-        from vibeocr.backend.tables.blocks import table_model_from_block
-        from vibeocr.backend.tables.html_adapter import table_model_to_html
+        from vibeocr.classic.table_model import (
+            table_model_from_block,
+            table_model_to_html,
+        )
 
         try:
             canonical_table = table_model_to_html(table_model_from_block(block))
@@ -319,12 +318,12 @@ def _build_text_layout_html(
     块间加空格 → 段内块之间插入一个空格文本节点；中文缩进 → 每段首块前置
     两个全角空格。keep 模式每块独立成行（block 级）。
     """
-    from vibeocr.backend.models.text_block_options import (
+    from vibeocr.classic.recognition_settings import (
         LINE_MODE_KEEP,
         LINE_MODE_MERGE,
         LINE_MODE_SMART,
     )
-    from vibeocr.backend.utils.text_layout import TextBlockProcessor
+    from vibeocr.classic.text_layout import TextBlockProcessor
 
     # 用 (原始下标, 块) 配对跟踪位置，避免 drop_blank / 排序后 index 错位。
     if cancel_event is not None and cancel_event.is_set():
@@ -1060,7 +1059,9 @@ def _capture_stable_result_snapshot(
     if cancel_event.is_set():
         raise ExportJobCancelled
     if last_error is not None:
-        raise RuntimeError("OCR result changed while creating a stable snapshot") from last_error
+        raise RuntimeError(
+            "OCR result changed while creating a stable snapshot"
+        ) from last_error
     raise RuntimeError("OCR result did not reach a stable revision")
 
 
@@ -1122,49 +1123,16 @@ def _rebuild_copy_snapshot(
     include_markdown: bool,
 ) -> Any:
     """Rebuild aggregates from an already detached, worker-owned snapshot."""
-    raw_parts: list[str] = []
-    for index, block in enumerate(snapshot.text_blocks):
-        if index % 128 == 0 and cancel_event.is_set():
-            raise ExportJobCancelled
-        if block.text:
-            raw_parts.append(block.text)
-    raw_text = "\n".join(raw_parts)
-    if not raw_text:
-        raw_text = snapshot.raw_text
+    from vibeocr.classic.table_results import build_copy_snapshot
 
-    markdown_text = raw_text
-    if include_markdown and snapshot.content_list:
-        from vibeocr.backend.utils.html_tables import (
-            _extract_table_html,
-            _html_table_to_markdown,
-        )
-
-        markdown_parts: list[str] = []
-        for index, block in enumerate(snapshot.content_list):
-            if index % 128 == 0 and cancel_event.is_set():
-                raise ExportJobCancelled
-            if block.get("type") == "table":
-                markdown = _html_table_to_markdown(
-                    _extract_table_html(block.get("table_body", ""))
-                )
-                if markdown:
-                    markdown_parts.append(markdown)
-            else:
-                text = str(block.get("text", "") or "")
-                if text:
-                    markdown_parts.append(text)
-        if markdown_parts:
-            markdown_text = "\n\n".join(markdown_parts)
-
-    if cancel_event.is_set():
-        raise ExportJobCancelled
-
-    return replace(
+    rebuilt = build_copy_snapshot(
         snapshot,
-        raw_text=raw_text,
-        markdown_text=markdown_text,
-        html_text="",
+        is_cancelled=cancel_event.is_set,
+        include_markdown=include_markdown,
     )
+    if rebuilt is None:
+        raise ExportJobCancelled
+    return rebuilt
 
 
 class _Bridge(QObject):
@@ -1712,9 +1680,11 @@ class ResultViewWidget(QWidget):
                 include_text_blocks=False,
             )
             resources_dir = _get_resources_dir()
-            return _build_result_html(
-                result_snapshot, resources_dir, cancel_event
-            ), str(resources_dir), result_snapshot
+            return (
+                _build_result_html(result_snapshot, resources_dir, cancel_event),
+                str(resources_dir),
+                result_snapshot,
+            )
 
         job = ExportSaveJob(build)
         job.setProperty("generation", generation)
@@ -1825,7 +1795,7 @@ class ResultViewWidget(QWidget):
         """
         if self._closing:
             return
-        from vibeocr.backend.models.text_block_options import TextBlockOptions
+        from vibeocr.classic.recognition_settings import TextBlockOptions
 
         self._cancel_copy()
         self._invalidate_render_jobs()
@@ -1866,9 +1836,7 @@ class ResultViewWidget(QWidget):
             if cancel_event.is_set():
                 raise ExportJobCancelled
             resources_dir = _get_resources_dir()
-            full_html = _build_full_html(
-                body, resources_dir / "katex", resources_dir
-            )
+            full_html = _build_full_html(body, resources_dir / "katex", resources_dir)
             return full_html, str(resources_dir), result_snapshot
 
         job = ExportSaveJob(build)

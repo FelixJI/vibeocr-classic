@@ -14,15 +14,17 @@ def _cleanup():
 
 
 def _make_dialog(tmp_path, qtbot, has_gpu=True):
-    """构造 BackendChoiceDialog，mock env_manager.detect_gpu_info"""
-    mock_em = patch.object(bcd_module, "env_manager").start()
-    mock_em.detect_gpu.return_value = (has_gpu, "cu126") if has_gpu else (False, None)
-    mock_em.detect_gpu_info.return_value = {
-        "has_gpu": has_gpu,
-        "name": "NVIDIA GeForce RTX 4090" if has_gpu else "",
-        "vram_mb": 24564 if has_gpu else 0,
-        "cuda": "cu126" if has_gpu else None,
-    }
+    """构造 BackendChoiceDialog，mock Classic 硬件探测。"""
+    patch.object(
+        bcd_module,
+        "detect_gpu_info",
+        return_value={
+            "has_gpu": has_gpu,
+            "name": "NVIDIA GeForce RTX 4090" if has_gpu else "",
+            "vram_mb": 24564 if has_gpu else 0,
+            "cuda": "cu126" if has_gpu else None,
+        },
+    ).start()
     dialog = bcd_module.BackendChoiceDialog(tmp_path)
     qtbot.waitUntil(lambda: dialog._gpu_detect_task is None, timeout=3000)
     return dialog
@@ -93,14 +95,16 @@ def test_reinstall_python_passed_to_worker(_cleanup, qtbot, tmp_path):
         def wait(self):
             pass
 
-    with patch.object(bcd_module, "env_manager") as mock_em:
-        mock_em.detect_gpu.return_value = (False, None)  # CPU 模式
-        mock_em.detect_gpu_info.return_value = {
+    with patch.object(
+        bcd_module,
+        "detect_gpu_info",
+        return_value={
             "has_gpu": False,
             "name": "",
             "vram_mb": 0,
             "cuda": None,
-        }
+        },
+    ):
         with patch.object(bcd_module, "InstallWorker", FakeWorker):
             dlg = bcd_module.BackendChoiceDialog(tmp_path, reinstall_python=True)
             qtbot.addWidget(dlg)
@@ -140,14 +144,16 @@ def test_missing_only_passed_to_install_worker(_cleanup, qtbot, tmp_path):
         def wait(self):
             pass
 
-    with patch.object(bcd_module, "env_manager") as mock_em:
-        mock_em.detect_gpu.return_value = (False, None)  # CPU 模式
-        mock_em.detect_gpu_info.return_value = {
+    with patch.object(
+        bcd_module,
+        "detect_gpu_info",
+        return_value={
             "has_gpu": False,
             "name": "",
             "vram_mb": 0,
             "cuda": None,
-        }
+        },
+    ):
         with patch.object(bcd_module, "InstallWorker", FakeWorker):
             dlg = bcd_module.BackendChoiceDialog(tmp_path, missing_only=True)
             qtbot.addWidget(dlg)
@@ -161,16 +167,16 @@ def test_failure_shows_warning_messagebox(_cleanup, qtbot, tmp_path):
     from PySide6.QtWidgets import QMessageBox
 
     warnings_shown = []
-    with patch.object(
-        QMessageBox, "warning", lambda *args, **kwargs: warnings_shown.append(args)
-    ), patch.object(bcd_module, "env_manager") as mock_em:
-        mock_em.detect_gpu.return_value = (False, None)
-        mock_em.detect_gpu_info.return_value = {
-            "has_gpu": False,
-            "name": "",
-            "vram_mb": 0,
-            "cuda": None,
-        }
+    with (
+        patch.object(
+            QMessageBox, "warning", lambda *args, **kwargs: warnings_shown.append(args)
+        ),
+        patch.object(
+            bcd_module,
+            "detect_gpu_info",
+            return_value={"has_gpu": False, "name": "", "vram_mb": 0, "cuda": None},
+        ),
+    ):
         dlg = bcd_module.BackendChoiceDialog(tmp_path)
         qtbot.addWidget(dlg)
         # 直接调用 _on_finished 模拟失败
@@ -188,16 +194,16 @@ def test_success_does_not_show_warning(_cleanup, qtbot, tmp_path):
     from PySide6.QtWidgets import QMessageBox
 
     warnings_shown = []
-    with patch.object(
-        QMessageBox, "warning", lambda *args, **kwargs: warnings_shown.append(args)
-    ), patch.object(bcd_module, "env_manager") as mock_em:
-        mock_em.detect_gpu.return_value = (False, None)
-        mock_em.detect_gpu_info.return_value = {
-            "has_gpu": False,
-            "name": "",
-            "vram_mb": 0,
-            "cuda": None,
-        }
+    with (
+        patch.object(
+            QMessageBox, "warning", lambda *args, **kwargs: warnings_shown.append(args)
+        ),
+        patch.object(
+            bcd_module,
+            "detect_gpu_info",
+            return_value={"has_gpu": False, "name": "", "vram_mb": 0, "cuda": None},
+        ),
+    ):
         dlg = bcd_module.BackendChoiceDialog(tmp_path)
         qtbot.addWidget(dlg)
         dlg._on_finished(True, "安装成功")

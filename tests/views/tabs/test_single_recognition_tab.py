@@ -18,7 +18,7 @@ class _FakeBackend:
         return None
 
     def recognize_sync(self, *args, **kwargs):
-        from vibeocr.backend.models.ocr_result import OCRResult
+        from vibeocr.classic.recognition_result import OCRResult
 
         return OCRResult(raw_text="fake")
 
@@ -87,7 +87,9 @@ class TestSingleRecognitionTab:
             def pixmap(self):
                 return sample_pixmap
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
+        )
         tab = SingleRecognitionTab()
         tab._on_paste()
         assert tab._copy_image_btn.isEnabled() is True
@@ -104,7 +106,7 @@ class TestRecognitionStatus:
     """状态栏摘要必须使用同一组文本框统计，且不把空结果说成成功。"""
 
     def test_status_counts_boxes_low_confidence_and_elapsed(self):
-        from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+        from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
         result = OCRResult(
             raw_text="可信\n待复核",
@@ -117,21 +119,17 @@ class TestRecognitionStatus:
 
         status = SingleRecognitionTab._build_recognition_status(result, 1.234)
 
-        assert status == (
-            "识别到 2 个文本框 · 低置信（<80%）1 个 · 耗时 1.23 秒"
-        )
+        assert status == ("识别到 2 个文本框 · 低置信（<80%）1 个 · 耗时 1.23 秒")
 
     def test_status_reports_empty_result_honestly(self):
-        from vibeocr.backend.models.ocr_result import OCRResult
+        from vibeocr.classic.recognition_result import OCRResult
 
-        status = SingleRecognitionTab._build_recognition_status(
-            OCRResult(), 0.248
-        )
+        status = SingleRecognitionTab._build_recognition_status(OCRResult(), 0.248)
 
         assert status == "未识别到文本 · 耗时 248 毫秒"
 
     def test_status_does_not_claim_zero_boxes_when_statistics_are_missing(self):
-        from vibeocr.backend.models.ocr_result import OCRResult
+        from vibeocr.classic.recognition_result import OCRResult
 
         status = SingleRecognitionTab._build_recognition_status(
             OCRResult(raw_text="后端只返回了文本"), 12.34
@@ -162,7 +160,9 @@ class TestSingleRecognitionTabCopyImage:
             def setPixmap(self, pm):
                 captured["pixmap"] = pm
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
+        )
         tab = SingleRecognitionTab()
         tab.set_pixmap(sample_pixmap)
         tab._on_copy_image()
@@ -178,7 +178,9 @@ class TestSingleRecognitionTabCopyImage:
             def setPixmap(self, pm):
                 pass
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
+        )
         tab = SingleRecognitionTab()
         tab.set_pixmap(sample_pixmap)
         tab._on_copy_image()
@@ -193,7 +195,9 @@ class TestSingleRecognitionTabCopyImage:
             def setPixmap(self, pm):
                 called["yes"] = True
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
+        )
         tab = SingleRecognitionTab()  # 无图
         tab._on_copy_image()
         assert called["yes"] is False
@@ -208,7 +212,9 @@ class TestSingleRecognitionTabCopyImage:
             def setPixmap(self, pm):
                 called["yes"] = True
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: FakeClipboard()
+        )
         tab = SingleRecognitionTab()
         tab.set_pixmap(sample_pixmap)
         tab._copy_image_btn.click()
@@ -227,7 +233,9 @@ class TestPasteAndStartFeedback:
 
                 return QPixmap()  # null pixmap
 
-        monkeypatch.setattr(QGuiApplication, "clipboard", lambda *a, **k: EmptyClipboard())
+        monkeypatch.setattr(
+            QGuiApplication, "clipboard", lambda *a, **k: EmptyClipboard()
+        )
         tab = SingleRecognitionTab()
         tab._on_paste()
         assert tab._copy_toast.isHidden() is False
@@ -242,9 +250,7 @@ class TestPasteAndStartFeedback:
             def warning(parent, title, text):
                 warnings.append((title, text))
 
-        monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox", FakeQMessageBox
-        )
+        monkeypatch.setattr("PySide6.QtWidgets.QMessageBox", FakeQMessageBox)
         tab = SingleRecognitionTab()
         tab._pending_file_path = str(tmp_path / "deleted.png")  # 文件不存在
         tab.process_file(str(tmp_path / "deleted.png"))
@@ -256,7 +262,7 @@ class TestPasteAndStartFeedback:
 
 def _make_table_result():
     """构造一个表格管道风格的 OCRResult（content_list + text_blocks + table_body）。"""
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     table_html = "<table><tr><td>A</td><td>B</td></tr></table>"
     return OCRResult(
@@ -278,15 +284,18 @@ def _make_table_result():
 
 def _make_formula_result():
     """构造一个公式管道风格的 OCRResult（content_list type=formula）。"""
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     latex = "E=mc^2"
     return OCRResult(
         content_list=[{"type": "formula", "text": latex}],
         text_blocks=[
             TextBlock(
-                text=latex, score=1.0, bbox=(10, 10, 200, 80),
-                label="formula", content_index=0,
+                text=latex,
+                score=1.0,
+                bbox=(10, 10, 200, 80),
+                label="formula",
+                content_index=0,
             )
         ],
         text_with_scores=[(latex, 1.0)],
@@ -314,7 +323,9 @@ class TestResultBlockEditedTableDelegation:
         # 委托后不应继续走文本分支：content_list 的 text 不应被改成 HTML
         assert tab._current_ocr_result.content_list[0]["text"] == "A B"
 
-    def test_table_edit_updates_table_body_and_keeps_block_type_mode(self, qapp, monkeypatch):
+    def test_table_edit_updates_table_body_and_keeps_block_type_mode(
+        self, qapp, monkeypatch
+    ):
         """端到端：右侧表格编辑后，content_list.table_body 被更新、
         左侧用 set_content_list（块类型模式）刷新而非 set_text_blocks。"""
         tab = SingleRecognitionTab()
@@ -322,15 +333,19 @@ class TestResultBlockEditedTableDelegation:
 
         refreshed: list = []
         monkeypatch.setattr(
-            tab._preview_widget, "set_content_list",
+            tab._preview_widget,
+            "set_content_list",
             lambda cl: refreshed.append(("content_list", cl)),
         )
         monkeypatch.setattr(
-            tab._preview_widget, "set_text_blocks",
+            tab._preview_widget,
+            "set_text_blocks",
             lambda tb: refreshed.append(("text_blocks", tb)),
         )
         # update_block_text 触发 WebEngine JS，测试环境 stub 掉
-        monkeypatch.setattr(tab._result_widget, "update_block_text", lambda *a, **k: None)
+        monkeypatch.setattr(
+            tab._result_widget, "update_block_text", lambda *a, **k: None
+        )
 
         new_html = "<table><tr><td>X</td></tr></table>"
         tab._on_result_block_edited(0, new_html)
@@ -352,7 +367,7 @@ def _make_plain_text_result():
     content_list 为空（仅 text_blocks）—— 通用 OCR 管道在 _display_result 之前
     的真实形态。段落处理选项只对这类结果有意义（结构化结果走块类型渲染）。
     """
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
 
     return OCRResult(
         text_blocks=[
@@ -397,7 +412,8 @@ class TestTextOptionsLiveUpdate:
 
         refreshed = {"count": 0}
         monkeypatch.setattr(
-            tab._result_widget, "display_text_layout",
+            tab._result_widget,
+            "display_text_layout",
             lambda *a, **k: refreshed.__setitem__("count", refreshed["count"] + 1),
         )
 
@@ -500,7 +516,9 @@ class TestOcrFinishedEmitsBringToFront:
         tab.bring_to_front_requested.connect(lambda: emitted.append(True))
 
         tab._ocr_from_screenshot = True
-        monkeypatch.setattr(tab._result_widget, "_ensure_web_view", lambda: _FakeWebView())
+        monkeypatch.setattr(
+            tab._result_widget, "_ensure_web_view", lambda: _FakeWebView()
+        )
 
         tab._on_ocr_error("boom")
 
@@ -521,7 +539,7 @@ class TestOcrFinishedEmitsBringToFront:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         observed: list[bool] = []
@@ -532,9 +550,6 @@ class TestOcrFinishedEmitsBringToFront:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", fake_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda result: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *args: True
-        )
         options = OCROptions()
 
         pixmap = QPixmap(4, 4)
@@ -558,14 +573,12 @@ class TestRunOcrAsync:
     时窗口完全无响应。改造后 run_ocr 把后端调用派发到 qasync loop，GUI 保持响应。
     """
 
-    def test_run_ocr_completes_and_renders(
-        self, qapp, qtbot, qasync_loop, monkeypatch
-    ):
+    def test_run_ocr_completes_and_renders(self, qapp, qtbot, qasync_loop, monkeypatch):
         """run_ocr 异步完成后应调 _on_ocr_finished 并清忙时状态。"""
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         finished_calls: list = []
@@ -574,12 +587,7 @@ class TestRunOcrAsync:
             tab, "_call_backend_recognize", lambda *a, **k: _make_plain_text_result()
         )
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            tab, "_on_ocr_finished", lambda r: finished_calls.append(r)
-        )
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *a: True
-        )
+        monkeypatch.setattr(tab, "_on_ocr_finished", lambda r: finished_calls.append(r))
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -610,7 +618,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -622,9 +630,6 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *a: True
-        )
 
         timer_fired: list[bool] = []
         pixmap = QPixmap(4, 4)
@@ -654,7 +659,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -667,9 +672,6 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *a: True
-        )
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -693,7 +695,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         error_calls: list[str] = []
@@ -702,12 +704,7 @@ class TestRunOcrAsync:
             raise RuntimeError("backend boom")
 
         monkeypatch.setattr(tab, "_call_backend_recognize", raising_recognize)
-        monkeypatch.setattr(
-            tab, "_on_ocr_error", lambda msg: error_calls.append(msg)
-        )
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *a: True
-        )
+        monkeypatch.setattr(tab, "_on_ocr_error", lambda msg: error_calls.append(msg))
 
         tab._ocr_from_screenshot = True  # 验证错误路径不复位由 _on_ocr_error 负责
         pixmap = QPixmap(4, 4)
@@ -728,7 +725,7 @@ class TestRunOcrAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         barrier = threading.Event()
@@ -740,12 +737,7 @@ class TestRunOcrAsync:
 
         monkeypatch.setattr(tab, "_call_backend_recognize", blocking_recognize)
         monkeypatch.setattr(tab, "_display_result", lambda r: None)
-        monkeypatch.setattr(
-            tab, "_on_ocr_finished", lambda r: finished_calls.append(r)
-        )
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *a: True
-        )
+        monkeypatch.setattr(tab, "_on_ocr_finished", lambda r: finished_calls.append(r))
 
         pixmap = QPixmap(4, 4)
         pixmap.fill()
@@ -792,7 +784,7 @@ class TestRecognitionPreparationAsync:
         from PySide6.QtGui import QPixmap
 
         from tests.conftest import wait_until_done
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         tab = SingleRecognitionTab()
         gui_thread = threading.get_ident()
@@ -805,9 +797,6 @@ class TestRecognitionPreparationAsync:
 
         monkeypatch.setattr(tab, "_qimage_to_png_bytes", record_thread)
         monkeypatch.setattr(tab, "_display_result", lambda result: None)
-        monkeypatch.setattr(
-            "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded", lambda *args: True
-        )
         pixmap = QPixmap(8, 8)
         pixmap.fill()
         tab.run_ocr(pixmap, OCROptions())
@@ -878,11 +867,13 @@ class TestResultBlockEditedFormulaSync:
 
         refreshed: list = []
         monkeypatch.setattr(
-            tab._preview_widget, "set_content_list",
+            tab._preview_widget,
+            "set_content_list",
             lambda cl: refreshed.append(("content_list", cl)),
         )
         monkeypatch.setattr(
-            tab._preview_widget, "set_text_blocks",
+            tab._preview_widget,
+            "set_text_blocks",
             lambda tb: refreshed.append(("text_blocks", tb)),
         )
 
@@ -911,12 +902,18 @@ class TestPlainTextRendersOnce:
         tab = SingleRecognitionTab()
         counts = {"display_result": 0, "display_text_layout": 0}
         monkeypatch.setattr(
-            tab._result_widget, "display_result",
-            lambda *a, **k: counts.__setitem__("display_result", counts["display_result"] + 1),
+            tab._result_widget,
+            "display_result",
+            lambda *a, **k: counts.__setitem__(
+                "display_result", counts["display_result"] + 1
+            ),
         )
         monkeypatch.setattr(
-            tab._result_widget, "display_text_layout",
-            lambda *a, **k: counts.__setitem__("display_text_layout", counts["display_text_layout"] + 1),
+            tab._result_widget,
+            "display_text_layout",
+            lambda *a, **k: counts.__setitem__(
+                "display_text_layout", counts["display_text_layout"] + 1
+            ),
         )
 
         tab._on_ocr_finished(_make_plain_text_result())
@@ -930,12 +927,18 @@ class TestPlainTextRendersOnce:
         tab = SingleRecognitionTab()
         counts = {"display_result": 0, "display_text_layout": 0}
         monkeypatch.setattr(
-            tab._result_widget, "display_result",
-            lambda *a, **k: counts.__setitem__("display_result", counts["display_result"] + 1),
+            tab._result_widget,
+            "display_result",
+            lambda *a, **k: counts.__setitem__(
+                "display_result", counts["display_result"] + 1
+            ),
         )
         monkeypatch.setattr(
-            tab._result_widget, "display_text_layout",
-            lambda *a, **k: counts.__setitem__("display_text_layout", counts["display_text_layout"] + 1),
+            tab._result_widget,
+            "display_text_layout",
+            lambda *a, **k: counts.__setitem__(
+                "display_text_layout", counts["display_text_layout"] + 1
+            ),
         )
 
         tab._on_ocr_finished(_make_plain_text_result())
@@ -950,7 +953,9 @@ class TestPlainTextRendersOnce:
         回填由 _apply_content_index 完成（不渲染 WebEngine）。
         """
         tab = SingleRecognitionTab()
-        monkeypatch.setattr(tab._result_widget, "display_text_layout", lambda *a, **k: None)
+        monkeypatch.setattr(
+            tab._result_widget, "display_text_layout", lambda *a, **k: None
+        )
         monkeypatch.setattr(tab._result_widget, "display_result", lambda *a, **k: None)
 
         result = _make_plain_text_result()
@@ -966,7 +971,9 @@ class TestPlainTextRendersOnce:
         """纯文本分支同步渲染后，_pending_text_layout 不应残留（避免
         _on_content_list_ready 二次触发 display_text_layout）。"""
         tab = SingleRecognitionTab()
-        monkeypatch.setattr(tab._result_widget, "display_text_layout", lambda *a, **k: None)
+        monkeypatch.setattr(
+            tab._result_widget, "display_text_layout", lambda *a, **k: None
+        )
         monkeypatch.setattr(tab._result_widget, "display_result", lambda *a, **k: None)
 
         tab._on_ocr_finished(_make_plain_text_result())
@@ -978,30 +985,46 @@ class TestPlainTextRendersOnce:
         tab = SingleRecognitionTab()
         counts = {"display_result": 0, "display_text_layout": 0}
         monkeypatch.setattr(
-            tab._result_widget, "display_result",
-            lambda *a, **k: counts.__setitem__("display_result", counts["display_result"] + 1),
+            tab._result_widget,
+            "display_result",
+            lambda *a, **k: counts.__setitem__(
+                "display_result", counts["display_result"] + 1
+            ),
         )
         monkeypatch.setattr(
-            tab._result_widget, "display_text_layout",
-            lambda *a, **k: counts.__setitem__("display_text_layout", counts["display_text_layout"] + 1),
+            tab._result_widget,
+            "display_text_layout",
+            lambda *a, **k: counts.__setitem__(
+                "display_text_layout", counts["display_text_layout"] + 1
+            ),
         )
 
         tab._on_ocr_finished(_make_table_result())
 
         assert counts["display_result"] == 1, "结构化结果应走 display_result 一次"
-        assert counts["display_text_layout"] == 0, "结构化结果不应触发 display_text_layout"
+        assert counts["display_text_layout"] == 0, (
+            "结构化结果不应触发 display_text_layout"
+        )
 
-    def test_structured_formula_result_still_uses_display_result(self, qapp, monkeypatch):
+    def test_structured_formula_result_still_uses_display_result(
+        self, qapp, monkeypatch
+    ):
         """结构化结果（公式）仍走 display_result（恰好一次）。"""
         tab = SingleRecognitionTab()
         counts = {"display_result": 0, "display_text_layout": 0}
         monkeypatch.setattr(
-            tab._result_widget, "display_result",
-            lambda *a, **k: counts.__setitem__("display_result", counts["display_result"] + 1),
+            tab._result_widget,
+            "display_result",
+            lambda *a, **k: counts.__setitem__(
+                "display_result", counts["display_result"] + 1
+            ),
         )
         monkeypatch.setattr(
-            tab._result_widget, "display_text_layout",
-            lambda *a, **k: counts.__setitem__("display_text_layout", counts["display_text_layout"] + 1),
+            tab._result_widget,
+            "display_text_layout",
+            lambda *a, **k: counts.__setitem__(
+                "display_text_layout", counts["display_text_layout"] + 1
+            ),
         )
 
         tab._on_ocr_finished(_make_formula_result())

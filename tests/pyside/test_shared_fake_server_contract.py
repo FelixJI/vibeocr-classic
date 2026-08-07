@@ -134,17 +134,22 @@ def adapter(qasync_loop):
 
 
 class TestQtAdapterContract:
-    def test_submit_progress_result_against_shared_server(self, qasync_loop, adapter) -> None:
+    def test_submit_progress_result_against_shared_server(
+        self, qasync_loop, adapter
+    ) -> None:
         results: list[list] = []
         progress: list[tuple[str, int, int]] = []
         adapter.recognition_result.connect(lambda jid, p: results.append(p))
-        adapter.recognition_progress.connect(lambda jid, c, t: progress.append((jid, c, t)))
+        adapter.recognition_progress.connect(
+            lambda jid, c, t: progress.append((jid, c, t))
+        )
 
         adapter.submit_recognition([("x.png", None, b"1"), ("y.png", None, b"2")])
         _drive(qasync_loop, lambda: len(results) == 1)
 
         assert len(results) == 1
         assert [p["display_name"] for p in results[0]] == ["x.png", "y.png"]
+        assert [p["payload_type"] for p in results[0]] == ["ocr.v1", "ocr.v1"]
         # At least one progress emission fired.
         assert progress
         # Same fake server saw exactly one submit (shared with the raw test).

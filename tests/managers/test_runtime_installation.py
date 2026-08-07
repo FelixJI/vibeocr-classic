@@ -66,6 +66,38 @@ def test_renamed_installer_still_requires_full_binding(tmp_path: Path) -> None:
         client._verify_installer_executable()
 
 
+def test_required_capabilities_come_from_product_component_lock(tmp_path: Path) -> None:
+    client = _bound_client(tmp_path)
+    lock = json.loads(client.component_lock.read_text(encoding="utf-8"))
+    lock["required_capabilities"] = [
+        "ocr.recognition.v2",
+        "pdf.edit.v2",
+    ]
+    client.component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    assert client.required_capabilities() == (
+        "ocr.recognition.v2",
+        "pdf.edit.v2",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, ["ocr.recognition.v2", "ocr.recognition.v2"], [""]],
+)
+def test_required_capabilities_reject_invalid_lock_values(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    client = _bound_client(tmp_path)
+    lock = json.loads(client.component_lock.read_text(encoding="utf-8"))
+    lock["required_capabilities"] = value
+    client.component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(RuntimeInstallerClientError, match="required_capabilities"):
+        client.required_capabilities()
+
+
 def test_manifest_tamper_is_rejected_before_executable(tmp_path: Path) -> None:
     client = _bound_client(tmp_path)
     client.runtime_manifest.write_text("{}\n", encoding="utf-8")

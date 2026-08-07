@@ -23,7 +23,7 @@ from vibeocr.classic.views.batch_recognition_tab import BatchRecognitionWorker
 def _make_worker(service, files, options=None, *, batch_budget=None) -> Any:
     """构造 worker（正常 __init__ 以激活 Qt 信号，但不 start 线程）。"""
     if options is None:
-        from vibeocr.backend.models.ocr_options import OCROptions
+        from vibeocr.classic.recognition_settings import OCROptions
 
         options = OCROptions()
     # 传 mock service；files 用真实 file_info；parent=None 避免线程归属问题。
@@ -58,7 +58,9 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         ]
         worker = _make_worker(mock_service, files)
         completed_signals = []
-        worker.file_completed.connect(lambda fp, st, res: completed_signals.append((fp, st, res)))
+        worker.file_completed.connect(
+            lambda fp, st, res: completed_signals.append((fp, st, res))
+        )
         finished_results = {}
         terminal_statuses = []
         worker.terminal.connect(
@@ -109,14 +111,18 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         """超过 16 个文件时分多批，每批一次 recognize_batch 调用。"""
         files = _make_image_files(tmp_path, 20)
         mock_service = MagicMock()
+
         # 每次 recognize_batch 返回与输入等长的结果列表
         def fake_recognize(images, options):
             return [MagicMock(text=f"r{i}") for i in range(len(images))]
+
         mock_service.recognize_batch.side_effect = fake_recognize
 
         worker = _make_worker(mock_service, files)
         completed_signals = []
-        worker.file_completed.connect(lambda fp, st, res: completed_signals.append((fp, st)))
+        worker.file_completed.connect(
+            lambda fp, st, res: completed_signals.append((fp, st))
+        )
         worker.terminal.connect(lambda status, results: None)
 
         worker.run()
@@ -135,7 +141,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
 
     def test_encoded_byte_budget_is_applied_before_file_reads(self, tmp_path, qtbot):
         """按 stat 大小先分批，单批读取量不超过字节预算。"""
-        from vibeocr.backend.core.batch_budget import BatchBudget
+        from vibeocr.classic.pyside.batch_budget import BatchBudget
 
         sizes = [6, 6, 4]
         files = []
@@ -169,7 +175,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
     ):
         from PIL import Image
 
-        from vibeocr.backend.core.batch_budget import BatchBudget
+        from vibeocr.classic.pyside.batch_budget import BatchBudget
 
         files = []
         for index in range(3):
@@ -197,7 +203,9 @@ class TestBatchRecognitionWorkerRecognizeBatch:
 
         worker.run()
 
-        assert [len(call.args[0]) for call in service.recognize_batch.call_args_list] == [
+        assert [
+            len(call.args[0]) for call in service.recognize_batch.call_args_list
+        ] == [
             1,
             1,
             1,
@@ -205,7 +213,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         assert seen_markers == [0, 1, 2]
 
     def test_oversized_single_image_is_still_submitted(self, tmp_path, qtbot):
-        from vibeocr.backend.core.batch_budget import BatchBudget
+        from vibeocr.classic.pyside.batch_budget import BatchBudget
 
         path = tmp_path / "oversized.bin"
         path.write_bytes(b"x" * 11)
@@ -214,9 +222,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         worker = _make_worker(
             service,
             [{"path": str(path), "name": path.name}],
-            batch_budget=BatchBudget(
-                max_items=2, max_encoded_bytes=5, max_pixels=5
-            ),
+            batch_budget=BatchBudget(max_items=2, max_encoded_bytes=5, max_pixels=5),
         )
         terminal = []
         worker.terminal.connect(lambda status, _results: terminal.append(status))
@@ -238,7 +244,9 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         ]
         worker = _make_worker(mock_service, files)
         completed_signals = []
-        worker.file_completed.connect(lambda fp, st, res: completed_signals.append((fp, st, res)))
+        worker.file_completed.connect(
+            lambda fp, st, res: completed_signals.append((fp, st, res))
+        )
 
         worker.run()
 
@@ -259,6 +267,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
                 # 第一批完成后取消
                 worker._cancelled = True
             return [MagicMock(text="r") for _ in images]
+
         mock_service.recognize_batch.side_effect = fake_recognize
 
         worker = _make_worker(mock_service, files)
@@ -294,11 +303,14 @@ class TestBatchRecognitionWorkerRecognizeBatch:
         mock_service = MagicMock()
         # 只有两个有效图，返回两个结果
         mock_service.recognize_batch.return_value = [
-            MagicMock(text="r1"), MagicMock(text="r2")
+            MagicMock(text="r1"),
+            MagicMock(text="r2"),
         ]
         worker = _make_worker(mock_service, files)
         completed_signals = []
-        worker.file_completed.connect(lambda fp, st, res: completed_signals.append((Path(fp).name, st)))
+        worker.file_completed.connect(
+            lambda fp, st, res: completed_signals.append((Path(fp).name, st))
+        )
 
         worker.run()
 
@@ -321,6 +333,7 @@ class TestBatchRecognitionWorkerRecognizeBatch:
             if call_count[0] == 1:
                 raise RuntimeError("GPU error")
             return [MagicMock(text="r") for _ in images]
+
         mock_service.recognize_batch.side_effect = fake_recognize
 
         worker = _make_worker(mock_service, files)

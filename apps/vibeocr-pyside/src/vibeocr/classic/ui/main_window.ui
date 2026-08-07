@@ -521,7 +521,7 @@
           <item>
            <widget class="QGroupBox" name="groupCache">
             <property name="title">
-              <string>环境检测缓存</string>
+              <string>Runtime 与应用缓存</string>
              </property>
              <layout class="QVBoxLayout" name="cacheLayout">
               <property name="spacing">
@@ -535,20 +535,20 @@
                 <item>
                  <widget class="QPushButton" name="btnRefreshCache">
                  <property name="toolTip">
-                   <string>重新检测 Python、依赖和硬件环境并更新缓存</string>
+                   <string>重新验证产品绑定的 Runtime manifest、组件完整性与 accelerator</string>
                   </property>
                  <property name="text">
-                   <string>重新检测环境</string>
+                   <string>验证 Runtime 状态</string>
                   </property>
                  </widget>
                 </item>
                 <item>
                  <widget class="QPushButton" name="btnClearCache">
                   <property name="toolTip">
-                   <string>清除依赖检测缓存（不影响已下载的模型）</string>
+                   <string>清除 Classic 启动诊断缓存（不影响 Runtime 与已下载模型）</string>
                   </property>
                  <property name="text">
-                   <string>清除检测缓存</string>
+                   <string>清除应用缓存</string>
                   </property>
                  </widget>
                 </item>
@@ -570,7 +570,7 @@
               <item>
                <widget class="QLabel" name="labelCacheStatus">
                 <property name="text">
-                 <string>缓存状态: 未知</string>
+                 <string>Runtime 状态：尚未验证</string>
                 </property>
                 <property name="foregroundRole">
                  <enum>QPalette::PlaceholderText</enum>
@@ -850,30 +850,30 @@
               <item>
                <widget class="QPushButton" name="btnReinstallDeps">
                 <property name="toolTip">
-                 <string>使用 pip 重新安装 paddle/torch/mineru 等 OCR 依赖，不删除任何目录。</string>
+                 <string>选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。</string>
                 </property>
                 <property name="text">
-                 <string>重装 OCR 依赖</string>
+                 <string>选择并确保 Runtime profile</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QPushButton" name="btnInstallMissing">
                 <property name="toolTip">
-                 <string>只安装缺失的 OCR 依赖（已安装的自动跳过，不重复下载）。适合上次安装中途失败后补装。</string>
+                 <string>校验当前 profile，仅在缺失或损坏时下载并补全。</string>
                 </property>
                 <property name="text">
-                 <string>补充安装缺失依赖</string>
+                 <string>补全当前 Runtime</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QPushButton" name="btnUpdateDeps">
                 <property name="toolTip">
-                 <string>检测各 OCR 依赖是否有新版本可用（依据当前主程序要求的版本规格），有则升级。覆盖安装后若依赖版本变化也可用此入口手动更新。</string>
+                 <string>Runtime 版本随 VibeOCR 产品更新统一升级；此处只刷新 component-lock 绑定状态。</string>
                 </property>
                 <property name="text">
-                 <string>更新依赖</string>
+                 <string>刷新产品绑定状态</string>
                 </property>
                </widget>
               </item>
@@ -907,7 +907,7 @@
   <customwidget>
    <class>PreviewWidget</class>
    <extends>QWidget</extends>
-   <header>vibeocr.widgets.preview_widget</header>
+   <header>vibeocr.classic.widgets.preview_widget</header>
    <container>1</container>
   </customwidget>
  </customwidgets>

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 
-from vibeocr.backend import env_manager
 from vibeocr.classic.views.main_window import MainWindow
 from vibeocr.classic.widgets.backend_options_widget import BackendOptionsWidget
 from vibeocr.classic.widgets.toolbar import EdgeToolbar
@@ -47,8 +46,7 @@ def test_slow_gpu_probe_does_not_block_edge_toolbar_drag(qapp, monkeypatch):
         SlowRuntimeInstallerClient,
     )
     monkeypatch.setattr(
-        env_manager,
-        "detect_gpu_info",
+        "vibeocr.classic.widgets.backend_options_widget.detect_gpu_info",
         lambda **_kwargs: {
             "has_gpu": True,
             "name": "NVIDIA GeForce RTX 4090",

@@ -45,7 +45,7 @@ os.environ.setdefault("FLAGS_use_mkldnn", "0")
 # 按逻辑核数设置，避免 i9-14900KF 这类 32 线程 CPU 仅单核推理。
 # 用户可用 VIBEOCR_CPU_THREADS 显式覆盖。
 try:
-    from vibeocr.backend.utils.cpu_info import get_cpu_thread_count
+    from vibeocr.classic.utils.platform_defaults import get_cpu_thread_count
 
     _cpu_threads = str(get_cpu_thread_count())
     os.environ.setdefault("OMP_NUM_THREADS", _cpu_threads)
@@ -58,9 +58,10 @@ except Exception:
 # 禁用 PaddleX 的模型源连接检查
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
-# 导入环境管理模块
-from vibeocr.backend import env_manager  # noqa: E402
-from vibeocr.classic.app_paths import get_install_root  # noqa: E402
+from vibeocr.classic.app_paths import (  # noqa: E402
+    get_bundled_resources_dir,
+    get_install_root,
+)
 from vibeocr.classic.runtime_installation import (  # noqa: E402
     RuntimeInstallerClient,
     RuntimeInstallerClientError,
@@ -69,7 +70,7 @@ from vibeocr.classic.runtime_installation import (  # noqa: E402
 # ============================================================
 # 启动里程碑记录：T0（进程入口）和 T1（运行时就绪）
 # ============================================================
-from vibeocr.classic.startup_metrics import (  # noqa: E402 — 必须在 env_manager 之后
+from vibeocr.classic.startup_metrics import (  # noqa: E402 — 必须在启动环境变量之后
     StartupEvent,
     flush_startup,
     record_startup,
@@ -78,7 +79,7 @@ from vibeocr.classic.startup_metrics import (  # noqa: E402 — 必须在 env_ma
 
 set_startup_origin(_PROCESS_START)
 record_startup(StartupEvent.PROCESS_START, 0.0)  # T0：进程入口基准（0.0）
-record_startup(StartupEvent.RUNTIME_READY)  # T1：env_manager 已就绪
+record_startup(StartupEvent.RUNTIME_READY)  # T1：Classic 启动依赖已就绪
 
 
 def _finish_t3_smoke(app) -> None:
@@ -138,7 +139,7 @@ def _resolve_replacer_module_dir() -> Path | None:
     if meipass is not None and (Path(meipass) / "update_replacer.py").exists():
         return Path(meipass)
     # 开发态：物理拆包后通过统一项目根定位 scripts/。
-    dev_scripts = env_manager.get_project_root() / "scripts"
+    dev_scripts = get_install_root() / "scripts"
     if (dev_scripts / "update_replacer.py").exists():
         return dev_scripts
     return None
@@ -251,7 +252,7 @@ def _cleanup_leftover_old_exes() -> None:
             cleanup_leftover_old_exes,
         )
 
-        app_dir = env_manager.get_project_root()
+        app_dir = get_install_root()
         cleanup_leftover_old_exes(app_dir)
     except Exception as e:
         # 清理失败不影响启动；残留最多占点空间，下次启动再试。
@@ -359,13 +360,13 @@ def _resolve_app_icon_path() -> Path | None:
     打包态（PyInstaller --onedir）resources 目录由 ``--add-data`` 打入
     ``sys._MEIPASS``（即 ``_internal/resources``），而非 exe 同级——
     exe 同级只放运行时创建的可写目录。统一走
-    ``env_manager.get_bundled_resources_dir()`` 定位，避免在 exe 同级找不到
+    ``app_paths.get_bundled_resources_dir()`` 定位，避免在 exe 同级找不到
     图标导致窗口/任务栏/托盘图标不显示。
 
     Returns:
         图标文件路径；找不到时返回 None。
     """
-    icon = env_manager.get_bundled_resources_dir() / "app_icon.ico"
+    icon = get_bundled_resources_dir() / "app_icon.ico"
     return icon if icon.exists() else None
 
 
@@ -399,7 +400,7 @@ def _create_splash(app):
     远早于主窗口。
 
     使用 resources/icon_512.png（512x512，frozen/dev 通用，走
-    ``env_manager.get_bundled_resources_dir()``）。缺失时返回 None，不阻塞启动。
+    ``app_paths.get_bundled_resources_dir()``）。缺失时返回 None，不阻塞启动。
 
     渲染要点（修复用户反馈的三点问题）：
       1. LOGO 太大 → 不直接用 512px 源图，缩放到 ~200px 并放到 320px 卡片上。
@@ -420,7 +421,7 @@ def _create_splash(app):
     from PySide6.QtGui import QColor, QPainter, QPixmap
     from PySide6.QtWidgets import QSplashScreen
 
-    splash_path = env_manager.get_bundled_resources_dir() / "icon_512.png"
+    splash_path = get_bundled_resources_dir() / "icon_512.png"
     if not splash_path.is_file():
         return None
 
@@ -598,7 +599,7 @@ def launch_application() -> int:
     # app.setStyleSheet(theme.global_qss())
 
     # 初始化统一配置管理器
-    project_root = env_manager.get_project_root()
+    project_root = get_install_root()
     cm = ConfigManager.instance(project_root)
 
     # 初始化 OCR 偏好设置单例（必须在 UI 创建之前，否则所有选项读写均静默失败）
@@ -744,7 +745,7 @@ def main() -> int:
 
     def _background_cleanup() -> None:
         try:
-            app_dir = env_manager.get_project_root()
+            app_dir = get_install_root()
             _cleanup_update_artifacts(app_dir)
             _cleanup_leftover_old_exes()
         except Exception as e:

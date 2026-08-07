@@ -1,304 +1,10 @@
-"""Tests for PdfSessionManager(进程化版本)。
-
-新架构:manager 通过 SyncPdfSupervisorClient (supervisor HTTP v2)调用
-supervisor 拥有的 PDF 后端子进程,不持 fitz.Document。
-
-注意:这些测试直接注入旧 PdfBackendClient 指向真实 PDF 后端子进程,
-作为 supervisor 端到端测试的临时替代(supervisor 进程启动较重)。
-标记为 slow,CI 可选跳过。完整迁移后应重写为真实 supervisor 端到端测试。
-"""
+"""Classic-owned unit contracts for ``PdfSessionManager``."""
 
 from __future__ import annotations
 
 import time
 
-import fitz
-import pytest
-
 from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
-
-# These are slow integration tests (spawn a real PDF backend child). They are
-# skipped by default (addopts = "-m 'not slow'"); run with `-m slow`.
-pytestmark = pytest.mark.slow
-
-
-def _create_test_pdf(path, num_pages=2):
-    doc = fitz.open()
-    for i in range(num_pages):
-        page = doc.new_page(width=612, height=792)
-        page.insert_text((72, 72), f"Page {i + 1}", fontsize=12)
-    doc.save(str(path))
-    doc.close()
-    return path
-
-
-@pytest.fixture
-def manager(qapp):
-    # Inject the legacy PdfBackendClient directly so these slow integration
-    # tests keep exercising the real PDF backend child without requiring the
-    # full supervisor process. Production resolves the transport lazily from
-    # the supervisor adapter; this injection is test-only.
-    from vibeocr.backend.services.pdf_backend_client import PdfBackendClient
-
-    mgr = PdfSessionManager(parent=qapp, client=PdfBackendClient.instance())
-    yield mgr
-    mgr.shutdown()
-
-
-@pytest.fixture
-def test_pdf_a(tmp_path):
-    return _create_test_pdf(tmp_path / "a.pdf", num_pages=2)
-
-
-@pytest.fixture
-def test_pdf_b(tmp_path):
-    return _create_test_pdf(tmp_path / "b.pdf", num_pages=3)
-
-
-def _wait_signal(qapp, signal, timeout=15.0):
-    """等待信号触发,期间处理事件循环。返回是否触发。"""
-    fired = [False]
-
-    def _on():
-        fired[0] = True
-
-    signal.connect(_on)
-    deadline = time.monotonic() + timeout
-    try:
-        while not fired[0] and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.03)
-    finally:
-        signal.disconnect(_on)
-    return fired[0]
-
-
-# ---- session 生命周期 --------------------------------------------------
-
-
-class TestPdfSessionManagerSessions:
-    def test_open_session(self, manager, test_pdf_a, qapp):
-        fired = [False]
-        manager.active_changed.connect(lambda: fired.__setitem__(0, True))
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        assert fired[0], "active_changed 应触发"
-        s = manager.active_session
-        assert s is not None
-        assert s.pdf_document.page_count == 2
-
-    def test_active_session_is_last_opened(self, manager, test_pdf_a, test_pdf_b, qapp):
-        manager.open_session(str(test_pdf_a))
-        manager.open_session(str(test_pdf_b))
-        qapp.processEvents()
-        assert manager.active_session.file_path.endswith("b.pdf")
-
-    def test_switch_session(self, manager, test_pdf_a, test_pdf_b, qapp):
-        path_a = str(test_pdf_a)
-        manager.open_session(str(test_pdf_a))
-        manager.open_session(str(test_pdf_b))
-        qapp.processEvents()
-        manager.switch_session(path_a)
-        assert manager.active_session.file_path.endswith("a.pdf")
-
-    def test_close_session(self, manager, test_pdf_a, qapp):
-        path = str(test_pdf_a)
-        manager.open_session(path)
-        qapp.processEvents()
-        manager.close_session(path)
-        qapp.processEvents()
-        assert path not in manager.session_paths
-        assert manager.get_session(path) is None
-
-    def test_session_paths(self, manager, test_pdf_a, test_pdf_b, qapp):
-        manager.open_session(str(test_pdf_a))
-        manager.open_session(str(test_pdf_b))
-        qapp.processEvents()
-        assert len(manager.session_paths) == 2
-
-    def test_get_session(self, manager, test_pdf_a, qapp):
-        path = str(test_pdf_a)
-        manager.open_session(path)
-        qapp.processEvents()
-        s = manager.get_session(path)
-        assert s is not None
-        assert manager.get_session("nonexistent") is None
-
-    def test_open_nonexistent_emits_open_failed(self, manager, qapp):
-        """打开不存在的文件:emit open_failed 信号。"""
-        fired = [False]
-        manager.open_failed.connect(lambda *a: fired.__setitem__(0, True))
-        manager.open_session("/nonexistent/file.pdf")
-        qapp.processEvents()
-        assert fired[0], "open_failed 应触发"
-
-
-# ---- 异步批量打开 ------------------------------------------------------
-
-
-class TestOpenAsync:
-    def test_open_sessions_async_emits_session_added(self, manager, test_pdf_a, qapp):
-        path = str(test_pdf_a)
-        fired = [False]
-        manager.session_added.connect(lambda *a: fired.__setitem__(0, True))
-        manager.open_sessions_async([path])
-        # 异步:等 worker 线程完成 open+load
-        deadline = time.monotonic() + 25.0
-        while not fired[0] and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.05)
-        assert fired[0], "session_added 应触发"
-        assert path in manager.session_paths
-
-    def test_open_sessions_async_skip_existing(self, manager, test_pdf_a, qapp):
-        path = str(test_pdf_a)
-        manager.open_session(path)
-        qapp.processEvents()
-        fired = [False]
-        manager.open_done.connect(lambda: fired.__setitem__(0, True))
-        manager.open_sessions_async([path])
-        deadline = time.monotonic() + 10.0
-        while not fired[0] and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.03)
-        assert fired[0], "open_done 应触发(已存在的文件跳过)"
-
-
-# ---- 插入文件（结构变更）----------------------------------------------
-
-
-class TestPdfSessionManagerInsert:
-    """插入文件/空白页（Bug 3 回归）：dispatch 链路必须端到端工作。
-
-    Bug 3 症状被误报为"插入无响应"。实际 dispatch 正常（页数增加、mutate_done
-    触发），问题在 UI 缩略图刷新（见 test_pdf_tab.py::TestThumbnailAutoRender*）。
-    此处回归 manager 层：insert_from_async 经 mutate worker → 后端 → diff apply
-    完整链路，页数与 thumbnails_invalidated 信号正确。
-    """
-
-    def test_insert_from_async_increases_page_count(
-        self, manager, test_pdf_a, test_pdf_b, qapp
-    ):
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        session = manager.active_session
-        assert session.pdf_document.page_count == 2
-
-        done = [False]
-        manager.mutate_done.connect(lambda *a: done.__setitem__(0, True))
-        manager.insert_from_async(str(test_pdf_b), after_index=0)
-
-        deadline = time.monotonic() + 20.0
-        while not done[0] and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.05)
-
-        assert done[0], "insert_from_async 应触发 mutate_done"
-        assert session.pdf_document.page_count == 5  # 2 + 3
-
-    def test_insert_blank_async_increases_page_count(self, manager, test_pdf_a, qapp):
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        session = manager.active_session
-        assert session.pdf_document.page_count == 2
-
-        done = [False]
-        manager.mutate_done.connect(lambda *a: done.__setitem__(0, True))
-        manager.insert_blank_async(after_index=0)
-
-        deadline = time.monotonic() + 20.0
-        while not done[0] and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.05)
-
-        assert done[0], "insert_blank_async 应触发 mutate_done"
-        assert session.pdf_document.page_count == 3  # 2 + 1
-
-    def test_insert_from_async_emits_thumbnails_invalidated(
-        self, manager, test_pdf_a, test_pdf_b, qapp
-    ):
-        """结构变更（插页）应 emit thumbnails_invalidated（全页失效），
-        供 PdfTab 触发缩略图重渲（Bug 3 刷新链路的上游）。"""
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        invalidated = []
-        manager.thumbnails_invalidated.connect(
-            lambda pages: invalidated.append(list(pages))
-        )
-        manager.insert_from_async(str(test_pdf_b), after_index=0)
-        deadline = time.monotonic() + 20.0
-        while not invalidated and time.monotonic() < deadline:
-            qapp.processEvents()
-            time.sleep(0.05)
-        assert invalidated, "插页应 emit thumbnails_invalidated"
-        # 全量失效（结构变更）
-        assert len(invalidated[0]) == 5
-
-
-# ---- 缩略图失效信号 ----------------------------------------------------
-
-
-class TestRerenderThumbnailsAsync:
-    def test_emits_thumbnails_invalidated(self, manager, test_pdf_a, qapp):
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        fired = [False]
-        manager.thumbnails_invalidated.connect(lambda *a: fired.__setitem__(0, True))
-        manager.rerender_thumbnails_async([0])
-        qapp.processEvents()
-        assert fired[0], "thumbnails_invalidated 应触发"
-
-    def test_empty_indices_does_not_emit(self, manager, test_pdf_a, qapp):
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        manager.rerender_thumbnails_async([])
-        qapp.processEvents()
-
-
-# ---- 文字层状态 --------------------------------------------------------
-
-
-class TestPagesWithoutTextLayer:
-    def test_returns_empty_for_unknown_session(self, manager):
-        assert manager.get_pages_without_text_layer("nonexistent") == []
-
-
-class TestPdfSessionManagerBlockEdit:
-    def test_update_block_text_no_active_session(self, manager):
-        """无活动会话时返回 False。"""
-        assert manager.update_page_block_text(0, 0, "x") is False
-
-
-# ---- shutdown ----------------------------------------------------------
-
-
-class TestPdfSessionManagerShutdown:
-    def test_shutdown_clears_sessions(self, manager, test_pdf_a, qapp):
-        manager.open_session(str(test_pdf_a))
-        qapp.processEvents()
-        manager.shutdown()
-        assert len(manager.session_paths) == 0
-
-
-# ---- 属性 ---------------------------------------------------------------
-
-
-class TestPdfSessionManagerProperties:
-    def test_is_ocr_ready_default_false(self, manager):
-        assert manager.is_ocr_ready is False
-
-    def test_is_deskew_running_default_false(self, manager):
-        assert manager.is_deskew_running is False
-
-    def test_is_mutate_running_default_false(self, manager):
-        assert manager.is_mutate_running is False
-
-    def test_backend_client_exposed(self, manager):
-        """manager 暴露 backend_client 供 PdfTab 缩略图/预览渲染用。"""
-        assert manager.backend_client is not None
-
-    def test_get_modified_sessions_empty(self, manager):
-        assert manager.get_modified_sessions() == []
 
 
 class TestPdfMutateLifecycle:
@@ -384,9 +90,7 @@ class TestPdfMutateLifecycle:
         done = []
         mgr.mutate_done.connect(lambda *args: done.append(args))
 
-        mgr._on_mutate_all_done(
-            "sid-a", MagicMock(), {}, task_id=1, worker=old
-        )
+        mgr._on_mutate_all_done("sid-a", MagicMock(), {}, task_id=1, worker=old)
 
         assert done == []
         assert mgr._mutate_worker is current
@@ -493,7 +197,6 @@ class TestPdfTaskGeneration:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         # 本测试只验证 generation，不应泄漏真实 OCR 后台线程到后续测试。
         with (
@@ -503,6 +206,39 @@ class TestPdfTaskGeneration:
             mgr.start_ocr([0, 1])
 
         assert mgr._task_generation == 1
+        start_mock.assert_called_once_with()
+
+    def test_document_parsing_starts_runtime_job_directly(self, qapp):
+        from unittest.mock import MagicMock, patch
+
+        from PySide6.QtCore import QThread
+
+        from vibeocr.classic.recognition_settings import OCROptions
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+        mgr = PdfSessionManager.__new__(PdfSessionManager)
+        mgr._task_generation = 0
+        mgr._sessions = {}
+        mgr._active_path = "/fake.pdf"
+        mgr._inference_client = MagicMock()
+        mgr._ocr_running = False
+        mgr._ocr_cancelled = False
+        mgr._ocr_worker = None
+        mgr._client = MagicMock()
+        session = MagicMock()
+        session.session_id = "sid1"
+        session.file_path = "/fake.pdf"
+        mgr._sessions[session.file_path] = session
+
+        with patch.object(QThread, "start") as start_mock:
+            started = mgr.start_ocr(
+                [0],
+                ocr_options=OCROptions(pipeline=OCRPipeline.DOCUMENT_PARSING),
+            )
+
+        assert started is True
+        assert mgr._ocr_worker is not None
+        assert mgr._ocr_state == "running"
         start_mock.assert_called_once_with()
 
     def test_ocr_worker_resets_cancel_flag(self, qapp):
@@ -529,7 +265,6 @@ class TestPdfTaskGeneration:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         with patch.object(mgr, "_run_ocr"):
             mgr.start_ocr([0])
@@ -642,7 +377,6 @@ class TestOcrRunnerCancel:
         mgr._sessions["/fake.pdf"] = mock_session
         mgr._active_path = "/fake.pdf"
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
 
         from unittest.mock import patch
 
@@ -733,7 +467,7 @@ class TestOcrPageDoneIncrementalModel:
     def test_page_done_writes_ocr_blocks_to_model(self, qapp, tmp_path):
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         mgr = PdfSessionManager.__new__(PdfSessionManager)
@@ -769,7 +503,7 @@ class TestOcrPageDoneIncrementalModel:
         """result 为 None（失败/空页）时不写 model、不发块，仅转发信号。"""
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         mgr = PdfSessionManager.__new__(PdfSessionManager)
@@ -804,8 +538,9 @@ class TestRunOcrIncrementalSave:
     ):
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
+        from vibeocr.runtime_contracts.pdf import PdfMutationResult
 
         pdf_path = tmp_path / "doc.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 test")
@@ -816,8 +551,7 @@ class TestRunOcrIncrementalSave:
 
         doc = PdfDocument(file_path=str(pdf_path))
         doc.pages = [
-            PdfPageInfo(page_index=i, rect=(0.0, 0.0, 595.0, 842.0))
-            for i in range(3)
+            PdfPageInfo(page_index=i, rect=(0.0, 0.0, 595.0, 842.0)) for i in range(3)
         ]
         session = MagicMock()
         session.session_id = "sid1"
@@ -832,10 +566,14 @@ class TestRunOcrIncrementalSave:
         client = MagicMock()
         # render_preview 返回非空 bytes（避免被当渲染失败）
         client.render_preview.return_value = b"\x89PNG fake"
-        # add_text_layer_batch 返回带 extra.saved=True
-        resp = MagicMock()
-        resp.extra = {"saved": True}
-        client.add_text_layer_batch.return_value = resp
+        client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+            {
+                "schema_version": 2,
+                "instance_id": "runtime-1",
+                "diff": {},
+                "extra": {"saved": True},
+            }
+        )
         mgr._client = client
 
         # mock OCR service：每页返回带 text_blocks 的 result
@@ -855,7 +593,8 @@ class TestRunOcrIncrementalSave:
 
         # sidecar 重定向到 tmp（隔离测试，避免污染真实缓存目录）
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "sessions"
+            "vibeocr.classic.ocr_sidecar._sessions_dir",
+            lambda: tmp_path / "sessions",
         )
 
         runner = MagicMock()
@@ -866,9 +605,9 @@ class TestRunOcrIncrementalSave:
         runner.all_done = MagicMock()
         # _run_ocr 通过 runner._render_pool.map 并发渲染；mock 成返回 3 份 PNG bytes。
         runner._render_pool = MagicMock()
-        runner._render_pool.map.side_effect = (
-            lambda func, indices: [func(index) for index in indices]
-        )
+        runner._render_pool.map.side_effect = lambda func, indices: [
+            func(index) for index in indices
+        ]
 
         mgr._run_ocr(
             runner,
@@ -886,14 +625,16 @@ class TestRunOcrIncrementalSave:
         # 每批已增量落盘，不再整文档压缩，也不再全量拉取模型。
         client.save.assert_not_called()
         client.get_model.assert_not_called()
-        from vibeocr.backend.utils.ocr_sidecar import load_sidecar
+        from vibeocr.classic.ocr_sidecar import load_sidecar
 
         data = load_sidecar(str(pdf_path))
         assert data is not None
         assert data["completed"] is True
         assert doc.is_modified is False
         assert doc.has_structural_change is False
-        assert [call.kwargs["dpi"] for call in client.render_preview.call_args_list] == [
+        assert [
+            call.kwargs["dpi"] for call in client.render_preview.call_args_list
+        ] == [
             200,
             200,
             200,
@@ -905,8 +646,9 @@ class TestRunOcrIncrementalSave:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
+        from vibeocr.runtime_contracts.pdf import PdfMutationResult
 
         pdf_path = tmp_path / "fallback.pdf"
         pdf_path.write_bytes(b"%PDF-1.4 test")
@@ -923,46 +665,58 @@ class TestRunOcrIncrementalSave:
 
         client = MagicMock()
         client.render_preview.return_value = b"png"
-        client.add_text_layer_batch.return_value = SimpleNamespace(
-            extra={"saved": False}
+        client.add_text_layer_batch.return_value = PdfMutationResult.from_payload(
+            {
+                "schema_version": 2,
+                "instance_id": "runtime-1",
+                "diff": {},
+                "extra": {"saved": False},
+            }
         )
         mgr._client = client
         block = SimpleNamespace(
-            text="正文", score=0.9, bbox=(0, 0, 100, 100), polygon=None,
-            page_idx=0, is_manually_edited=False, label="text", order=0,
+            text="正文",
+            score=0.9,
+            bbox=(0, 0, 100, 100),
+            polygon=None,
+            page_idx=0,
+            is_manually_edited=False,
+            label="text",
+            order=0,
         )
         mgr._inference_client = MagicMock()
         mgr._recognize_images_via_job = MagicMock(
             return_value=[SimpleNamespace(text_blocks=[block], preproc_angle=90)]
         )
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "sessions"
+            "vibeocr.classic.ocr_sidecar._sessions_dir",
+            lambda: tmp_path / "sessions",
         )
 
         runner = MagicMock()
         runner._cancelled = False
         runner._task_id = 1
-        runner._render_pool.map.side_effect = (
-            lambda func, indices: [func(index) for index in indices]
-        )
+        runner._render_pool.map.side_effect = lambda func, indices: [
+            func(index) for index in indices
+        ]
 
         mgr._run_ocr(runner, "sid1", [0], None, {}, False)
 
         assert client.save.call_args.kwargs["rewrite_text_layers"] is False
         client.get_model.assert_not_called()
-        from vibeocr.backend.utils.ocr_sidecar import load_sidecar
+        from vibeocr.classic.ocr_sidecar import load_sidecar
 
         data = load_sidecar(str(pdf_path))
         assert data is not None and data["completed"] is True
         assert data["pages"]["0"]["ocr_preproc_angle"] == 90
 
     def test_run_ocr_prefetches_next_render_batch_before_current_ocr(
-        self, qapp, tmp_path, monkeypatch
+        self, qapp, tmp_path
     ):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         pdf_path = tmp_path / "pipeline.pdf"
@@ -998,10 +752,6 @@ class TestRunOcrIncrementalSave:
         mgr._client.get_model.return_value = MagicMock()
         mgr._inference_client = MagicMock()
         mgr._recognize_images_via_job = RecordingOcr().recognize
-        monkeypatch.setattr(
-            "vibeocr.classic.pyside.pdf_session_manager.mirror_to_doc",
-            lambda _model: doc,
-        )
         runner = MagicMock()
         runner._cancelled = False
         runner._task_id = 1
@@ -1017,13 +767,13 @@ class TestRunOcrIncrementalSave:
         ]
 
     def test_run_ocr_repartitions_rendered_bytes_and_isolates_transfer_failure(
-        self, qapp, tmp_path, monkeypatch
+        self, qapp, tmp_path
     ):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
 
-        from vibeocr.backend.core.batch_budget import BatchBudget
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pyside.batch_budget import BatchBudget
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         pdf_path = tmp_path / "transfer-budget.pdf"
@@ -1060,9 +810,6 @@ class TestRunOcrIncrementalSave:
         mgr._recognize_images_via_job = ocr.recognize
         mgr._client = MagicMock()
         mgr._client.get_model.return_value = MagicMock()
-        monkeypatch.setattr(
-            "vibeocr.classic.pyside.pdf_session_manager.mirror_to_doc", lambda _model: doc
-        )
 
         runner = MagicMock()
         runner._cancelled = False
@@ -1090,16 +837,16 @@ class TestStartOcrResumeFilter:
 
         from PySide6.QtCore import QThread
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         pdf_path = tmp_path / "r.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s"
         )
         # 预置 sidecar：页 0 已落盘，未完成
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         mark_pages_saved(str(pdf_path), [0], {0: 0})
 
@@ -1121,7 +868,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})
@@ -1144,15 +890,15 @@ class TestStartOcrResumeFilter:
 
         from PySide6.QtCore import QThread
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         pdf_path = tmp_path / "r2.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s2"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s2"
         )
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         mark_pages_saved(str(pdf_path), [0], {0: 0})
 
@@ -1174,7 +920,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})
@@ -1203,15 +948,15 @@ class TestStartOcrResumeFilter:
 
         from PySide6.QtCore import QThread
 
-        from vibeocr.backend.models.pdf_document import PdfDocument, PdfPageInfo
+        from vibeocr.classic.pdf_workspace import PdfDocument, PdfPageInfo
         from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
         pdf_path = tmp_path / "r3.pdf"
         pdf_path.write_bytes(b"abc")
         monkeypatch.setattr(
-            "vibeocr.backend.utils.ocr_sidecar._sessions_dir", lambda: tmp_path / "s3"
+            "vibeocr.classic.ocr_sidecar._sessions_dir", lambda: tmp_path / "s3"
         )
-        from vibeocr.backend.utils.ocr_sidecar import mark_pages_saved
+        from vibeocr.classic.ocr_sidecar import mark_pages_saved
 
         # 页 0,1 都已落盘
         mark_pages_saved(str(pdf_path), [0, 1], {0: 0, 1: 0})
@@ -1238,7 +983,6 @@ class TestStartOcrResumeFilter:
         session.pdf_document = doc
         mgr._sessions[str(pdf_path)] = session
         mgr._inference_client = MagicMock()
-        mgr._is_mineru_first_use = MagicMock(return_value=False)
         mgr._pdf_settings = MagicMock()
         mgr._overwrite_text_layer = False
         mgr._settings_to_dict = MagicMock(return_value={})

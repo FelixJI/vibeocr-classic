@@ -29,7 +29,6 @@ repo_root = Path(__file__).parent.parent
 source_paths = [
     repo_root / "packages/vibeocr-contracts-py/src",
     repo_root / "packages/vibeocr-runtime-client-py/src",
-    repo_root / "packages/vibeocr-backend/src",
     repo_root / "apps/vibeocr-pyside/src",
 ]
 for source_path in reversed(source_paths):
@@ -40,6 +39,20 @@ pythonpath_parts = [str(path) for path in source_paths]
 if existing_pythonpath:
     pythonpath_parts.append(existing_pythonpath)
 os.environ["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolate_application_log_root(tmp_path_factory):
+    """Route process-wide application logs outside the repository during tests."""
+    from vibeocr.classic.services import log_service
+
+    original_get_install_root = log_service.get_install_root
+    test_install_root = tmp_path_factory.mktemp("vibeocr-test-install-root")
+    log_service.get_install_root = lambda: test_install_root
+    try:
+        yield
+    finally:
+        log_service.get_install_root = original_get_install_root
 
 
 @pytest.fixture(scope="session")

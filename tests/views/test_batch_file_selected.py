@@ -11,7 +11,7 @@ result.markdown_text → AttributeError: 'dict' object has no attribute 'markdow
 
 from unittest.mock import MagicMock
 
-from vibeocr.backend.models.ocr_result import OCRResult
+from vibeocr.classic.recognition_result import OCRResult
 from vibeocr.classic.views.batch_recognition_tab import BatchRecognitionTab
 
 
@@ -21,10 +21,6 @@ def _make_tab(qtbot, monkeypatch, file_path: str, result) -> BatchRecognitionTab
     _preview_widget / _result_widget / _export_widget 全部 mock，避免依赖真实
     文件 I/O 和子组件；_display_result 用 spy 记录调用。
     """
-    monkeypatch.setattr(
-        "vibeocr.backend.pipeline_status.is_pipeline_ever_succeeded",
-        lambda *args, **kwargs: True,
-    )
     tab = BatchRecognitionTab(backend=MagicMock())
     qtbot.addWidget(tab)
 

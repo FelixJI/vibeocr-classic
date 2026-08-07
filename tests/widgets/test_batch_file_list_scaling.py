@@ -38,7 +38,8 @@ def test_document_pipeline_signal_precedes_chunked_rows(qapp, qtbot, monkeypatch
     tab = BatchRecognitionTab(backend=object())
     qtbot.addWidget(tab)
     monkeypatch.setattr(
-        "vibeocr.backend.utils.mime_types.is_document_file", lambda path: path.endswith(".pdf")
+        "vibeocr.classic.utils.mime_types.is_document_file",
+        lambda path: path.endswith(".pdf"),
     )
     monkeypatch.setattr(BatchRecognitionWorker, "start", lambda _self, *_args: None)
     tab._batch_backend = object()

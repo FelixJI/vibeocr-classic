@@ -125,7 +125,7 @@ def snapshot_ocr_result(
         else ()
     )
     if include_content_list:
-        from vibeocr.backend.tables.blocks import validate_table_blocks
+        from vibeocr.classic.table_model import validate_table_blocks
 
         validate_table_blocks(content)
     images = (

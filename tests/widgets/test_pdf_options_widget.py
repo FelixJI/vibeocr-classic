@@ -3,8 +3,8 @@
 
 import pytest
 
-from vibeocr.backend.core.pipelines import OCRPipeline
-from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
+from vibeocr.classic.recognition_settings import PdfGlobalSettings
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.widgets.pdf_options_widget import PdfOptionsWidget
 
 

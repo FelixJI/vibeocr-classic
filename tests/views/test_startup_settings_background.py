@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from tests.qt_responsiveness import assert_qt_event_loop_responsive
-from vibeocr.backend import env_manager
 from vibeocr.classic.utils.shortcuts import create_windows_shortcut
-from vibeocr.classic.views.background_tasks import DependencyUpdateCheckTask
 from vibeocr.classic.views.main_window import MainWindow
 from vibeocr.classic.views.settings_page_controller import (
     SettingsPageController,
@@ -28,70 +27,6 @@ def _controller(qtbot, tmp_path) -> SettingsPageController:
         ocr_ready_callback=lambda: True,
         subprocess_manager=MagicMock(),
     )
-
-
-def test_dependency_update_check_is_responsive_and_single_flight(
-    qtbot, tmp_path, monkeypatch
-):
-    entered = threading.Event()
-    release = threading.Event()
-    calls = 0
-
-    def slow_detect():
-        nonlocal calls
-        calls += 1
-        entered.set()
-        release.wait(timeout=2)
-        return {}
-
-    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
-    results: list[tuple[str, object]] = []
-    task.completed.connect(lambda source, result: results.append((source, result)))
-
-    assert task.request("startup") is True
-    assert task.request("settings") is False
-    assert entered.wait(timeout=1)
-    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
-    assert calls == 1
-
-    release.set()
-    qtbot.waitUntil(lambda: bool(results), timeout=1000)
-    assert results == [("startup", {})]
-
-
-def test_dependency_update_development_mode_short_circuits(
-    qtbot, tmp_path, monkeypatch
-):
-    detect = MagicMock(return_value={})
-    task = DependencyUpdateCheckTask(tmp_path)
-    results: list[object] = []
-    task.completed.connect(lambda _source, result: results.append(result))
-
-    task.request("settings")
-    qtbot.waitUntil(lambda: bool(results), timeout=1000)
-
-    assert results == [{}]
-    detect.assert_not_called()
-
-
-def test_dependency_update_close_drops_late_result(qtbot, tmp_path, monkeypatch):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_detect():
-        entered.set()
-        release.wait(timeout=2)
-        return {}
-
-    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
-    completed = MagicMock()
-    task.completed.connect(completed)
-    task.request("startup")
-    assert entered.wait(timeout=1)
-    task.close()
-    release.set()
-    qtbot.wait(50)
-    completed.assert_not_called()
 
 
 def test_settings_drain_waits_for_owned_cache_task(qtbot, tmp_path):
@@ -115,61 +50,17 @@ def test_settings_drain_waits_for_owned_cache_task(qtbot, tmp_path):
     assert controller.drain(2000) is True
 
 
-def test_settings_first_update_check_does_not_stall_startup(
-    qtbot, tmp_path, monkeypatch
-):
-    entered = threading.Event()
-    release = threading.Event()
-
-    def slow_detect():
-        entered.set()
-        release.wait(timeout=2)
-        return {}
-
-    task = DependencyUpdateCheckTask(tmp_path, operation=slow_detect)
-    assert task.request("settings") is True
-    assert entered.wait(timeout=1)
-
-    window = MagicMock()
-    window._closing = False
-    window._dependency_update_task = task
-    window._startup_update_check_complete = False
-    window._deps_update_requested = False
-    window._continue_ready_startup = MagicMock()
-    MainWindow._maybe_prompt_dependency_updates(window)
-
-    assert window._startup_update_check_complete is True
-    window._continue_ready_startup.assert_called_once_with()
-    assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
-
-    # 结果仍归设置页来源，不会触发 MainWindow 的 startup 提示路径。
-    sources: list[str] = []
-    task.completed.connect(lambda source, _result: sources.append(source))
-    release.set()
-    qtbot.waitUntil(lambda: bool(sources), timeout=1000)
-    assert sources == ["settings"]
-
-
-def test_startup_first_update_check_restores_settings_button(
-    qtbot, tmp_path, monkeypatch
-):
-    task = DependencyUpdateCheckTask(tmp_path)
-    controller = SettingsPageController(
-        ui=QWidget(),
-        project_root=tmp_path,
-        status_callback=lambda _message: None,
-        ocr_ready_callback=lambda: True,
-        subprocess_manager=MagicMock(),
-        dependency_update_task=task,
-    )
-    qtbot.addWidget(controller._ui)
-    button = QPushButton(controller._ui)
-    button.setObjectName("btnUpdateDeps")
+def test_refresh_product_binding_only_reinspects_runtime(qtbot, tmp_path) -> None:
+    controller = _controller(qtbot, tmp_path)
+    controller._show_settings_toast = MagicMock()
+    controller._refresh_env_maintenance_state = MagicMock()
 
     controller._on_update_deps()
-    assert button.isEnabled()
-    assert controller._manual_dependency_update_waiting is False
-    assert task.is_running is False
+
+    controller._show_settings_toast.assert_called_once_with(
+        "Runtime 版本由产品更新统一管理"
+    )
+    controller._refresh_env_maintenance_state.assert_called_once_with()
 
 
 def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatch):
@@ -192,28 +83,35 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     window._project_root = tmp_path
     window._closing = False
     window._machine_cache_running = False
-    window._machine_cache_pending_startup = False
     window._machine_cache_generation = 0
     window._machine_cache_tasks = set()
     window._machine_cache_data = None
     window._dependency_check_complete = False
     window._ocr_ready = False
-    window._settings_controller = None
+    window._statusbar = MagicMock()
+    window._settings_controller = MagicMock()
+    window._check_pending_sync = MagicMock(return_value=False)
+    window._start_supervisor = MagicMock()
     window._request_machine_cache_load = MainWindow._request_machine_cache_load.__get__(
         window
     )
-    window._apply_provisional_machine_cache = (
-        MainWindow._apply_provisional_machine_cache.__get__(window)
-    )
-    window._continue_ready_startup = MagicMock()
+    window._continue_ready_startup = MainWindow._continue_ready_startup.__get__(window)
 
     MainWindow._try_load_cache(window)
     assert entered.wait(timeout=1)
     assert_qt_event_loop_responsive(qtbot, in_flight=lambda: not release.is_set())
+
+    MainWindow._on_dependency_check_finished(window, True, [])
+
+    window._start_supervisor.assert_called_once_with()
+    window._settings_controller.initialize_deferred_backend_options.assert_not_called()
     release.set()
     qtbot.waitUntil(lambda: not window._machine_cache_running, timeout=1000)
 
     assert window._ocr_ready is True
+    window._settings_controller.apply_deferred_machine_cache_status.assert_called_once_with(
+        True
+    )
 
 
 def test_shortcut_creation_is_responsive_single_flight_and_restores_buttons(
@@ -300,16 +198,30 @@ def test_settings_cache_refresh_is_responsive_and_single_flight(
 
     release.set()
     qtbot.waitUntil(button.isEnabled, timeout=1000)
-    assert label.text() == "缓存已刷新"
+    assert label.text() == "Runtime 状态已刷新：cache-info"
 
 
-def test_pending_backend_overrides_background_gpu_result(monkeypatch, tmp_path):
-    monkeypatch.setattr(env_manager, "_runtime_gpu_capability_cache", None)
-    monkeypatch.setattr(
-        env_manager,
-        "is_cache_valid",
-        lambda _root: (True, {"pending_backend": "gpu"}),
+def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
+    qtbot, tmp_path
+) -> None:
+    controller = _controller(qtbot, tmp_path)
+    controller._runtime_installer = MagicMock()
+    controller._runtime_installer.inspect.return_value = SimpleNamespace(
+        ready=True,
+        status="ready",
+        accelerator="nvidia_cuda",
+        backend_version="0.8.0",
+        protocol_version="2.4.0",
+        integrity="verified",
     )
-    assert (
-        env_manager.get_runtime_gpu_capability(tmp_path, detected_has_gpu=False) is True
+    cache_file = tmp_path / ".vibeocr" / "cache.json"
+    cache_file.parent.mkdir(parents=True)
+    cache_file.write_text("owned-by-classic", encoding="utf-8")
+
+    success, summary = controller._refresh_machine_cache_operation()
+
+    assert success is True
+    assert summary == (
+        "已就绪 · Backend 0.8.0 · Protocol 2.4.0 · NVIDIA CUDA · integrity=verified"
     )
+    assert cache_file.read_text(encoding="utf-8") == "owned-by-classic"

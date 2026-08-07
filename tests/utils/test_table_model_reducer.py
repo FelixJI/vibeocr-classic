@@ -1,6 +1,6 @@
 import pytest
 
-from vibeocr.backend.tables.reducer import update_table_cell
+from vibeocr.classic.table_results import update_table_cell
 from vibeocr.runtime_contracts.contracts.tables import (
     TableCellV1,
     TableModelV1,
@@ -90,8 +90,8 @@ def test_update_table_cell_rejects_wrong_table_or_cell_id():
 
 
 def test_result_reducer_finds_reordered_table_by_ids_and_rebuilds_projections():
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
-    from vibeocr.backend.tables.reducer import update_result_table_cell
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
+    from vibeocr.classic.table_results import update_result_table_cell
 
     table = TableModelV1(
         table_id="table-target",
@@ -160,8 +160,8 @@ def test_result_reducer_finds_reordered_table_by_ids_and_rebuilds_projections():
 
 
 def test_result_reducer_preserves_structured_non_table_projections():
-    from vibeocr.backend.models.ocr_result import OCRResult, TextBlock
-    from vibeocr.backend.tables.reducer import update_result_table_cell
+    from vibeocr.classic.recognition_result import OCRResult, TextBlock
+    from vibeocr.classic.table_results import update_result_table_cell
 
     table = TableModelV1(
         table_id="table-mixed",
@@ -223,8 +223,8 @@ def test_result_reducer_preserves_structured_non_table_projections():
 
 
 def test_result_reducer_keeps_table_raw_projection_without_a_text_block():
-    from vibeocr.backend.models.ocr_result import OCRResult
-    from vibeocr.backend.tables.reducer import update_result_table_cell
+    from vibeocr.classic.recognition_result import OCRResult
+    from vibeocr.classic.table_results import update_result_table_cell
 
     table = TableModelV1(
         table_id="table-without-bbox",
@@ -265,7 +265,7 @@ class TestReducerErrorPathsAndCancellation:
         """content_list 非 list 时 raise KeyError（line 65）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import update_result_table_cell
+        from vibeocr.classic.table_results import update_result_table_cell
 
         result = SimpleNamespace(content_list="not a list", text_blocks=[])
         with pytest.raises(KeyError, match="unknown table_id"):
@@ -275,10 +275,12 @@ class TestReducerErrorPathsAndCancellation:
         """table_id 在 content_list 中不存在时 raise KeyError（line 94）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import update_result_table_cell
+        from vibeocr.classic.table_results import update_result_table_cell
 
         result = SimpleNamespace(
-            content_list=[{"type": "table", "table_body": "<table><tr><td>A</td></tr></table>"}],
+            content_list=[
+                {"type": "table", "table_body": "<table><tr><td>A</td></tr></table>"}
+            ],
             text_blocks=[],
         )
         with pytest.raises(KeyError, match="unknown table_id"):
@@ -290,14 +292,16 @@ class TestReducerErrorPathsAndCancellation:
         """content_list=None 时回退到 text_blocks 投影（line 142-154）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         class _Block:
             def __init__(self, text, label="text"):
                 self.text = text
                 self.label = label
 
-        result = SimpleNamespace(content_list=None, text_blocks=[_Block("hello"), _Block("world")])
+        result = SimpleNamespace(
+            content_list=None, text_blocks=[_Block("hello"), _Block("world")]
+        )
         projections = build_result_projections(result)
         assert projections is not None
         assert "hello" in projections[0]
@@ -307,7 +311,7 @@ class TestReducerErrorPathsAndCancellation:
         """text_blocks 回退路径中取消回调返回 None（line 145-146）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         class _Block:
             def __init__(self, text):
@@ -326,7 +330,7 @@ class TestReducerErrorPathsAndCancellation:
         """content_list 投影路径中取消回调返回 None（line 168-169）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[{"type": "text", "text": f"b{i}"} for i in range(200)],
@@ -339,7 +343,7 @@ class TestReducerErrorPathsAndCancellation:
         """_raw_parts_from_content 取消时返回 None（line 162-163）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[{"type": "text", "text": f"b{i}"} for i in range(300)],
@@ -356,7 +360,7 @@ class TestBuildProjectionsBlockTypes:
         """table block → markdown/html/table_model_to_html（line 175-192）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[
@@ -380,7 +384,7 @@ class TestBuildProjectionsBlockTypes:
         """image block → markdown img + html img（line 193-214）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[
@@ -402,7 +406,7 @@ class TestBuildProjectionsBlockTypes:
         """list/code block 的 raw 投影（line 304-316）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[
@@ -421,7 +425,7 @@ class TestBuildProjectionsBlockTypes:
         """text_blocks 通过 content_id 匹配 content_list（line 268-303）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         class _Block:
             def __init__(self, text, content_id=None, content_index=None, label="text"):
@@ -444,7 +448,7 @@ class TestBuildProjectionsBlockTypes:
         """DISCARDED_BLOCK_TYPES 被跳过（line 173-174, 298-299）。"""
         from types import SimpleNamespace
 
-        from vibeocr.backend.tables.reducer import build_result_projections
+        from vibeocr.classic.table_results import build_result_projections
 
         result = SimpleNamespace(
             content_list=[

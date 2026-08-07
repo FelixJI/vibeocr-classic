@@ -81,6 +81,45 @@ class SupervisorClientAdapter(QObject):
     preload_completed = Signal(object)  # ResidencyStatus
     preload_error = Signal(str)
 
+    @classmethod
+    def from_runtime_endpoint(
+        cls,
+        *,
+        base_url: str,
+        session_token: str,
+        instance_id: str,
+        parent: QObject | None = None,
+    ) -> SupervisorClientAdapter:
+        """Own all Protocol clients for one authenticated Runtime endpoint."""
+        from vibeocr.classic.pdf_client import SyncPdfSupervisorClient
+        from vibeocr.runtime_client.client import RuntimeHttpClient, SupervisorClient
+        from vibeocr.runtime_client.sync_client import SyncSupervisorClient
+
+        client = SupervisorClient(
+            base_url=base_url,
+            session_token=session_token,
+            instance_id=instance_id,
+        )
+        return cls(
+            client_factory=lambda: client,
+            pdf_sync_client_factory=lambda: SyncPdfSupervisorClient(
+                base_url=base_url,
+                session_token=session_token,
+                instance_id=instance_id,
+            ),
+            inference_sync_client_factory=lambda: SyncSupervisorClient(
+                base_url=base_url,
+                session_token=session_token,
+                instance_id=instance_id,
+            ),
+            runtime_status_client_factory=lambda: RuntimeHttpClient(
+                base_url=base_url,
+                session_token=session_token,
+                timeout=10.0,
+            ),
+            parent=parent,
+        )
+
     def __init__(
         self,
         *,
@@ -233,6 +272,7 @@ class SupervisorClientAdapter(QObject):
             for sync_client in (
                 self._pdf_sync_client,
                 self._inference_sync_client,
+                self._runtime_status_client,
             ):
                 try:
                     if sync_client is not None:
@@ -267,6 +307,7 @@ class SupervisorClientAdapter(QObject):
                 for sync_client in (
                     self._pdf_sync_client,
                     self._inference_sync_client,
+                    self._runtime_status_client,
                 ):
                     if sync_client is not None:
                         try:
@@ -295,6 +336,7 @@ class SupervisorClientAdapter(QObject):
             for sync_client in (
                 self._pdf_sync_client,
                 self._inference_sync_client,
+                self._runtime_status_client,
             ):
                 try:
                     if sync_client is not None:

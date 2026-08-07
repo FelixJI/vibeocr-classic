@@ -31,14 +31,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vibeocr.classic.app_paths import get_bundled_resources_dir
 from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.pyside import settings_runtime
 from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
-from vibeocr.classic.views.background_tasks import (
-    DependencyUpdateCheckTask,
-    FunctionTask,
-)
+from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
 from vibeocr.runtime_contracts import (
     PipelineSpec,
@@ -66,9 +64,7 @@ def _is_bundled() -> bool:
 
 def _resolve_shortcut_icon_path() -> str:
     """解析快捷方式图标路径（.ico），兼容开发态与打包态。"""
-    from vibeocr.backend import env_manager
-
-    icon = env_manager.get_bundled_resources_dir() / "app_icon.ico"
+    icon = get_bundled_resources_dir() / "app_icon.ico"
     return str(icon) if icon.exists() else ""
 
 
@@ -87,7 +83,6 @@ class SettingsPageController:
         subprocess_manager,
         install_succeeded_callback: Callable[[], None] | None = None,
         gpu_capability_callback: Callable[[bool], None] | None = None,
-        dependency_update_task: DependencyUpdateCheckTask | None = None,
         defer_backend_initialization: bool = False,
         defer_machine_cache_status: bool = False,
         runtime_status_callback: Callable[[str], None] | None = None,
@@ -107,18 +102,12 @@ class SettingsPageController:
         # 没联动 MainWindow._ocr_ready / 子进程 Worker，导致装完仍提示"未就绪"。
         # 现由 MainWindow 传入一个触发 dependency_manager.check_dependencies
         # 的回调，使设置页安装成功后与首启路径行为一致（检测完成回调里自动
-        # 设 _ocr_ready + 启动 Worker + 消费 pending_backend）。
+        # 设 _ocr_ready + 启动 Worker）。
         self._install_succeeded_callback = install_succeeded_callback
         self._gpu_capability_callback = gpu_capability_callback
-        self._dependency_update_task = (
-            dependency_update_task or DependencyUpdateCheckTask(project_root, ui)
-        )
-        self._owns_dependency_update_task = dependency_update_task is None
         self._runtime_has_gpu: bool | None = None
         self._defer_backend_initialization = defer_backend_initialization
         self._defer_machine_cache_status = defer_machine_cache_status
-        self._pending_update_install = False
-        self._manual_dependency_update_waiting = False
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._runtime_adapter = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
@@ -149,13 +138,6 @@ class SettingsPageController:
         # 宿主 widget 销毁时先冻结后台回调，避免迟到结果访问已释放的 Qt 对象。
         ui.destroyed.connect(self.request_shutdown)
 
-        self._dependency_update_task.completed.connect(
-            self._on_dependency_update_check_completed
-        )
-        self._dependency_update_task.failed.connect(
-            self._on_dependency_update_check_failed
-        )
-
     def request_shutdown(self) -> None:
         """Release background workers owned by settings-page widgets.
 
@@ -164,8 +146,6 @@ class SettingsPageController:
         """
         self._closing = True
         self._cancel_pending_maintenance_dialog()
-        if self._owns_dependency_update_task:
-            self._dependency_update_task.close()
         self._preload_poll_timer.stop()
         self._preload_selected = ()
         self._preload_loaded_count = 0
@@ -214,14 +194,10 @@ class SettingsPageController:
         # The completion callback removes each task on the GUI thread.  Waiting
         # for the set to become empty also drains queued callbacks that capture UI.
         cache_drained = not self._cache_tasks
-        update_drained = (
-            not self._owns_dependency_update_task
-            or self._dependency_update_task.is_drained()
-        )
         from vibeocr.classic.utils.dialog_workers import are_dialog_workers_drained
 
         dialogs_drained = are_dialog_workers_drained()
-        return gpu_drained and cache_drained and update_drained and dialogs_drained
+        return gpu_drained and cache_drained and dialogs_drained
 
     def shutdown(self, timeout_ms: int = 3000) -> bool:
         """Compatibility entry point for callers outside MainWindow."""
@@ -639,7 +615,7 @@ class SettingsPageController:
         )
 
     def initialize_deferred_backend_options(self) -> None:
-        """机器缓存已在后台预热后，再构造 GPU 设置组件。"""
+        """为显式延迟初始化的独立宿主构造 Runtime profile 组件。"""
         if not self._closing:
             self._init_backend_options_in_group()
 
@@ -655,12 +631,6 @@ class SettingsPageController:
         self._runtime_has_gpu = bool(has_gpu)
         if self._gpu_capability_callback is not None:
             self._gpu_capability_callback(bool(has_gpu))
-        if self._pending_update_install:
-            self._pending_update_install = False
-            self._open_install_dialog(
-                missing_only=False,
-                force_backend="gpu" if has_gpu else "cpu",
-            )
 
     def _on_backend_change_requested(self, target: str) -> None:
         """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
@@ -1153,14 +1123,14 @@ class SettingsPageController:
     # ============================================================
 
     def _on_refresh_cache_clicked(self) -> None:
-        """在线程池刷新机器缓存，避免机器码探测阻塞 GUI。"""
+        """在线程池重新检查产品绑定的 Runtime。"""
         if self._closing or self._cache_refresh_running:
             return
         self._cache_refresh_running = True
         button = self._ui.findChild(QPushButton, "btnRefreshCache")
         if button:
             button.setEnabled(False)
-        self._update_cache_status("正在重新检测环境（可能需要数十秒）...")
+        self._update_cache_status("正在验证 Runtime manifest 与组件状态...")
         self._machine_cache_generation += 1
         generation = self._machine_cache_generation
 
@@ -1172,59 +1142,41 @@ class SettingsPageController:
                 return
             success, info = result
             if success:
-                self._apply_cache_status(generation, True, info, "缓存已刷新")
-                self._show_settings_toast("机器/依赖缓存已重置（下次启动时重新检测）")
-                logger.debug("[缓存] 已刷新机器/依赖缓存")
+                self._apply_cache_status(
+                    generation,
+                    True,
+                    info,
+                    f"Runtime 状态已刷新：{info}",
+                )
+                self._show_settings_toast("Runtime manifest 与组件状态已重新验证")
+                logger.debug("[Runtime] 已重新验证产品绑定状态")
             else:
-                self._apply_cache_status(generation, False, "", "缓存刷新失败")
+                self._apply_cache_status(generation, False, "", "Runtime 验证失败")
 
         def failed(error: str) -> None:
             self._cache_refresh_running = False
             if button:
                 button.setEnabled(True)
             if generation == self._machine_cache_generation:
-                self._update_cache_status(f"缓存刷新失败：{error}")
+                self._update_cache_status(f"Runtime 验证失败：{error}")
 
         self._run_cache_operation(
             self._refresh_machine_cache_operation, finished, failed
         )
 
     def _refresh_machine_cache_operation(self) -> tuple[bool, str]:
-        """真正重检测：清环境检测字段 → 触发完整检测 → 读回 cache info。
-
-        在 _run_cache_operation 后台线程执行。完整检测耗时数十秒
-        （40+ subprocess + paddle import），UI 通过按钮 disable + 进度文案提示。
-
-        注意：**不清 pipeline_success 字段**——它是运行时累积的状态（哪些
-        管道曾成功跑过），不属于"环境检测"范畴。清掉会导致 _decide_recognize_timeout
-        误判"模型未缓存"，给 OCR 600s 超时。用 reset_cache_to_empty 会清
-        deps/hardware_info 但不保留 pipeline_success，故这里手动保留。
-        """
-        from vibeocr.backend import env_manager
-        from vibeocr.classic.machine_cache import get_cache_info, load_cache, save_cache
-
-        # 1. 备份 pipeline_success（运行时状态，不应被环境重检测清掉）
-        cached = load_cache(self._project_root) or {}
-        preserved_pipeline_success = cached.get("pipeline_success", {})
-        preserved_network = cached.get("network", {})
-        # 2. 清环境检测字段，强制下次检测为"全量"
-        from vibeocr.classic.machine_cache import reset_cache_to_empty
-
-        reset_cache_to_empty(self._project_root)
-        # 3. 跑完整检测（use_cache=False 强制走 _check_imports 全量探测）
-        env_manager.check_embedded_environment_dependencies(
-            self._project_root,
-            use_cache=False,
+        """通过稳定 Installer interface 验证完整 Runtime 绑定。"""
+        inspection = self._runtime_installer.inspect()
+        accelerator = (
+            "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
         )
-        # 4. 还原保留的运行时状态字段
-        if preserved_pipeline_success or preserved_network:
-            new_cached = load_cache(self._project_root) or {}
-            if preserved_pipeline_success:
-                new_cached["pipeline_success"] = preserved_pipeline_success
-            if preserved_network:
-                new_cached["network"] = preserved_network
-            save_cache(self._project_root, new_cached)
-        return True, get_cache_info(self._project_root)
+        readiness = "已就绪" if inspection.ready else f"未就绪({inspection.status})"
+        summary = (
+            f"{readiness} · Backend {inspection.backend_version} · "
+            f"Protocol {inspection.protocol_version} · {accelerator} · "
+            f"integrity={inspection.integrity}"
+        )
+        return True, summary
 
     def _run_after_supervisor_invalidated(
         self, continuation: Callable[[], None]
@@ -1327,7 +1279,7 @@ class SettingsPageController:
 
         def _on_install_succeeded() -> None:
             # 装完依赖联动 MainWindow：刷新设置页状态 + 触发重新检测依赖
-            # （检测完成回调里自动设 _ocr_ready、启动子进程 Worker、消费 pending_backend）。
+            # （检测完成回调里自动设 _ocr_ready 并启动子进程 Worker）。
             # 不直接设 _ocr_ready=True：让真实检测反映"装了但间接依赖没装完"等
             # 异常状态，避免假就绪。
             self._refresh_env_maintenance_state()
@@ -1395,67 +1347,6 @@ class SettingsPageController:
         """组件只能随产品 component-lock 整组升级；此处只刷新完整性。"""
         self._show_settings_toast("Runtime 版本由产品更新统一管理")
         self._refresh_env_maintenance_state()
-
-    def _on_dependency_update_check_completed(
-        self, source: str, result: object
-    ) -> None:
-        if self._closing:
-            return
-        if self._manual_dependency_update_waiting:
-            self._manual_dependency_update_waiting = False
-            button = self._ui.findChild(QPushButton, "btnUpdateDeps")
-            if button:
-                button.setEnabled(True)
-                button.setText("更新依赖")
-        if source != "settings":
-            return
-        updates = dict(result) if isinstance(result, dict) else {}
-        logger.info("[依赖更新] 检测完成，待更新包数=%d：%s", len(updates), updates)
-        if not updates:
-            self._show_settings_toast("依赖已是最新")
-            return
-
-        # 列出待更新包让用户确认
-        lines = []
-        for pkg, (installed, required) in updates.items():
-            lines.append(f"  • {pkg}：{installed or '（未安装）'} → {required}")
-        detail = "\n".join(lines)
-        reply = QMessageBox.question(
-            None,
-            "确认更新依赖",
-            f"检测到以下依赖有新版本可用：\n\n{detail}\n\n"
-            "将下载并升级（使用当前推理后端）。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            logger.info("[依赖更新] 用户在确认对话框选择 No，已取消")
-            return
-
-        # 走全量安装（install_embedded_dependencies），后端用当前值
-        current_backend = self._runtime_backend_or_none()
-        if current_backend is None:
-            self._pending_update_install = True
-            self._show_settings_toast("等待后台 GPU 探测完成后开始更新")
-            return
-        logger.info(
-            "[依赖更新] 用户确认，开始打开安装对话框（后端=%s）", current_backend
-        )
-        self._open_install_dialog(missing_only=False, force_backend=current_backend)
-
-    def _on_dependency_update_check_failed(self, source: str, error: str) -> None:
-        if self._closing:
-            return
-        if self._manual_dependency_update_waiting:
-            self._manual_dependency_update_waiting = False
-            button = self._ui.findChild(QPushButton, "btnUpdateDeps")
-            if button:
-                button.setEnabled(True)
-                button.setText("更新依赖")
-        if source != "settings":
-            return
-        logger.warning("[依赖更新] 检测失败: %s", error)
-        QMessageBox.warning(None, "检测失败", f"检测依赖更新时出错：\n{error}")
 
     def _runtime_backend_or_none(self) -> str | None:
         """只消费后台 Installer inspect 已回填的后端，不在 GUI 线程探测。"""
@@ -1855,41 +1746,21 @@ class SettingsPageController:
         return "✗ 未安装"
 
     def _on_clear_cache_clicked(self) -> None:
-        """清除缓存按钮点击。
-
-        保留 pipeline_success（运行时累积状态，清掉会导致 OCR 误判未缓存）。
-        """
+        """清除 Classic 自有的启动环境检测缓存。"""
         reply = QMessageBox.question(
             None,
             "确认清除",
-            "确定要清除环境检测缓存吗？\n"
-            "下次启动时需要重新检测依赖与硬件。\n"
-            "（管道运行状态会保留，不影响 OCR 超时判定）",
+            "确定要清除环境检测缓存吗？\n下次启动时需要重新检测应用环境与硬件。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            from vibeocr.classic.machine_cache import (
-                load_cache,
-                reset_cache_to_empty,
-                save_cache,
-            )
+            from vibeocr.classic.machine_cache import reset_cache_to_empty
 
-            # 保留运行时状态字段，只清环境检测数据
-            cached = load_cache(self._project_root) or {}
-            preserved_pipeline_success = cached.get("pipeline_success", {})
-            preserved_network = cached.get("network", {})
             reset_cache_to_empty(self._project_root)
-            if preserved_pipeline_success or preserved_network:
-                new_cached = load_cache(self._project_root) or {}
-                if preserved_pipeline_success:
-                    new_cached["pipeline_success"] = preserved_pipeline_success
-                if preserved_network:
-                    new_cached["network"] = preserved_network
-                save_cache(self._project_root, new_cached)
             self._update_cache_status("缓存已清除")
-            logger.debug("[缓存] 已清除（保留 pipeline_success）")
+            logger.debug("[缓存] 已清除 Classic 启动环境检测状态")
 
     def _update_cache_status(self, status: str | None = None) -> None:
         """更新缓存状态；校验机器码的路径始终在线程池执行。"""

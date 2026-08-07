@@ -43,7 +43,9 @@ def main_window(qapp, qtbot, tmp_path, monkeypatch):
         if window._shutdown_phase == "idle":
             window._begin_shutdown_requests()
             probes = window._collect_shutdown_gui_probes()
-            qtbot.waitUntil(lambda: all(bool(probe()) for _name, probe in probes), timeout=7000)
+            qtbot.waitUntil(
+                lambda: all(bool(probe()) for _name, probe in probes), timeout=7000
+            )
             window._shutdown_phase = "ready"
         elif window._shutdown_phase == "draining":
             qtbot.waitUntil(lambda: window._shutdown_phase == "ready", timeout=7000)
@@ -91,9 +93,7 @@ def _configure_gui_poll_shutdown(window, monkeypatch, *, settings_is_drained):
     )
     window._edge_toolbar = SimpleNamespace(close=lambda: None)
     monkeypatch.setattr(window, "_save_layout", lambda: None)
-    monkeypatch.setattr(
-        "vibeocr.classic.client.shutdown_backend_client", lambda: None
-    )
+    monkeypatch.setattr("vibeocr.classic.client.shutdown_backend_client", lambda: None)
     return calls
 
 
@@ -173,9 +173,7 @@ def test_shutdown_requests_delayed_startup_update(main_window, qtbot, monkeypatc
 
     lifecycle.request_shutdown.assert_called_once_with()
     probes = main_window._collect_shutdown_gui_probes()
-    qtbot.waitUntil(
-        lambda: all(bool(probe()) for _name, probe in probes), timeout=7000
-    )
+    qtbot.waitUntil(lambda: all(bool(probe()) for _name, probe in probes), timeout=7000)
     main_window._shutdown_phase = "ready"
 
 
@@ -204,6 +202,78 @@ def test_closing_discards_late_lazy_prewarm(main_window, qtbot, monkeypatch):
     qtbot.waitUntil(lambda: main_window._shutdown_phase == "ready", timeout=2000)
 
     builder.assert_not_called()
+
+
+@pytest.mark.parametrize("has_gpu", [False, True])
+def test_settings_gpu_callback_updates_main_window_state(qtbot, has_gpu):
+    """设置页解析结果经 MainWindow 保存并广播，不读取共享缓存。"""
+    from vibeocr.classic.views.settings_page_controller import (
+        SettingsPageController,
+    )
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    host._closing = False
+    host._runtime_gpu_capability = None
+    host._apply_gpu_gating_to_all = MagicMock()
+    controller = SimpleNamespace(
+        _closing=False,
+        _runtime_has_gpu=None,
+        _gpu_capability_callback=lambda resolved: (
+            MainWindow._on_gpu_capability_resolved(host, resolved)
+        ),
+    )
+
+    SettingsPageController._on_gpu_capability_resolved(controller, has_gpu)
+
+    assert controller._runtime_has_gpu is has_gpu
+    assert host._runtime_gpu_capability is has_gpu
+    host._apply_gpu_gating_to_all.assert_called_once_with(has_gpu)
+
+
+@pytest.mark.parametrize("has_gpu", [False, True])
+def test_lazy_tab_rebroadcasts_resolved_gpu_state(qapp, qtbot, has_gpu):
+    """懒加载控件构造后由 MainWindow 重放已解析的 GPU 状态。"""
+    from PySide6.QtWidgets import QTabWidget, QVBoxLayout
+
+    from vibeocr.classic.widgets.preprocess_options_widget import (
+        PreprocessOptionsWidget,
+    )
+    from vibeocr.classic.widgets.screenshot_options_widget import (
+        ScreenshotOptionsWidget,
+    )
+    from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+    host = QWidget()
+    qtbot.addWidget(host)
+    tab_widget = QTabWidget(host)
+    tab_widget.addTab(QWidget(), "占位")
+
+    container = QWidget(host)
+    layout = QVBoxLayout(container)
+    preprocess = PreprocessOptionsWidget(container)
+    screenshot = ScreenshotOptionsWidget(container)
+    layout.addWidget(preprocess)
+    layout.addWidget(screenshot)
+    assert preprocess.gpu_capability is None
+
+    index = 0
+    generation = 1
+    host._lazy_tab_build_scheduled = None
+    host._closing = False
+    host._lazy_tab_generation = generation
+    host._lazy_tab_builders = {index: ("about", lambda: container)}
+    host._runtime_gpu_capability = has_gpu
+    host._ui = SimpleNamespace(tabWidget=tab_widget)
+    host._restore_lazy_tab_layout = lambda _role, _widget: None
+    host._apply_gpu_gating_to_all = lambda resolved: (
+        MainWindow._apply_gpu_gating_to_all(host, resolved)
+    )
+
+    MainWindow._build_lazy_tab_on_gui(host, index, generation)
+
+    assert preprocess.gpu_capability is has_gpu
+    assert screenshot._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is has_gpu
 
 
 def test_restored_heavy_tab_builds_after_first_show_on_gui_thread(

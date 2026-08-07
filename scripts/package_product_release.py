@@ -11,14 +11,15 @@ import zipfile
 from pathlib import Path
 
 if __package__:
-    from .bind_component_releases import bind_product_releases
+    from .bind_component_releases import bind_product_releases, bind_protocol_release
 else:
-    from bind_component_releases import bind_product_releases
+    from bind_component_releases import bind_product_releases, bind_protocol_release
 
 FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 PROHIBITED_ROOTS = {".git", "apps", "contracts", "packages", "supervisor", "tests"}
 EXPECTED_PRODUCT_ROOTS = {
     "_internal",
+    "frontend-protocol-lock.json",
     "LICENSE",
     "updater.exe",
     "VibeOCR.exe",
@@ -69,6 +70,8 @@ def package_product_release(
     frontend_version: str,
     source_commit: str,
     component_lock: Path,
+    frontend_protocol_lock: Path,
+    frontend_protocol_release_dir: Path,
     protocol_release_dir: Path,
     backend_release_dir: Path,
     output: Path,
@@ -92,6 +95,15 @@ def package_product_release(
         raise ValueError(f"unexpected product root items: {unexpected}")
     lock_path = component_lock.resolve(strict=True)
     lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    frontend_lock_path = frontend_protocol_lock.resolve(strict=True)
+    frontend_lock = json.loads(frontend_lock_path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(frontend_lock, dict)
+        or not isinstance(frontend_lock.get("repository"), str)
+        or not isinstance(frontend_lock.get("version"), str)
+        or not isinstance(frontend_lock.get("artifacts"), dict)
+    ):
+        raise ValueError("frontend Protocol lock is incomplete")
     protocol = lock["protocol"]
     backend = lock["backend"]
     required_capabilities = tuple(lock["required_capabilities"])
@@ -110,9 +122,22 @@ def package_product_release(
         )
         if json.loads(generated.read_text(encoding="utf-8")) != lock:
             raise ValueError("committed component lock differs from verified releases")
+        frontend_generated = Path(temp) / "frontend-protocol-lock.json"
+        bind_protocol_release(
+            release_dir=frontend_protocol_release_dir,
+            repository=str(frontend_lock["repository"]),
+            version=str(frontend_lock["version"]),
+            output=frontend_generated,
+        )
+        if json.loads(frontend_generated.read_text(encoding="utf-8")) != frontend_lock:
+            raise ValueError(
+                "committed frontend Protocol lock differs from verified release"
+            )
 
     embedded_lock = product_root / "component-lock.json"
     shutil.copyfile(lock_path, embedded_lock)
+    embedded_frontend_lock = product_root / "frontend-protocol-lock.json"
+    shutil.copyfile(frontend_lock_path, embedded_frontend_lock)
     (product_root / "version.json").write_text(
         _canonical_json({"version": frontend_version}),
         encoding="utf-8",
@@ -145,11 +170,13 @@ def package_product_release(
                 "frontend_version": frontend_version,
                 "source_commit": source_commit,
                 "component_lock_sha256": _sha256(embedded_lock),
+                "frontend_protocol_lock_sha256": _sha256(embedded_frontend_lock),
                 "shared_root": "data",
                 "products": {
                     frontend: {
                         "root": ".",
                         "component_lock": "component-lock.json",
+                        "frontend_protocol_lock": "frontend-protocol-lock.json",
                     }
                 },
                 "files": {
@@ -191,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frontend-version", required=True)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--component-lock", type=Path, required=True)
+    parser.add_argument("--frontend-protocol-lock", type=Path, required=True)
+    parser.add_argument("--frontend-protocol-release-dir", type=Path, required=True)
     parser.add_argument("--protocol-release-dir", type=Path, required=True)
     parser.add_argument("--backend-release-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -202,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
             frontend_version=args.frontend_version,
             source_commit=args.source_commit,
             component_lock=args.component_lock,
+            frontend_protocol_lock=args.frontend_protocol_lock,
+            frontend_protocol_release_dir=args.frontend_protocol_release_dir,
             protocol_release_dir=args.protocol_release_dir,
             backend_release_dir=args.backend_release_dir,
             output=args.output,

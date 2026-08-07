@@ -278,6 +278,7 @@ def test_submit_recognition_emits_submitted_progress_result(
     assert job_id == "job-1"
     # Two result entries, in input order.
     assert [p["display_name"] for p in payload] == ["a.png", "b.png"]
+    assert [p["payload_type"] for p in payload] == ["ocr.v1", "ocr.v1"]
     assert gen == 1
 
 
@@ -471,3 +472,57 @@ def test_runtime_status_http_client_is_built_lazily() -> None:
     assert adapter.runtime_status_client is status_client
     assert adapter.runtime_status_client is status_client
     assert calls == ["created"]
+
+
+def test_runtime_endpoint_factory_owns_all_protocol_clients(monkeypatch) -> None:
+    created: list[tuple[str, dict[str, object]]] = []
+    closed: list[str] = []
+
+    class Client:
+        def __init__(self, kind: str, **kwargs: object) -> None:
+            self.kind = kind
+            self.kwargs = kwargs
+            created.append((kind, kwargs))
+
+        def close(self) -> None:
+            closed.append(self.kind)
+
+    monkeypatch.setattr(
+        "vibeocr.runtime_client.client.SupervisorClient",
+        lambda **kwargs: Client("async", **kwargs),
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.pdf_client.SyncPdfSupervisorClient",
+        lambda **kwargs: Client("pdf", **kwargs),
+    )
+    monkeypatch.setattr(
+        "vibeocr.runtime_client.sync_client.SyncSupervisorClient",
+        lambda **kwargs: Client("sync", **kwargs),
+    )
+    monkeypatch.setattr(
+        "vibeocr.runtime_client.client.RuntimeHttpClient",
+        lambda **kwargs: Client("status", **kwargs),
+    )
+
+    adapter = SupervisorClientAdapter.from_runtime_endpoint(
+        base_url="http://127.0.0.1:43210",
+        session_token="token",
+        instance_id="runtime-1",
+    )
+
+    assert [kind for kind, _kwargs in created] == ["async"]
+    assert adapter.pdf_sync_client.kind == "pdf"
+    assert adapter.inference_sync_client.kind == "sync"
+    assert adapter.runtime_status_client.kind == "status"
+    assert [kind for kind, _kwargs in created] == ["async", "pdf", "sync", "status"]
+    assert all(
+        kwargs["base_url"] == "http://127.0.0.1:43210"
+        and kwargs["session_token"] == "token"
+        for _kind, kwargs in created
+    )
+    assert created[0][1]["instance_id"] == "runtime-1"
+    assert created[1][1]["instance_id"] == "runtime-1"
+    assert created[2][1]["instance_id"] == "runtime-1"
+    assert created[3][1]["timeout"] == 10.0
+    adapter.shutdown()
+    assert closed == ["pdf", "sync", "status"]

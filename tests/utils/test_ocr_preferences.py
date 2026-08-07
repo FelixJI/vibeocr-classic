@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from vibeocr.backend.core.pipelines import OCRPipeline
-from vibeocr.backend.models.ocr_options import OCROptions
+from vibeocr.classic.recognition_settings import OCROptions
+from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 from vibeocr.classic.utils.ocr_preferences import OCRPreferences
 
 
@@ -33,7 +33,6 @@ class TestOCRPreferencesNewFields:
 
         options = OCROptions(
             pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_wireless_table=False,
             use_table_orientation_classify=False,
             use_ocr_results_with_table_cells=False,
         )
@@ -45,7 +44,6 @@ class TestOCRPreferencesNewFields:
         loaded = prefs2.get_options()
 
         assert loaded.pipeline == OCRPipeline.TABLE_RECOGNITION
-        assert loaded.use_wireless_table is False
         assert loaded.use_table_orientation_classify is False
         assert loaded.use_ocr_results_with_table_cells is False
 
@@ -73,7 +71,7 @@ class TestOCRPreferencesNewFields:
 
         batch_opts = OCROptions(
             pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_wireless_table=True,
+            use_table_orientation_classify=False,
         )
         prefs.set_batch_options(batch_opts)
 
@@ -82,7 +80,7 @@ class TestOCRPreferencesNewFields:
         loaded = prefs2.get_batch_options()
 
         assert loaded.pipeline == OCRPipeline.TABLE_RECOGNITION
-        assert loaded.use_wireless_table is True
+        assert loaded.use_table_orientation_classify is False
 
     def test_all_pipelines_persist(self, tmp_config_dir):
         """所有管道类型都应能正确保存和恢复"""
@@ -107,7 +105,6 @@ class TestOCRPreferencesNewFields:
 
         options = OCROptions(
             pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_wireless_table=True,
             use_table_orientation_classify=False,
             use_ocr_results_with_table_cells=True,
         )
@@ -119,7 +116,6 @@ class TestOCRPreferencesNewFields:
 
         assert data["version"] == 4
         main_data = data["main"]["TABLE_RECOGNITION"]
-        assert main_data["use_wireless_table"] is True
         assert main_data["use_table_orientation_classify"] is False
         assert main_data["use_ocr_results_with_table_cells"] is True
         assert main_data["formula_recognition_batch_size"] == 1  # default
@@ -143,30 +139,40 @@ class TestOCRPreferencesNewFields:
         loaded = prefs.get_options()
 
         # 新字段应使用默认值
-        assert loaded.use_wireless_table is True
         assert loaded.use_table_orientation_classify is True
         assert loaded.use_ocr_results_with_table_cells is True
         assert loaded.formula_recognition_batch_size == 1
 
-    def test_table_new_fields_round_trip(self, tmp_config_dir):
-        """表格识别新增字段持久化往返"""
-        prefs = OCRPreferences(tmp_config_dir)
-
-        options = OCROptions(
-            pipeline=OCRPipeline.TABLE_RECOGNITION,
-            use_e2e_wired_table_rec_model=True,
-            text_det_limit_side_len=960,
-            text_det_thresh=0.3,
+    def test_backend_only_legacy_fields_are_ignored(self, tmp_config_dir):
+        """旧 Backend 私有键不进入 Classic 设置或新的持久化输出。"""
+        config_path = tmp_config_dir / "ocr_preferences.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "version": 4,
+                    "last_main_pipeline": "TABLE_RECOGNITION",
+                    "main": {
+                        "TABLE_RECOGNITION": {
+                            "pipeline": "TABLE_RECOGNITION",
+                            "use_e2e_wired_table_rec_model": True,
+                            "text_det_thresh": 0.3,
+                            "use_table_orientation_classify": False,
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
         )
-        prefs.set_options(options)
 
-        OCRPreferences.reset_instance()
-        prefs2 = OCRPreferences(tmp_config_dir)
-        loaded = prefs2.get_options()
+        prefs = OCRPreferences(tmp_config_dir)
+        loaded = prefs.get_options()
+        prefs.save()
+        saved = json.loads(config_path.read_text(encoding="utf-8"))
 
-        assert loaded.use_e2e_wired_table_rec_model is True
-        assert loaded.text_det_limit_side_len == 960
-        assert loaded.text_det_thresh == 0.3
+        assert loaded.use_table_orientation_classify is False
+        saved_options = saved["main"]["TABLE_RECOGNITION"]
+        assert "use_e2e_wired_table_rec_model" not in saved_options
+        assert "text_det_thresh" not in saved_options
 
     def test_formula_new_fields_round_trip(self, tmp_config_dir):
         """公式识别新增字段持久化往返"""
@@ -249,7 +255,7 @@ class TestPerPipelineStorage:
 
         loaded = prefs.get_pipeline_options("main", OCRPipeline.TABLE_RECOGNITION)
         assert loaded.pipeline == OCRPipeline.TABLE_RECOGNITION
-        assert loaded.use_wireless_table is True  # default
+        assert loaded.use_table_orientation_classify is True
 
     def test_persist_and_reload(self, tmp_config_dir):
         prefs = OCRPreferences(tmp_config_dir)
@@ -267,7 +273,7 @@ class TestPerPipelineStorage:
             OCRPipeline.TABLE_RECOGNITION,
             OCROptions(
                 pipeline=OCRPipeline.TABLE_RECOGNITION,
-                use_wireless_table=False,
+                use_table_orientation_classify=False,
             ),
         )
 
@@ -281,7 +287,7 @@ class TestPerPipelineStorage:
         assert (
             prefs2.get_pipeline_options(
                 "screenshot", OCRPipeline.TABLE_RECOGNITION
-            ).use_wireless_table
+            ).use_table_orientation_classify
             is False
         )
 
@@ -349,7 +355,7 @@ class TestVersionMigration:
             "main": {
                 "TABLE_RECOGNITION": {
                     "pipeline": "TABLE_RECOGNITION",
-                    "use_wireless_table": False,
+                    "use_table_orientation_classify": False,
                 },
             },
             "screenshot": {
@@ -369,7 +375,7 @@ class TestVersionMigration:
         assert (
             prefs.get_pipeline_options(
                 "main", OCRPipeline.TABLE_RECOGNITION
-            ).use_wireless_table
+            ).use_table_orientation_classify
             is False
         )
         assert (
@@ -385,7 +391,7 @@ class TestPdfSettings:
 
     def test_pdf_settings_round_trip(self, tmp_config_dir):
         """PdfGlobalSettings 保存后重新加载应保持一致"""
-        from vibeocr.backend.models.pdf_ocr_options import PdfGlobalSettings
+        from vibeocr.classic.recognition_settings import PdfGlobalSettings
 
         prefs = OCRPreferences(tmp_config_dir)
         settings = PdfGlobalSettings(
@@ -529,7 +535,7 @@ class TestTextBlockOptions:
     """文本块处理选项（TextBlockOptions）持久化测试"""
 
     def test_round_trip(self, tmp_config_dir):
-        from vibeocr.backend.models.text_block_options import (
+        from vibeocr.classic.recognition_settings import (
             LINE_MODE_SMART,
             TextBlockOptions,
         )
@@ -553,7 +559,7 @@ class TestTextBlockOptions:
 
     def test_default_when_absent(self, tmp_config_dir):
         """空配置时返回默认值。"""
-        from vibeocr.backend.models.text_block_options import LINE_MODE_MERGE
+        from vibeocr.classic.recognition_settings import LINE_MODE_MERGE
 
         prefs = OCRPreferences(tmp_config_dir)
         loaded = prefs.get_text_options()
@@ -562,7 +568,7 @@ class TestTextBlockOptions:
 
     def test_old_config_without_field_uses_defaults(self, tmp_config_dir):
         """v3 配置（无 text_block_options 字段）加载后走默认值。"""
-        from vibeocr.backend.models.text_block_options import LINE_MODE_MERGE
+        from vibeocr.classic.recognition_settings import LINE_MODE_MERGE
 
         config_path = tmp_config_dir / "ocr_preferences.json"
         v3_data = {

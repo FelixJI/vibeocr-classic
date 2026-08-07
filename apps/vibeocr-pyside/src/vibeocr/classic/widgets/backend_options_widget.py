@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.backend import env_manager
+from vibeocr.classic.hardware_probe import detect_gpu_info
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
 from vibeocr.classic.ui import theme
 
@@ -39,8 +39,8 @@ logger = logging.getLogger(__name__)
 class _GpuDetectWorker(QThread):
     """后台 GPU 探测 worker。
 
-    ``env_manager.detect_gpu_info`` 内部会同步 ``subprocess.run(["nvidia-smi"],
-    timeout=5)``，在有 NVIDIA GPU 的机器上耗时显著。放到后台线程避免阻塞
+    ``detect_gpu_info`` 会调用 ``nvidia-smi``，在有 NVIDIA GPU 的机器上可能
+    耗时显著。放到后台线程避免阻塞
     设置页控件构造（进而避免阻塞应用启动——该控件在 MainWindow.__init__ 的
     _connect_signals 链中被构造）。探测完成后通过信号把 info dict 回主线程。
     """
@@ -59,7 +59,7 @@ class _GpuDetectWorker(QThread):
         if self._cancelled.is_set():
             return
         try:
-            info = env_manager.detect_gpu_info(cancel_event=self._cancelled)
+            info = detect_gpu_info(cancel_event=self._cancelled)
         except Exception:
             # detect_gpu_info 自身有兜底，理论上不抛；防御性捕获避免线程静默挂起。
             logger.exception("[BackendOptions] 后台 GPU 探测异常")

@@ -434,7 +434,9 @@ class RuntimeInstallerClient:
             value: Any = json.loads(self.component_lock.read_text(encoding="utf-8"))
             required = value["required_capabilities"]
         except (OSError, ValueError, KeyError, TypeError) as exc:
-            raise RuntimeInstallerClientError("组件锁缺少 required_capabilities") from exc
+            raise RuntimeInstallerClientError(
+                "组件锁缺少 required_capabilities"
+            ) from exc
         if (
             not isinstance(required, list)
             or any(not isinstance(item, str) or not item for item in required)
@@ -711,6 +713,21 @@ class RuntimeInstallerClient:
             request["expected_sequence"] = expected_sequence
         return self._invoke_control(request)
 
+    def _request_cancel(
+        self, operation_id: str, *, expected_sequence: int | None
+    ) -> dict[str, Any]:
+        if expected_sequence is None:
+            return self.cancel(operation_id)
+        try:
+            return self.cancel(
+                operation_id,
+                expected_sequence=expected_sequence,
+            )
+        except RuntimeInstallerClientError as exc:
+            if str(exc) != "expected_sequence mismatch":
+                raise
+        return self.cancel(operation_id)
+
     def retry(
         self,
         operation_id: str,
@@ -863,7 +880,7 @@ class RuntimeInstallerClient:
         while len(completed_channels) < 2:
             if cancel_event is not None and cancel_event.is_set():
                 if supports_v2 and operation_id is not None and not cancel_sent:
-                    self.cancel(
+                    self._request_cancel(
                         operation_id,
                         expected_sequence=last_sequences.get(operation_id),
                     )

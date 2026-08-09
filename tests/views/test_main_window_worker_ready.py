@@ -42,6 +42,7 @@ def test_missing_runtime_opens_backend_choice_after_gui_is_ready() -> None:
 
     single_shot.assert_called_once()
     window._start_install.assert_called_once_with()
+    window._statusbar.set_result.assert_called_once_with("Runtime 未安装：CPU")
 
 
 def test_supervisor_ready_is_not_reported_as_startup_failure() -> None:
@@ -113,6 +114,8 @@ def test_supervisor_failure_does_not_blame_model_download() -> None:
     window._statusbar.clearMessage.assert_called_once_with()
     message = warning.call_args.args[2]
     assert "就绪握手" in message
+    assert "当前 Runtime profile 未完成安装或验证" in message
+    assert "依赖损坏" not in message
     assert "通常不是模型下载问题" in message
 
 

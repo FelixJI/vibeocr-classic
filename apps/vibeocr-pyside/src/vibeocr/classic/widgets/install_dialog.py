@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,6 +47,8 @@ _STATE_LABELS = {
     "cancelled": "已取消",
 }
 
+_MAINTENANCE_MIN_EMIT_INTERVAL_SECONDS = 0.5
+
 
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
@@ -72,6 +75,9 @@ class InstallWorker(QThread):
         self._single_pkg = single_pkg
         self._packages = packages
         self._cancel_event = threading.Event()
+        self._maintenance_signature: tuple[str, str, str, str, str] | None = None
+        self._maintenance_progress_bucket: int | None = None
+        self._maintenance_emitted_at = 0.0
 
     def request_cancel(self) -> None:
         """协作式取消；客户端负责终止它拥有的 Installer 子进程。"""
@@ -142,9 +148,12 @@ class InstallWorker(QThread):
             self.completed.emit(False, f"安装异常: {exc}")
 
     def _emit_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        if not self._should_emit_maintenance(update):
+            return
         phase = _PHASE_LABELS.get(update.phase, update.phase)
         component = update.component_id or "runtime"
-        logger.info(
+        log = logger.debug if update.event_type == "heartbeat" else logger.info
+        log(
             "[Runtime Installer] %s component=%s state=%s sequence=%s code=%s",
             phase,
             component,
@@ -153,6 +162,40 @@ class InstallWorker(QThread):
             update.message_code,
         )
         self.maintenance.emit(update)
+
+    def _should_emit_maintenance(self, update: RuntimeMaintenanceUpdate) -> bool:
+        signature = (
+            update.operation_id,
+            update.phase,
+            update.component_id or "",
+            update.operation_state,
+            update.message_code or "",
+        )
+        progress_bucket = self._progress_bucket(update)
+        now = time.monotonic()
+        signature_changed = signature != self._maintenance_signature
+        progress_changed = (
+            progress_bucket is not None
+            and progress_bucket != self._maintenance_progress_bucket
+        )
+        interval_elapsed = (
+            now - self._maintenance_emitted_at >= _MAINTENANCE_MIN_EMIT_INTERVAL_SECONDS
+        )
+        if not (signature_changed or progress_changed or interval_elapsed):
+            return False
+        self._maintenance_signature = signature
+        if progress_bucket is not None:
+            self._maintenance_progress_bucket = progress_bucket
+        self._maintenance_emitted_at = now
+        return True
+
+    @staticmethod
+    def _progress_bucket(update: RuntimeMaintenanceUpdate) -> int | None:
+        current = update.progress_current
+        total = update.progress_total
+        if current is None or total is None or total <= 0:
+            return None
+        return min(100, max(0, current * 100 // total))
 
 
 class InstallDialog(QDialog):

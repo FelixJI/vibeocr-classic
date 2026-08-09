@@ -37,6 +37,10 @@ from vibeocr.classic.managers.config_manager import ConfigManager
 from vibeocr.classic.managers.dependency_manager import DependencyManager
 from vibeocr.classic.managers.layout_manager import LayoutManager
 from vibeocr.classic.managers.subprocess_manager import SubprocessManager
+from vibeocr.classic.runtime_status_messages import (
+    format_runtime_unavailable,
+    supervisor_start_failure_message,
+)
 from vibeocr.classic.services.log_service import setup_logging
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.utils.image_jobs import GenerationImageJobs, decode_image_file
@@ -733,10 +737,9 @@ class MainWindow(QMainWindow):
             self._continue_ready_startup()
         else:
             self._ocr_ready = False
-            missing_str = ", ".join(missing)
             self._statusbar.set_service("运行环境不可用")
             self._statusbar.set_residency("不可用")
-            self._statusbar.set_result(f"缺少依赖：{missing_str}")
+            self._statusbar.set_result(format_runtime_unavailable(missing))
             self._statusbar.clearMessage()
 
             # Runtime 未就绪时主动弹出首启安装引导。DependencyManager 现在
@@ -832,13 +835,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Supervisor 启动失败",
-                "OCR Supervisor 子进程未能完成启动和就绪握手。\n\n"
-                "可能原因：\n"
-                "1. Python 运行环境或 OCR 依赖损坏\n"
-                "2. 子进程被安全软件拦截或异常退出\n"
-                "3. 本地通信初始化失败\n\n"
-                "模型尚未开始按需加载，因此通常不是模型下载问题。\n\n"
-                "请查看控制台日志了解详情。",
+                supervisor_start_failure_message(),
             )
 
     @Slot(str)

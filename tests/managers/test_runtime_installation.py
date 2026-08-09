@@ -760,6 +760,33 @@ def test_cancel_and_retry_use_idempotent_v2_commands(
     assert requests[1]["command_id"] == "retry-command-1"
 
 
+def test_cancel_sequence_race_retries_same_operation_without_precondition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = RuntimeInstallerClient(
+        tmp_path,
+        command=(sys.executable, "-c", "pass"),
+    )
+    expected_sequences: list[int | None] = []
+
+    def cancel(
+        _operation_id: str,
+        *,
+        command_id: str | None = None,
+        expected_sequence: int | None = None,
+    ) -> None:
+        del command_id
+        expected_sequences.append(expected_sequence)
+        if expected_sequence is not None:
+            raise RuntimeInstallerClientError("expected_sequence mismatch")
+
+    monkeypatch.setattr(client, "cancel", cancel)
+
+    client._request_cancel("op-1", expected_sequence=8)
+
+    assert expected_sequences == [8, None]
+
+
 def test_runtime_error_preserves_canonical_retry_metadata() -> None:
     error = RuntimeInstallerClient._error_from_wire(
         {

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtWidgets import QMessageBox
 
-from vibeocr.classic.widgets.install_dialog import InstallDialog
+from vibeocr.classic.widgets.install_dialog import InstallDialog, InstallWorker
 from vibeocr.classic.runtime_installation import (
     RuntimeComponentDescriptor,
     RuntimeMaintenanceUpdate,
@@ -26,6 +26,60 @@ def _show_dialog(dlg: InstallDialog) -> None:
     """
     dlg._worker = MagicMock()  # truthy → showEvent 的 ``if not self._worker`` 跳过
     dlg.show()
+
+
+def test_install_worker_coalesces_burst_progress_for_ui_and_info_log(
+    qapp, tmp_path, caplog
+):
+    worker = InstallWorker(tmp_path)
+    emitted: list[RuntimeMaintenanceUpdate] = []
+    worker.maintenance.connect(emitted.append)
+
+    with caplog.at_level("INFO", logger="vibeocr.classic.widgets.install_dialog"):
+        for sequence in range(1, 104):
+            worker._emit_maintenance(
+                RuntimeMaintenanceUpdate(
+                    event_type="progress",
+                    operation_id="op-1",
+                    sequence=sequence,
+                    operation="ensure",
+                    operation_state="running",
+                    phase="prepare_runtime",
+                    profile_id="win-x64-cpu",
+                    updated_at="2026-08-09T16:36:55Z",
+                    component_id="runtime_base",
+                    progress_current=sequence,
+                    progress_total=103,
+                    progress_unit="steps",
+                    message_code="runtime.extract_python",
+                )
+            )
+        terminal = RuntimeMaintenanceUpdate(
+            event_type="snapshot",
+            operation_id="op-1",
+            sequence=104,
+            operation="ensure",
+            operation_state="succeeded",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-09T16:36:56Z",
+            component_id="runtime_base",
+            progress_current=103,
+            progress_total=103,
+            progress_unit="steps",
+            message_code="runtime.ready",
+        )
+        worker._emit_maintenance(terminal)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "vibeocr.classic.widgets.install_dialog"
+        and record.levelname == "INFO"
+    ]
+    assert len(emitted) <= 103
+    assert len(records) <= 103
+    assert emitted[-1] is terminal
 
 
 class TestSetupUiTitleBranches:

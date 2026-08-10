@@ -1,7 +1,7 @@
 """update_config 模块测试（Classic 发布 URL 构建 + 更新路径）。
 
 覆盖成功路径、失败路径与边界条件。重点验证：
-- build_github_asset_urls：overseas 直连单元素、domestic [proxy1, proxy2, direct]；
+- build_github_asset_urls：overseas [direct, proxy1, proxy2]、domestic [proxy1, proxy2, direct]；
 - build_asset_url_pairs：成对 tuple、各 prefix 对应 zip+sha；
 - _asset_url：proxy 拼接 vs direct 不加前缀；
 - _ordered_download_prefixes：两种网络类型顺序；
@@ -43,7 +43,7 @@ def test_github_proxy_prefixes_order():
     """代理前缀顺序固定（影响 domestic 候选顺序）。"""
     assert GITHUB_PROXY_PREFIXES == (
         "https://gh-proxy.com/",
-        "https://ghproxy.com/",
+        "https://ghfast.top/",
     )
 
 
@@ -58,9 +58,13 @@ def test_github_download_base_value():
 
 
 def test_ordered_prefixes_overseas():
-    """overseas 只返回直连。"""
+    """overseas 直连优先，代理仍作为失败回退。"""
     prefixes = _ordered_download_prefixes("overseas")
-    assert prefixes == (GITHUB_DOWNLOAD_BASE,)
+    assert prefixes == (
+        GITHUB_DOWNLOAD_BASE,
+        "https://gh-proxy.com/",
+        "https://ghfast.top/",
+    )
 
 
 def test_ordered_prefixes_domestic():
@@ -68,7 +72,7 @@ def test_ordered_prefixes_domestic():
     prefixes = _ordered_download_prefixes("domestic")
     assert prefixes == (
         "https://gh-proxy.com/",
-        "https://ghproxy.com/",
+        "https://ghfast.top/",
         GITHUB_DOWNLOAD_BASE,
     )
 
@@ -97,10 +101,10 @@ def test_asset_url_proxy_gh_proxy():
     assert url == f"https://gh-proxy.com/{GITHUB_DOWNLOAD_BASE}/v1.0.0/asset.zip"
 
 
-def test_asset_url_proxy_ghproxy():
-    """ghproxy 前缀拼接完整 GitHub URL。"""
-    url = _asset_url("https://ghproxy.com/", "2.3.4", "pkg.sha256")
-    assert url == f"https://ghproxy.com/{GITHUB_DOWNLOAD_BASE}/v2.3.4/pkg.sha256"
+def test_asset_url_proxy_ghfast():
+    """ghfast 前缀拼接完整 GitHub URL。"""
+    url = _asset_url("https://ghfast.top/", "2.3.4", "pkg.sha256")
+    assert url == f"https://ghfast.top/{GITHUB_DOWNLOAD_BASE}/v2.3.4/pkg.sha256"
 
 
 def test_asset_url_version_prefix_v():
@@ -115,10 +119,12 @@ def test_asset_url_version_prefix_v():
 
 
 def test_build_github_asset_urls_overseas():
-    """overseas 返回单元素直连列表。"""
+    """overseas 返回直连优先、代理回退列表。"""
     urls = build_github_asset_urls("overseas", "1.0.0", "asset.zip")
-    assert len(urls) == 1
+    assert len(urls) == 3
     assert urls[0] == f"{GITHUB_DOWNLOAD_BASE}/v1.0.0/asset.zip"
+    assert urls[1].startswith("https://gh-proxy.com/")
+    assert urls[2].startswith("https://ghfast.top/")
 
 
 def test_build_github_asset_urls_domestic():
@@ -127,7 +133,7 @@ def test_build_github_asset_urls_domestic():
     assert len(urls) == 3
     # 代理 URL 以代理前缀开头
     assert urls[0].startswith("https://gh-proxy.com/")
-    assert urls[1].startswith("https://ghproxy.com/")
+    assert urls[1].startswith("https://ghfast.top/")
     # 直连不含代理前缀
     assert urls[2] == f"{GITHUB_DOWNLOAD_BASE}/v1.0.0/asset.zip"
 
@@ -150,9 +156,9 @@ def test_build_github_asset_urls_domestic_all_distinct():
 
 
 def test_build_asset_url_pairs_overseas():
-    """overseas 返回单对 (zip, sha)。"""
+    """overseas 返回直连优先、代理回退的三对 URL。"""
     pairs = build_asset_url_pairs("overseas", "1.0.0", "pkg.zip", "pkg.zip.sha256")
-    assert len(pairs) == 1
+    assert len(pairs) == 3
     zip_url, sha_url = pairs[0]
     assert zip_url.endswith("/v1.0.0/pkg.zip")
     assert sha_url.endswith("/v1.0.0/pkg.zip.sha256")
@@ -178,8 +184,8 @@ def test_build_asset_url_pairs_domestic_proxy_pairs():
     pairs = build_asset_url_pairs("domestic", "1.0.0", "pkg.zip", "pkg.zip.sha256")
     # 第 1 对走 gh-proxy
     assert pairs[0][0].startswith("https://gh-proxy.com/")
-    # 第 2 对走 ghproxy
-    assert pairs[1][0].startswith("https://ghproxy.com/")
+    # 第 2 对走 ghfast
+    assert pairs[1][0].startswith("https://ghfast.top/")
     # 第 3 对直连
     assert not pairs[2][0].startswith("https://gh")
 

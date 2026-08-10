@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from vibeocr.classic.update_config import GITHUB_DOWNLOAD_BASE
 from vibeocr.classic.services import update_service
 
 
@@ -78,3 +79,66 @@ def test_download_source_order_uses_github_reachability(
     assert path == tmp_path / "update.zip"
     assert reasons == []
     assert selected_network_types == [expected_network_type]
+
+
+def test_direct_asset_failure_falls_back_to_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """API 可达但 release asset 直连失败时仍尝试代理。"""
+    attempted_urls: list[str] = []
+
+    async def probe() -> bool:
+        return True
+
+    async def download(
+        _client: object,
+        url: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> update_service.SourceAttempt:
+        attempted_urls.append(url)
+        if len(attempted_urls) == 1:
+            return update_service.SourceAttempt(
+                False, update_service.DOWNLOAD_REASON_HTTP_ERROR
+            )
+        return update_service.SourceAttempt(True, update_service.DOWNLOAD_REASON_OK)
+
+    monkeypatch.setattr(update_service, "_probe_github_reachable", probe)
+    monkeypatch.setattr(update_service.httpx, "AsyncClient", _AsyncClientStub)
+    monkeypatch.setattr(update_service, "_download_zip_with_sha", download)
+
+    info = update_service.UpdateInfo(
+        version="0.7.2",
+        download_url="https://github.invalid/update.zip",
+        sha256_url="https://github.invalid/update.sha256",
+        changelog="",
+        zip_filename="update.zip",
+        sha256_filename="update.sha256",
+    )
+
+    path, reasons = asyncio.run(update_service.download_update(info, tmp_path))
+
+    direct_url = f"{GITHUB_DOWNLOAD_BASE}/v0.7.2/update.zip"
+    assert path == tmp_path / "update.zip"
+    assert reasons == []
+    assert attempted_urls == [direct_url, f"https://gh-proxy.com/{direct_url}"]
+
+
+def test_skip_version_and_remind_later_settings_are_effective(tmp_path: Path) -> None:
+    """跳过版本与稍后提醒共享设置文件且各自按约定生效。"""
+    settings_path = tmp_path / "update_settings.json"
+
+    update_service.save_skip_version("0.7.2", settings_path)
+    update_service.save_remind_later(2000.0, settings_path)
+
+    assert update_service.should_skip_version("0.7.2", settings_path)
+    assert not update_service.should_skip_version("0.7.3", settings_path)
+    assert update_service.is_remind_later_active(settings_path, now=1999.0)
+    assert not update_service.is_remind_later_active(settings_path, now=2000.0)
+
+    update_service.save_skip_version("0.7.3", settings_path)
+    assert update_service.load_remind_later(settings_path) == 2000.0
+
+    update_service.save_remind_later(3000.0, settings_path)
+    assert update_service.load_skip_version(settings_path) == "0.7.3"

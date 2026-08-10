@@ -17,7 +17,7 @@ GITHUB_DOWNLOAD_BASE = f"{GITHUB_RELEASES_BASE}/download"
 GITHUB_API_LATEST = (
     f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 )
-GITHUB_PROXY_PREFIXES = ("https://gh-proxy.com/", "https://ghproxy.com/")
+GITHUB_PROXY_PREFIXES = ("https://gh-proxy.com/", "https://ghfast.top/")
 
 # The existing Gitee mirror remains a source-code link only. It is never used
 # for update discovery or downloads.
@@ -27,7 +27,7 @@ GITEE_REPO_BASE = "https://gitee.com/felixjii/vibeocr"
 def _ordered_download_prefixes(network_type: str) -> tuple[str, ...]:
     if network_type == "domestic":
         return (*GITHUB_PROXY_PREFIXES, GITHUB_DOWNLOAD_BASE)
-    return (GITHUB_DOWNLOAD_BASE,)
+    return (GITHUB_DOWNLOAD_BASE, *GITHUB_PROXY_PREFIXES)
 
 
 def _asset_url(prefix: str, version: str, asset_name: str) -> str:

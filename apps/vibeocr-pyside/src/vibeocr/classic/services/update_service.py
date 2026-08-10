@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # 发布仓库标识与下载源选择收敛到 env_config（SSOT）。
 # 发布渠道：CNB 仅镜像代码；产物唯一源 GitHub。
 # 客户端按 GitHub 实际可达性选源：可达时直连，不可达时按
-# gh-proxy / ghproxy / GitHub 顺序回退。CNB OpenAPI 需 token 鉴权，
+# gh-proxy / ghfast / GitHub 顺序回退。CNB OpenAPI 需 token 鉴权，
 # 客户端无法匿名访问，不用于更新。
 from vibeocr.classic.update_config import (  # noqa: E402
     GITHUB_API_LATEST,
@@ -280,15 +280,9 @@ async def _fetch_release(url: str, headers: dict | None = None) -> dict | None:
 async def _probe_github_reachable(timeout: float = 3.0) -> bool:
     """快速探测 GitHub API（api.github.com）是否可达。
 
-    .. todo::
-        本探测只打 api.github.com（API host，国内常可达），不打 release download
-        host（github.com/.../releases/download/...，国内更易被墙）。结果是国内
-        用户即便探测「通过」、走国际分支直连 GitHub，下载时仍可能失败。完整修复
-        应同时探测一个 release asset 的 HEAD（如 latest release 的 .sha256 文件，
-        体积小）。非本次 bug 根因，留待后续改进。
-
-    本函数只判断「此刻能不能直连 GitHub」，不复用 Backend 针对模型/pip
-    镜像的国内/海外分类。不可达时下载改走代理优先序。
+    本探测只打 api.github.com，不复用 Backend 针对模型/pip 镜像的国内/海外
+    分类。结果只决定候选源顺序：可达时 GitHub 直连优先，不可达时代理优先；
+    两种顺序都保留全部候选，避免 API 可达但 release asset host 不可达时失去回退。
 
     用 HEAD 请求 + 3s 超时，失败（DNS/连接/SSL/超时/5xx）一律视为不可达。
     4xx（如 403 限流）仍视为可达——说明能连上 GitHub，只是 rate limited。
@@ -535,7 +529,7 @@ async def download_update(
     不直接用 update_info.download_url（API 返回的 GitHub 直链）下载——那样国内
     用户访问 github.com 会被墙。而是由 env_config.build_asset_url_pairs 按 tag
     + **真实 asset 文件名**重拼 (zip, sha256) 配对候选，逐个尝试，确保 GitHub
-    来源在国内有 gh 代理加速（gh-proxy / ghproxy）。校验文件 URL 与 zip 同源同 tag
+    来源在国内有 gh 代理加速（gh-proxy / ghfast）。校验文件 URL 与 zip 同源同 tag
     精确匹配，不再盲拼 ``{zip}.sha256``。
 
     文件名取自 ``update_info.zip_filename`` / ``sha256_filename``（由 ``UpdateInfo.from_release``
@@ -709,7 +703,7 @@ def _source_label(url: str) -> str:
     """
     for label, marker in (
         ("gh-proxy", "gh-proxy.com"),
-        ("ghproxy", "ghproxy.com"),
+        ("ghfast", "ghfast.top"),
         ("GitHub", "github.com"),
     ):
         if marker in url:

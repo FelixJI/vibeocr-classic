@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+### Bug Fixes
+
+- **runtime:** 优化安装进度与运行时状态提示 (#33) (f37dd75)
+
 ## 0.10.0
 
 ### Features

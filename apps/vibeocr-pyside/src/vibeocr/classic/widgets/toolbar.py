@@ -196,7 +196,9 @@ class EdgeToolbar(QWidget):
 
         # 截图按钮
         btn_screenshot = QPushButton()
-        btn_screenshot.setIcon(toolbar_icon("scissors", size=16, color=theme.Colors.text))
+        btn_screenshot.setIcon(
+            toolbar_icon("scissors", size=16, color=theme.Colors.text)
+        )
         btn_screenshot.setIconSize(QSize(16, 16))
         btn_screenshot.setToolTip("截图识别 (Ctrl+S)")
         btn_screenshot.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -426,7 +428,13 @@ class EdgeToolbar(QWidget):
         self._anim.setEndValue(target)
         self._anim.start()
         self._is_hidden = False
-        self._mouse_check_timer.stop()
+        # 保持全局鼠标检测：检测区比窗口本身更大，鼠标可能只进入检测区便触发
+        # 展开，却从未真正进入 QWidget，因而不会收到 leaveEvent。此时若停止
+        # 检测，工具栏将永久停留在屏幕边缘。
+        if self._auto_hide_enabled:
+            self._mouse_check_timer.start()
+        else:
+            self._mouse_check_timer.stop()
         logger.debug("工具栏已显示")
 
     def _check_mouse_position(self) -> None:
@@ -444,8 +452,12 @@ class EdgeToolbar(QWidget):
         else:
             # 显示状态：如果鼠标离开，重新启动隐藏倒计时
             expanded_rect = geo.adjusted(-30, -30, 30, 30)
-            if not expanded_rect.contains(cursor_pos):
-                if self._auto_hide_enabled and self._docked_side != EdgeSide.NONE:
+            if expanded_rect.contains(cursor_pos):
+                self._hide_timer.stop()
+            elif self._auto_hide_enabled and self._docked_side != EdgeSide.NONE:
+                # 轮询频率高于隐藏延迟时，反复 start 会不断推迟单次计时器，
+                # 导致永远无法触发隐藏。
+                if not self._hide_timer.isActive():
                     self._start_hide_countdown()
 
     def enterEvent(self, event) -> None:

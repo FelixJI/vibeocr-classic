@@ -1,10 +1,14 @@
 # tests/widgets/test_edge_toolbar.py
 """Tests for EdgeToolbar (桌面边缘隐身悬浮操作栏)."""
 
-from PySide6.QtCore import Qt
+from types import SimpleNamespace
+
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QWidget
 
-from vibeocr.classic.widgets.toolbar import EdgeToolbar
+from vibeocr.classic.widgets import toolbar as toolbar_module
+from vibeocr.classic.widgets.toolbar import EdgeSide, EdgeToolbar
 
 
 class TestEdgeToolbar:
@@ -38,3 +42,43 @@ class TestEdgeToolbar:
         assert pixel.blue() > 200
         # 与 theme surface 一致
         assert pixel.name() == QColor(theme.Colors.surface).name().lower()
+
+    def test_revealed_from_detection_margin_rehides_when_pointer_stays_outside(
+        self, qapp, monkeypatch
+    ):
+        """外扩检测区误触发展开后，鼠标未进窗口也必须再次收回。"""
+        tb = EdgeToolbar()
+        screen_geo = qapp.primaryScreen().availableGeometry()
+        visible_geo = QRect(
+            screen_geo.center().x() - tb.width() // 2,
+            screen_geo.top(),
+            tb.width(),
+            tb.height(),
+        )
+        hidden_geo = QRect(visible_geo)
+        hidden_geo.moveTop(screen_geo.top() - tb.height() + 3)
+
+        tb.set_hide_delay(100)
+        tb._auto_hide_enabled = True
+        tb._docked_side = EdgeSide.TOP
+        tb._is_hidden = True
+        tb.setGeometry(hidden_geo)
+
+        cursor_pos = [QPoint(hidden_geo.left() - 5, screen_geo.top() + 1)]
+        monkeypatch.setattr(
+            toolbar_module,
+            "QCursor",
+            SimpleNamespace(pos=lambda: cursor_pos[0]),
+        )
+        tb._mouse_check_timer.start()
+
+        # 鼠标位于隐藏窗口外、但落在额外 10px 检测区内，会触发展开。
+        tb._check_mouse_position()
+        assert not tb._is_hidden
+
+        # 鼠标从未进入实际窗口，不会产生 leaveEvent；状态机仍须自行收回。
+        cursor_pos[0] = QPoint(screen_geo.right(), screen_geo.bottom())
+        QTest.qWait(350)
+
+        assert tb._is_hidden
+        tb.close()

@@ -278,7 +278,8 @@ class TestOverlayWindowRestore:
     截图开始前主窗口会被最小化（_on_screenshot 调用 showMinimized）。
     截图结束后，不同操作对主窗口的处理应分类：
     - 识别（confirmed）：需立即展示 OCR 结果 → 恢复可见并激活/置顶。
-    - 复制/保存/取消：静默操作 → 仅恢复可见性，不抢焦点；若截图前已最小化则保持最小化。
+    - 复制/保存：终止操作 → 主窗口保持截图时的最小化状态。
+    - 取消：恢复截图前的可见性，但不抢焦点。
     """
 
     def test_restore_init_state_default(self, main_window, qtbot):
@@ -310,8 +311,8 @@ class TestOverlayWindowRestore:
         mock_activate.assert_called_once()
         mock_raise.assert_called_once()
 
-    def test_copied_restores_without_activating(self, main_window, qtbot):
-        """复制为静默操作，应恢复可见但不激活/置顶。"""
+    def test_copied_keeps_main_window_hidden(self, main_window, qtbot):
+        """框选后复制是终止操作，不应重新显示主窗口。"""
         import unittest.mock as _mock
 
         pixmap = QPixmap(10, 10)
@@ -325,12 +326,12 @@ class TestOverlayWindowRestore:
             main_window._main_window_minimized_before_capture = False
             main_window._on_overlay_copied(pixmap)
 
-        mock_show.assert_called_once()
+        mock_show.assert_not_called()
         mock_activate.assert_not_called()
         mock_raise.assert_not_called()
 
-    def test_saved_restores_without_activating(self, main_window, qtbot):
-        """保存为静默操作，应恢复可见但不激活/置顶。"""
+    def test_saved_keeps_main_window_hidden(self, main_window, qtbot):
+        """框选后保存是终止操作，不应重新显示主窗口。"""
         import unittest.mock as _mock
 
         with (
@@ -341,7 +342,7 @@ class TestOverlayWindowRestore:
             main_window._main_window_minimized_before_capture = False
             main_window._on_overlay_saved("/tmp/fake.png")
 
-        mock_show.assert_called_once()
+        mock_show.assert_not_called()
         mock_activate.assert_not_called()
         mock_raise.assert_not_called()
 

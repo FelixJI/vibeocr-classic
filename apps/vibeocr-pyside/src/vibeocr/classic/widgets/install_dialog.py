@@ -50,6 +50,18 @@ _STATE_LABELS = {
 _MAINTENANCE_MIN_EMIT_INTERVAL_SECONDS = 0.5
 
 
+def _format_byte_count(value: int) -> str:
+    size = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{value} B"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    raise AssertionError("unreachable")
+
+
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
 
@@ -76,6 +88,7 @@ class InstallWorker(QThread):
         self._packages = packages
         self._cancel_event = threading.Event()
         self._maintenance_signature: tuple[str, str, str, str, str] | None = None
+        self._maintenance_logged_signature: tuple[str, str, str, str, str] | None = None
         self._maintenance_progress_bucket: int | None = None
         self._maintenance_emitted_at = 0.0
 
@@ -152,25 +165,22 @@ class InstallWorker(QThread):
             return
         phase = _PHASE_LABELS.get(update.phase, update.phase)
         component = update.component_id or "runtime"
-        log = logger.debug if update.event_type == "heartbeat" else logger.info
-        log(
-            "[Runtime Installer] %s component=%s state=%s sequence=%s code=%s",
-            phase,
-            component,
-            update.operation_state,
-            update.sequence,
-            update.message_code,
-        )
+        signature = self._maintenance_update_signature(update)
+        if signature != self._maintenance_logged_signature:
+            log = logger.debug if update.event_type == "heartbeat" else logger.info
+            log(
+                "[Runtime Installer] %s component=%s state=%s sequence=%s code=%s",
+                phase,
+                component,
+                update.operation_state,
+                update.sequence,
+                update.message_code,
+            )
+            self._maintenance_logged_signature = signature
         self.maintenance.emit(update)
 
     def _should_emit_maintenance(self, update: RuntimeMaintenanceUpdate) -> bool:
-        signature = (
-            update.operation_id,
-            update.phase,
-            update.component_id or "",
-            update.operation_state,
-            update.message_code or "",
-        )
+        signature = self._maintenance_update_signature(update)
         progress_bucket = self._progress_bucket(update)
         now = time.monotonic()
         signature_changed = signature != self._maintenance_signature
@@ -188,6 +198,18 @@ class InstallWorker(QThread):
             self._maintenance_progress_bucket = progress_bucket
         self._maintenance_emitted_at = now
         return True
+
+    @staticmethod
+    def _maintenance_update_signature(
+        update: RuntimeMaintenanceUpdate,
+    ) -> tuple[str, str, str, str, str]:
+        return (
+            update.operation_id,
+            update.phase,
+            update.component_id or "",
+            update.operation_state,
+            update.message_code or "",
+        )
 
     @staticmethod
     def _progress_bucket(update: RuntimeMaintenanceUpdate) -> int | None:
@@ -221,6 +243,9 @@ class InstallDialog(QDialog):
         self._packages = packages
         self._maintenance_callback = maintenance_callback
         self._component_items: dict[str, QTreeWidgetItem] = {}
+        self._last_maintenance_summary: str | None = None
+        self._maintenance_activity_signature: tuple[str, str, str, str] | None = None
+        self._maintenance_activity_started_at = 0.0
         self._setup_ui()
         self._worker: InstallWorker | None = None
 
@@ -364,9 +389,19 @@ class InstallDialog(QDialog):
             assert update.progress_current is not None
             self._progress_bar.setRange(0, update.progress_total)
             self._progress_bar.setValue(update.progress_current)
-            detail = f"{phase} · {update.progress_current}/{update.progress_total}"
+            percent = update.progress_current * 100 / update.progress_total
+            percent_text = f"{percent:.1f}".rstrip("0").rstrip(".")
             if update.progress_unit == "bytes":
-                detail += " bytes"
+                detail = (
+                    f"{phase} · {percent_text}% · "
+                    f"{_format_byte_count(update.progress_current)} / "
+                    f"{_format_byte_count(update.progress_total)}"
+                )
+            else:
+                detail = (
+                    f"{phase} · {percent_text}% · "
+                    f"{update.progress_current}/{update.progress_total} 项"
+                )
             if update.estimated_remaining_seconds is not None:
                 detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
         else:
@@ -379,6 +414,8 @@ class InstallDialog(QDialog):
                 detail = (
                     f"{phase} · {update.progress_current}/{update.progress_total} 步"
                 )
+            if update.operation_state == "running":
+                detail += f" · 已用时 {self._maintenance_elapsed(update)} 秒"
         self._stage_label.setText(f"{detail} · {state}")
 
         if update.component_id:
@@ -392,10 +429,25 @@ class InstallDialog(QDialog):
             item = self._component_items.get(update.component_id)
             component_name = item.text(0) if item is not None else update.component_id
             summary = f"Runtime {phase}：{component_name} · {state}"
-        if update.event_type != "heartbeat":
-            self._log(summary)
-        if self._maintenance_callback is not None:
-            self._maintenance_callback(summary)
+        if summary != self._last_maintenance_summary:
+            if update.event_type != "heartbeat":
+                self._log(summary)
+            if self._maintenance_callback is not None:
+                self._maintenance_callback(summary)
+            self._last_maintenance_summary = summary
+
+    def _maintenance_elapsed(self, update: RuntimeMaintenanceUpdate) -> int:
+        signature = (
+            update.operation_id,
+            update.phase,
+            update.component_id or "",
+            update.message_code or "",
+        )
+        now = time.monotonic()
+        if signature != self._maintenance_activity_signature:
+            self._maintenance_activity_signature = signature
+            self._maintenance_activity_started_at = now
+        return max(0, int(now - self._maintenance_activity_started_at))
 
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:

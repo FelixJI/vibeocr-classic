@@ -6,6 +6,7 @@
 直接调用 ``@Slot`` 方法并断言内部状态；构造完整对话框时用 ``tmp_path``。
 """
 
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 from PySide6.QtWidgets import QMessageBox
@@ -78,8 +79,48 @@ def test_install_worker_coalesces_burst_progress_for_ui_and_info_log(
         and record.levelname == "INFO"
     ]
     assert len(emitted) <= 103
-    assert len(records) <= 103
+    assert len(records) == 2
     assert emitted[-1] is terminal
+
+
+def test_byte_progress_refreshes_ui_without_repeating_info_log(qapp, tmp_path, caplog):
+    worker = InstallWorker(tmp_path)
+    emitted: list[RuntimeMaintenanceUpdate] = []
+    worker.maintenance.connect(emitted.append)
+    first = RuntimeMaintenanceUpdate(
+        event_type="progress",
+        operation_id="op-1",
+        sequence=3217,
+        operation="ensure",
+        operation_state="running",
+        phase="prepare_runtime",
+        profile_id="win-x64-cpu",
+        updated_at="2026-08-10T05:28:22Z",
+        component_id="runtime_base",
+        progress_current=1_000,
+        progress_total=1_000_000,
+        progress_unit="bytes",
+        message_code="runtime.extract_python",
+    )
+
+    with (
+        patch(
+            "vibeocr.classic.widgets.install_dialog.time.monotonic",
+            side_effect=[100.0, 101.0],
+        ),
+        caplog.at_level("INFO", logger="vibeocr.classic.widgets.install_dialog"),
+    ):
+        worker._emit_maintenance(first)
+        worker._emit_maintenance(replace(first, sequence=3233, progress_current=2_000))
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "vibeocr.classic.widgets.install_dialog"
+        and record.levelname == "INFO"
+    ]
+    assert [update.sequence for update in emitted] == [3217, 3233]
+    assert len(records) == 1
 
 
 class TestSetupUiTitleBranches:
@@ -166,28 +207,70 @@ class TestOnProgress:
         assert "2/7 步" in dlg._stage_label.text()
         assert summaries == ["Runtime 安装运行时依赖：OCR engine · 进行中"]
 
-    def test_bytes_progress_is_determinate_and_shows_real_eta(self, qapp, tmp_path):
-        dlg = InstallDialog(tmp_path)
+    def test_bytes_progress_is_determinate_and_human_readable(self, qapp, tmp_path):
+        summaries: list[str] = []
+        dlg = InstallDialog(tmp_path, maintenance_callback=summaries.append)
+        first = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=3,
+            operation="ensure",
+            operation_state="running",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-05T00:00:01Z",
+            component_id="runtime_base",
+            progress_current=50 * 1024 * 1024,
+            progress_total=100 * 1024 * 1024,
+            progress_unit="bytes",
+            estimated_remaining_seconds=4,
+        )
+        dlg._on_maintenance(first)
         dlg._on_maintenance(
-            RuntimeMaintenanceUpdate(
-                event_type="progress",
-                operation_id="op-1",
-                sequence=3,
-                operation="ensure",
-                operation_state="running",
-                phase="prepare_runtime",
-                profile_id="win-x64-cpu",
-                updated_at="2026-08-05T00:00:01Z",
-                progress_current=50,
-                progress_total=100,
-                progress_unit="bytes",
-                estimated_remaining_seconds=4,
+            replace(
+                first,
+                sequence=4,
+                progress_current=60 * 1024 * 1024,
+                estimated_remaining_seconds=3,
             )
         )
 
-        assert dlg._progress_bar.maximum() == 100
-        assert dlg._progress_bar.value() == 50
-        assert "预计剩余 4 秒" in dlg._stage_label.text()
+        assert dlg._progress_bar.maximum() == 100 * 1024 * 1024
+        assert dlg._progress_bar.value() == 60 * 1024 * 1024
+        assert "60%" in dlg._stage_label.text()
+        assert "60.0 MiB / 100.0 MiB" in dlg._stage_label.text()
+        assert "预计剩余 3 秒" in dlg._stage_label.text()
+        assert dlg._log_text.toPlainText().count("Runtime 准备 Python 运行时") == 1
+        assert summaries == ["Runtime 准备 Python 运行时：runtime_base · 进行中"]
+
+    def test_indeterminate_progress_shows_elapsed_time_without_duplicate_log(
+        self, qapp, tmp_path
+    ):
+        dlg = InstallDialog(tmp_path)
+        first = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=3217,
+            operation="ensure",
+            operation_state="running",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-10T05:28:22Z",
+            component_id="runtime_base",
+            message_code="runtime.extract_python",
+        )
+
+        with patch(
+            "vibeocr.classic.widgets.install_dialog.time.monotonic",
+            side_effect=[100.0, 102.0],
+        ):
+            dlg._on_maintenance(first)
+            initial_label = dlg._stage_label.text()
+            dlg._on_maintenance(replace(first, sequence=3233))
+
+        assert dlg._stage_label.text() != initial_label
+        assert "已用时 2 秒" in dlg._stage_label.text()
+        assert dlg._log_text.toPlainText().count("Runtime 准备 Python 运行时") == 1
 
 
 class TestOnFinished:

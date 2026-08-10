@@ -1245,8 +1245,8 @@ class MainWindow(QMainWindow):
     @Slot(QPixmap)
     def _on_overlay_copied(self, pixmap: QPixmap) -> None:
         """截图复制完成"""
-        # 复制为静默操作，仅恢复可见性、不抢焦点。
-        self._restore_main_window(activate=False)
+        # 复制即结束本次框选；主窗口保持截图时的最小化状态，避免遮挡用户
+        # 正在粘贴内容的目标应用。
         self._statusbar.showMessage("图片已复制到剪贴板")
 
     @Slot(str)
@@ -1254,8 +1254,7 @@ class MainWindow(QMainWindow):
         """截图保存完成"""
         if self._closing:
             return
-        # 保存为静默操作，仅恢复可见性、不抢焦点。
-        self._restore_main_window(activate=False)
+        # 保存即结束本次框选；不要因为保存完成重新弹出主窗口。
         self._statusbar.showMessage(f"图片已保存: {file_path}")
 
     def _on_overlay_saved_for(

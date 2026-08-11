@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.3
+
+### Bug Fixes
+
+- **release:** 提高 Runtime Installer 检查稳定性 (#41) (de516fe)
+- **update:** 修复更新代理回退 (#39) (3ec0f65)
+- **screenshot:** 阻止复制保存后弹出主界面 (#37) (b55231e)
+- **toolbar:** 修复悬浮工具栏自动收回 (#38) (cf7e987)
+- **runtime:** 优化安装进度反馈并抑制重复日志 (#35) (bc0c720)
+
 ## 0.10.2
 
 ### Bug Fixes

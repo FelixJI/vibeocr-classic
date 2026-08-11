@@ -145,7 +145,7 @@ def _verify_bound_installer_inspect(
     runtime_manifest: dict[str, object],
     executable: bytes,
     accelerator: str,
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 60.0,
 ) -> None:
     """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
     executable_path = (
@@ -163,17 +163,23 @@ def _verify_bound_installer_inspect(
         "layout_manifest": str(root / "product-release-manifest.json"),
         "product_id": "classic",
     }
-    result = subprocess.run(
-        [str(executable_path), "--request-json", json.dumps(request)],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout_seconds,
-        check=False,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+    try:
+        result = subprocess.run(
+            [str(executable_path), "--request-json", json.dumps(request)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            "bound Runtime Installer inspect timed out after "
+            f"{timeout_seconds:.0f} seconds"
+        ) from error
     envelopes = []
     for line in result.stdout.splitlines():
         try:

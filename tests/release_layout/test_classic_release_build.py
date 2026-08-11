@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_pyside_artifact import (
     MAX_CLASSIC_ARCHIVE_BYTES,
     _verify_archive_size,
+    _verify_bound_installer_inspect,
     _verify_bound_python_archive,
     _verify_embedded_app_icon,
     _verify_frontend_protocol_lock,
@@ -320,6 +322,56 @@ def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:
         assert "Python archive is missing" in str(error)
     else:
         raise AssertionError("missing bound Python archive was accepted")
+
+
+def test_bound_installer_inspect_uses_backend_timeout_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed: dict[str, object] = {}
+
+    def run_installer(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        request = json.loads(command[2])
+        state = {
+            "status": "missing",
+            "integrity": "not-installed",
+            "accelerator": "cpu",
+            "runtime_root": str(tmp_path / "data" / "runtime"),
+        }
+        envelope = {
+            "protocol_version": 2,
+            "ok": True,
+            "operation": request["operation"],
+            "state": state,
+        }
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(envelope),
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run_installer)
+
+    _verify_bound_installer_inspect(tmp_path, {}, b"installer", "cpu")
+
+    assert observed["timeout"] == 60.0
+
+
+def test_bound_installer_inspect_reports_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def time_out(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, float(kwargs["timeout"]))
+
+    monkeypatch.setattr(subprocess, "run", time_out)
+
+    with pytest.raises(RuntimeError, match="inspect timed out after 60 seconds"):
+        _verify_bound_installer_inspect(tmp_path, {}, b"installer", "cpu")
 
 
 def test_product_manifest_requires_exact_reduced_file_closure(tmp_path: Path) -> None:

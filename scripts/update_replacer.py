@@ -78,6 +78,7 @@ _SLOW_STAGE_THRESHOLD = 10.0
 # 嵌套阶段（如「替换应用文件」内含 5 个子阶段）按进入顺序平铺记录，展示时
 # 用层次（parent）标记父子关系。
 _stage_records: list[dict] = []
+STARTUP_HEALTH_TIMEOUT_SECONDS = 90.0
 # 当前嵌套深度：顶层阶段为 0，replace_app_files 内的子阶段为 1。
 # 用于在展示时区分父子阶段（子阶段缩进显示，汇总行不重复计总耗时）。
 _stage_depth = 0
@@ -932,7 +933,7 @@ def launch_app(
     )
     if health_file is None:
         return
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + STARTUP_HEALTH_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
         if health_file.is_file():
             logger.info("产品启动健康信号已确认: %s", health_file)
@@ -947,7 +948,9 @@ def launch_app(
         process.wait(timeout=5)
     except Exception:
         pass
-    raise TimeoutError(f"产品未在 30 秒内发布健康信号: {health_file}")
+    raise TimeoutError(
+        f"产品未在 {STARTUP_HEALTH_TIMEOUT_SECONDS:g} 秒内发布健康信号: {health_file}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -139,6 +139,30 @@ def test_local_layout_does_not_forward_product_id(
     assert "product_id" not in request
 
 
+def test_external_state_root_keeps_component_authority_in_product_content(
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "current"
+    state = tmp_path / "VibeOCRClassicData"
+    (content / "backend").mkdir(parents=True)
+    (content / "component-lock.json").write_text("{}", encoding="utf-8")
+    (content / "backend" / "runtime-manifest.json").write_text("{}", encoding="utf-8")
+    client = RuntimeInstallerClient(
+        state,
+        content_root=content,
+        command=("python", "-m", "vibeocr.backend.runtime_installer"),
+    )
+
+    arguments = client._arguments("inspect")
+    request = json.loads(arguments[arguments.index("--request-json") + 1])
+
+    assert request["product_root"] == str(state.resolve())
+    assert request["component_lock"] == str((content / "component-lock.json").resolve())
+    assert request["runtime_manifest"] == str(
+        (content / "backend" / "runtime-manifest.json").resolve()
+    )
+
+
 def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> None:
     product = tmp_path / "classic"
     product.mkdir()

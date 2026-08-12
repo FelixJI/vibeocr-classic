@@ -20,6 +20,7 @@ from vibeocr.classic.app_paths import (
     OUTPUT_DIR,
     PROFILES_DIR,
     RUNTIME_DIR,
+    LocalAppDataRootResolver,
     get_bundle_root,
     get_bundled_changelog_path,
     get_bundled_resources_dir,
@@ -53,14 +54,26 @@ def test_resolve_app_paths_invalid_profile_message_lists_allowed(tmp_path):
 
 
 def test_resolve_app_paths_production_paths(tmp_path):
-    """production profile 各路径在 install_root 下正确拼装。"""
-    paths = resolve_app_paths(tmp_path, profile="production")
-    assert paths.install_root == tmp_path.resolve()
-    assert paths.data_root == tmp_path / DATA_DIR
-    assert paths.runtime_root == tmp_path / RUNTIME_DIR
-    assert paths.model_cache_root == tmp_path / MODEL_CACHE_DIR
-    assert paths.output_root == tmp_path / OUTPUT_DIR
-    assert paths.config_file == tmp_path / CONFIG_DIR / CONFIG_FILENAME
+    """production 可变路径统一位于显式注入的稳定数据根。"""
+    stable_root = tmp_path / "VibeOCRClassicData"
+    paths = resolve_app_paths(
+        tmp_path / "install",
+        profile="production",
+        data_root_resolver=LocalAppDataRootResolver(stable_root.parent),
+    )
+    assert paths.install_root == (tmp_path / "install").resolve()
+    assert paths.state_root == stable_root
+    assert paths.data_root == stable_root / DATA_DIR
+    assert paths.runtime_root == stable_root / RUNTIME_DIR
+    assert paths.model_cache_root == stable_root / MODEL_CACHE_DIR
+    assert paths.output_root == stable_root / OUTPUT_DIR
+    assert paths.config_file == stable_root / CONFIG_DIR / CONFIG_FILENAME
+
+
+def test_local_app_data_resolver_uses_stable_external_root(tmp_path):
+    resolver = LocalAppDataRootResolver(tmp_path / "Local")
+
+    assert resolver.resolve() == tmp_path / "Local" / "VibeOCRClassicData"
 
 
 def test_resolve_app_paths_production_all_absolute(tmp_path):

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts.prune_pyside_artifact import prune_pyside_artifact
+from scripts.verify_velopack_release import verify_velopack_release
 from scripts.verify_pyside_artifact import (
     MAX_CLASSIC_ARCHIVE_BYTES,
     _verify_archive_size,
@@ -109,6 +110,115 @@ def test_release_build_uses_candidate_version_and_direct_publish_contract() -> N
     assert "v0.7.0" not in workflow
 
 
+def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+    binding_index = script.index("package_product_release.py")
+    velopack_index = script.index("dnx --yes vpk@1.2.0 -- pack")
+
+    assert velopack_index > binding_index
+    assert "--packId VibeOCRClassic" in script
+    assert "--packVersion $Version" in script
+    assert "--packDir $product" in script
+    assert "--mainExe VibeOCR.exe" in script
+    assert "--channel win" in script
+    assert "--runtime win-x64" in script
+    assert "--delta none" in script
+    assert "verify_velopack_release.py" in script
+    assert "python -m pip" not in script
+    assert "uv venv --python" in script
+    assert "uv pip sync --python $buildPython" in script
+    assert "requirements-build.lock" in script
+    assert script.index("uv venv --python") < script.index("& $buildPython")
+    verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
+        encoding="utf-8"
+    )
+    updater_smoke = verifier.split("def _verify_frozen_updater", maxsplit=1)[1].split(
+        "def _prepare_smoke_python", maxsplit=1
+    )[0]
+    assert "--vibeocr-self-test-fail" not in updater_smoke
+
+
+def test_release_contract_keeps_bridge_zip_and_adds_exact_velopack_assets() -> None:
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    required = set(config["release"]["required_assets"])
+    smoke = config["ci"]["release_smoke"]
+
+    assert required == {
+        "component-lock.json",
+        "frontend-protocol-lock.json",
+        "SBOM.spdx.json",
+        "VibeOCR-Classic-v*-win64.zip",
+        "VibeOCR-Classic-v*-win64.zip.sha256",
+        "VibeOCRClassic-*-full.nupkg",
+        "VibeOCRClassic-win-Setup.exe",
+        "VibeOCRClassic-win-Setup.exe.sha256",
+        "VibeOCRClassic-win-Portable.zip",
+        "releases.win.json",
+    }
+    assert any("scripts/verify_velopack_release.py" in command for command in smoke)
+    assert "--exact" in smoke[0]
+
+
+def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) -> None:
+    package = tmp_path / "VibeOCRClassic-1.2.3-full.nupkg"
+    package.write_bytes(b"bound closure")
+    (tmp_path / "VibeOCRClassic-win-Setup.exe").write_bytes(b"setup")
+    (tmp_path / "VibeOCRClassic-win-Portable.zip").write_bytes(b"portable")
+    (tmp_path / "assets.win.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "RELEASES").write_text("legacy vpk feed", encoding="utf-8")
+    feed = {
+        "Assets": [
+            {
+                "PackageId": "VibeOCRClassic",
+                "Version": "1.2.3",
+                "Type": "Full",
+                "FileName": package.name,
+                "SHA1": hashlib.sha1(package.read_bytes()).hexdigest().upper(),
+                "SHA256": hashlib.sha256(package.read_bytes()).hexdigest().upper(),
+                "Size": package.stat().st_size,
+            }
+        ]
+    }
+    (tmp_path / "releases.win.json").write_text(json.dumps(feed), encoding="utf-8")
+
+    publishable = verify_velopack_release(tmp_path, "1.2.3")
+
+    assert {path.name for path in publishable} == {
+        package.name,
+        "VibeOCRClassic-win-Setup.exe",
+        "VibeOCRClassic-win-Portable.zip",
+        "releases.win.json",
+    }
+
+
+def test_velopack_verifier_rejects_feed_not_bound_to_package(tmp_path: Path) -> None:
+    package = tmp_path / "VibeOCRClassic-1.2.3-full.nupkg"
+    package.write_bytes(b"bound closure")
+    (tmp_path / "VibeOCRClassic-win-Setup.exe").write_bytes(b"setup")
+    (tmp_path / "VibeOCRClassic-win-Portable.zip").write_bytes(b"portable")
+    (tmp_path / "releases.win.json").write_text(
+        json.dumps(
+            {
+                "Assets": [
+                    {
+                        "PackageId": "VibeOCRClassic",
+                        "Version": "1.2.3",
+                        "Type": "Full",
+                        "FileName": package.name,
+                        "SHA1": hashlib.sha1(package.read_bytes()).hexdigest().upper(),
+                        "SHA256": "0" * 64,
+                        "Size": package.stat().st_size,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="SHA256"):
+        verify_velopack_release(tmp_path, "1.2.3")
+
+
 def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
@@ -143,11 +253,41 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     )
     assert "httpx>=0.28.1" in project["project"]["dependencies"]
     assert "pillow>=12.3.0" in project["project"]["dependencies"]
-    assert "httpx==0.28.1" in script
-    assert "pillow==12.3.0" in script
+    build_input = (ROOT / "scripts" / "requirements-build.in").read_text(
+        encoding="utf-8"
+    )
+    build_lock = (ROOT / "scripts" / "requirements-build.lock").read_text(
+        encoding="utf-8"
+    )
+    for requirement in (
+        "build==1.5.0",
+        "hatchling==1.27.0",
+        "pyinstaller==6.21.0",
+        "pyside6==6.11.1",
+        "qasync==0.28.0",
+        "numpy==2.5.1",
+        "httpx==0.28.1",
+        "pillow==12.3.0",
+        "velopack==1.2.0",
+    ):
+        assert requirement in build_input
+        assert requirement in build_lock
+    assert "--hash=sha256:" in build_lock
+    generation_command = (
+        "uv pip compile scripts/requirements-build.in --output-file "
+        "scripts/requirements-build.lock --python-version 3.13 --generate-hashes "
+        "--no-emit-index-url"
+    )
+    assert generation_command in build_lock.replace("#    ", "")
+    locked_records = {
+        line.split(" \\", maxsplit=1)[0]
+        for line in build_lock.splitlines()
+        if "==" in line and line.endswith(" \\")
+    }
+    assert set(build_input.splitlines()) <= locked_records
     assert "'--collect-submodules', 'vibeocr.backend'" not in script
     assert "'--collect-data', 'vibeocr.backend'" not in script
-    assert "pip install --no-deps" not in script
+    assert "python -m pip install --no-deps" not in script
     assert "vibeocr_backend-$backendVersion" not in script
 
 

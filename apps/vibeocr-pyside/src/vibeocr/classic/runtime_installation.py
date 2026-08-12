@@ -355,6 +355,7 @@ class RuntimeInstallerClient:
         self,
         product_root: str | Path,
         *,
+        content_root: str | Path | None = None,
         component_lock: str | Path | None = None,
         runtime_manifest: str | Path | None = None,
         layout_manifest: str | Path | None = None,
@@ -363,15 +364,21 @@ class RuntimeInstallerClient:
         command: tuple[str, ...] | None = None,
     ) -> None:
         self.product_root = Path(product_root).resolve()
+        if content_root is None:
+            from vibeocr.classic.app_paths import get_install_root, get_state_root
+
+            if self.product_root == get_state_root().resolve():
+                content_root = get_install_root()
+        self.content_root = Path(content_root or product_root).resolve()
         self.component_lock = Path(
-            component_lock or self.product_root / "component-lock.json"
+            component_lock or self.content_root / "component-lock.json"
         ).resolve()
         self.runtime_manifest = Path(
-            runtime_manifest or self.product_root / "backend" / "runtime-manifest.json"
+            runtime_manifest or self.content_root / "backend" / "runtime-manifest.json"
         ).resolve()
         explicit_layout = layout_manifest or os.environ.get("VIBEOCR_PORTABLE_LAYOUT")
         if explicit_layout is None:
-            product_manifest = self.product_root / "product-release-manifest.json"
+            product_manifest = self.content_root / "product-release-manifest.json"
             try:
                 product_layout = json.loads(
                     product_manifest.read_text(encoding="utf-8")
@@ -569,7 +576,7 @@ class RuntimeInstallerClient:
         try:
             result = subprocess.run(
                 self._request_arguments({**self._binding_request(), **request}),
-                cwd=self.product_root,
+                cwd=self.content_root,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -831,7 +838,7 @@ class RuntimeInstallerClient:
                     component_ids=component_ids,
                     required_capabilities=required_capabilities,
                 ),
-                cwd=self.product_root,
+                cwd=self.content_root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,11 @@ def test_application_log_is_written_under_data_directory(
     root_logger = logging.getLogger()
     original_handlers = root_logger.handlers[:]
     original_level = root_logger.level
-    monkeypatch.setattr(log_service, "get_install_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        log_service,
+        "get_active_app_paths",
+        lambda: SimpleNamespace(data_root=tmp_path / "data"),
+    )
 
     try:
         setup_logging()

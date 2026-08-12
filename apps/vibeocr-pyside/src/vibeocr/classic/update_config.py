@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from vibeocr.classic.app_paths import get_install_root
+from vibeocr.classic.app_paths import get_active_app_paths
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -64,7 +64,7 @@ def build_asset_url_pairs(
 
 
 def get_data_dir() -> Path:
-    return get_install_root() / "data"
+    return get_active_app_paths().data_root
 
 
 def get_update_cache_dir() -> Path:

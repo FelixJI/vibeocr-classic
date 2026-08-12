@@ -104,3 +104,21 @@ def test_verify_project_assets_without_common_index_uses_sidecar(
     archive.write_bytes(b"tampered")
     with pytest.raises(ReleaseAssetError, match="sidecar SHA-256 mismatch"):
         verify_release_assets(tmp_path, require_index=False)
+
+
+def test_exact_candidate_rejects_extra_unindexed_release_asset(tmp_path: Path) -> None:
+    archive = tmp_path / "artifact.zip"
+    archive.write_bytes(b"archive")
+    (tmp_path / "artifact.zip.sha256").write_text(
+        f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "unexpected.bin").write_bytes(b"must not publish")
+
+    with pytest.raises(ReleaseAssetError, match="exact asset set mismatch"):
+        verify_release_assets(
+            tmp_path,
+            require_one=("*.zip", "*.zip.sha256"),
+            require_index=False,
+            exact=True,
+        )

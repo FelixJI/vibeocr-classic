@@ -68,7 +68,11 @@ def test_default_sidecar_directory_preserves_version_1_product_path(
     pdf = tmp_path / "legacy.pdf"
     pdf.write_bytes(b"pdf")
     product_root = tmp_path / "VibeOCR"
-    monkeypatch.setattr(ocr_sidecar, "get_install_root", lambda: product_root)
+    monkeypatch.setattr(
+        ocr_sidecar,
+        "get_active_app_paths",
+        lambda: type("Paths", (), {"data_root": product_root / "data"})(),
+    )
     monkeypatch.setattr(ocr_sidecar, "_sessions_dir", isolated_sidecar_directory)
 
     assert sidecar_path(str(pdf)).parent == (

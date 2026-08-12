@@ -61,6 +61,7 @@ os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 from vibeocr.classic.app_paths import (  # noqa: E402
     get_bundled_resources_dir,
     get_install_root,
+    get_state_root,
 )
 from vibeocr.classic.runtime_installation import (  # noqa: E402
     RuntimeInstallerClient,
@@ -112,7 +113,7 @@ def check_production_dependencies() -> bool:
         # Artifact verifier 会在解压目录内从绑定 wheel 建一个隔离 import 根。
         # 仅冻结态+t6 双门禁生效，生产启动始终必须通过 Runtime Installer inspect。
         return True
-    client = RuntimeInstallerClient(get_install_root())
+    client = RuntimeInstallerClient(get_state_root())
     try:
         inspection = client.inspect()
         if not inspection.ready:
@@ -210,15 +211,18 @@ def _cleanup_update_artifacts(app_dir: Path) -> None:
 
 
 def _publish_update_health(app_dir: Path) -> None:
-    """向替换器确认新版已通过 Runtime 检查并显示主窗口。"""
+    """Confirm startup to the retained ingress updater after data migration."""
     configured = os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
     if not configured:
         return
     try:
         health_file = Path(configured).resolve()
-        update_cache = (app_dir / "data" / "cache" / "update").resolve()
+        update_caches = {
+            (app_dir / "data" / "cache" / "update").resolve(),
+            (get_install_root() / "data" / "cache" / "update").resolve(),
+        }
         if (
-            not health_file.is_relative_to(update_cache)
+            not any(health_file.is_relative_to(cache) for cache in update_caches)
             or health_file.name != "startup.health"
         ):
             raise ValueError("更新健康信号路径越出产品更新缓存")
@@ -599,7 +603,8 @@ def launch_application() -> int:
     # app.setStyleSheet(theme.global_qss())
 
     # 初始化统一配置管理器
-    project_root = get_install_root()
+    install_root = get_install_root()
+    project_root = get_state_root()
     cm = ConfigManager.instance(project_root)
 
     # 初始化 OCR 偏好设置单例（必须在 UI 创建之前，否则所有选项读写均静默失败）
@@ -662,7 +667,7 @@ def launch_application() -> int:
             log = logging.getLogger(__name__)
             try:
                 service = UpdateService(
-                    project_root,
+                    install_root,
                     status_callback=window.statusBar().showMessage,  # noqa: F821
                 )
                 # manual=False：启动自动检查。命中「稍后提醒」暂缓窗口则静默跳过，

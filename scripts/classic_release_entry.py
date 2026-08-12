@@ -182,6 +182,20 @@ def _run_webengine_smoke() -> int:
 
 
 if __name__ == "__main__":
+    # Velopack startup hooks must run exactly once before Qt, Runtime,
+    # Supervisor, logging, or any other application startup work.
+    import velopack
+
+    velopack.App().run()
+
+    if getattr(sys, "frozen", False):
+        from vibeocr.classic.data_migration import prepare_stable_data_root
+
+        migration = prepare_stable_data_root(Path(sys.executable).resolve().parent)
+        os.environ.setdefault(
+            "VIBEOCR_BOOTSTRAP_LOG",
+            str(migration.active_paths.data_root / "logs" / "vibeocr-bootstrap.log"),
+        )
     if os.environ.get("VIBEOCR_SELF_TEST_PDF") == "1":
         os._exit(_run_pdf_smoke())
     if os.environ.get("VIBEOCR_SELF_TEST_WEBENGINE") == "1":

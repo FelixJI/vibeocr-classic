@@ -88,6 +88,7 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
     assert captured["env"]["PYTHONUTF8"] == "1"
     assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == sys.executable
+    assert captured["env"]["VIBEOCR_CLASSIC_DATA_ROOT"] == str(tmp_path / ".smoke-data")
     smoke_pythonpath = Path(captured["env"]["PYTHONPATH"])
     assert ".smoke-runtime" in smoke_pythonpath.parts
     assert smoke_pythonpath.parts[-1] == "site-packages"

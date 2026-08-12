@@ -44,6 +44,9 @@ if ($ReleaseInput) {
     python (Join-Path $root 'scripts/resolve_component_releases.py') `
       --policy $policy --output-root $inputs
     if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
+    python (Join-Path $root 'scripts/verify_component_release_input.py') `
+      --release-input $inputs
+    if ($LASTEXITCODE -ne 0) { throw 'resolved component verification failed' }
 }
 $protocol = Join-Path $inputs 'protocol'
 $protocolSdk = Join-Path $inputs 'protocol-sdk'
@@ -56,25 +59,9 @@ if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $frontendProtocolLock -PathType Leaf)) {
     throw 'resolved frontend-protocol-lock.json is required'
 }
-$componentLock = Get-Content -LiteralPath $lock -Raw | ConvertFrom-Json
 $frontendProtocol = Get-Content -LiteralPath $frontendProtocolLock -Raw |
   ConvertFrom-Json
-$protocolRepository = [string]$componentLock.protocol.repository
 $protocolSdkVersion = [string]$frontendProtocol.version
-$protocolSdkRepository = [string]$frontendProtocol.repository
-$backendRepository = [string]$componentLock.backend.repository
-foreach ($item in @(
-    @{ path = $protocol; repo = $protocolRepository },
-    @{ path = $protocolSdk; repo = $protocolSdkRepository },
-    @{ path = $backend; repo = $backendRepository }
-)) {
-    Get-ChildItem -LiteralPath $item.path -File |
-      Where-Object Name -ne 'SHA256SUMS' |
-      ForEach-Object {
-        gh attestation verify $_.FullName --repo $item.repo
-        if ($LASTEXITCODE -ne 0) { throw "attestation failed: $($_.Name)" }
-      }
-}
 function Resolve-ProtocolSdkWheel {
     param([string]$Distribution)
     $matches = @(

@@ -151,6 +151,37 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "vibeocr_backend-$backendVersion" not in script
 
 
+def test_release_build_reuses_the_ci_verified_component_input() -> None:
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+    config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    _prefix, release_input_and_rest = script.split("if ($ReleaseInput) {", maxsplit=1)
+    supplied_input_branch, fallback_and_rest = release_input_and_rest.split(
+        "} else {", maxsplit=1
+    )
+    fallback_branch, _rest = fallback_and_rest.split("\n}\n", maxsplit=1)
+
+    assert config["ci"]["e2e"] == [
+        [
+            "python",
+            "scripts/verify_component_release_input.py",
+            "--release-input",
+            "build/automation/release-input",
+        ]
+    ]
+    assert "verify_component_release_input.py" not in supplied_input_branch
+    assert "verify_component_release_input.py" in fallback_branch
+    assert "gh attestation verify" not in script
+
+
+def test_release_build_keeps_component_paths_for_product_binding() -> None:
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+
+    assert "$protocol = Join-Path $inputs 'protocol'" in script
+    assert "$backend = Join-Path $inputs 'backend'" in script
+    assert "--protocol-release-dir $protocol" in script
+    assert "--backend-release-dir $backend" in script
+
+
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
     policy = json.loads((ROOT / "component-policy.json").read_text(encoding="utf-8"))

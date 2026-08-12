@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from scripts import update_replacer
+from vibeocr.classic import runtime_installation
 from vibeocr.classic.services.update_service import (
     DOWNLOAD_REASON_RECOVERY_REQUIRED,
     UpdateInfo,
@@ -31,10 +32,62 @@ def _layout(tmp_path: Path) -> tuple[Path, Path]:
     new_files = tmp_path / "new"
     new_files.mkdir()
     (new_files / "VibeOCR.exe").write_bytes(b"new executable")
-    (new_files / "version.json").write_text(
-        '{"version":"0.7.2"}', encoding="utf-8"
-    )
+    (new_files / "version.json").write_text('{"version":"0.7.2"}', encoding="utf-8")
     return app_dir, new_files
+
+
+def test_launch_health_timeout_exceeds_runtime_inspect_budget() -> None:
+    assert (
+        update_replacer.STARTUP_HEALTH_TIMEOUT_SECONDS
+        > runtime_installation.RUNTIME_INSPECT_TIMEOUT_SECONDS
+    )
+
+
+def test_launch_health_waits_past_runtime_inspect_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_dir, _new_files = _layout(tmp_path)
+    health_file = app_dir / "data" / "cache" / "update" / "startup.health"
+
+    class Process:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.poll_calls = 0
+            self.terminated = False
+
+        def poll(self) -> None:
+            self.poll_calls += 1
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout: float) -> None:
+            assert timeout == 5
+
+    process = Process()
+    health_timeout = update_replacer.STARTUP_HEALTH_TIMEOUT_SECONDS
+    clock = iter(
+        (
+            0.0,
+            runtime_installation.RUNTIME_INSPECT_TIMEOUT_SECONDS,
+            health_timeout + 1,
+        )
+    )
+    monkeypatch.setattr(update_replacer.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(update_replacer.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(update_replacer.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(TimeoutError, match=rf"{health_timeout:g} 秒"):
+        update_replacer.launch_app(
+            app_dir,
+            "VibeOCR.exe",
+            health_file=health_file,
+        )
+
+    assert process.poll_calls == 1
+    assert process.terminated
 
 
 def test_backup_failure_preserves_original_entry(
@@ -134,9 +187,7 @@ def test_launch_failure_rolls_back_replacement(
     monkeypatch.setattr(
         update_replacer,
         "launch_app",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            RuntimeError("startup failed")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("startup failed")),
     )
 
     result = update_replacer.run_replacement(
@@ -163,7 +214,9 @@ def test_incomplete_rollback_keeps_snapshot_and_recovery_marker(
     backup = app_dir / "data" / "cache" / "update" / "_backup"
     backup.mkdir(parents=True)
     (backup / "VibeOCR.exe").write_bytes(b"old executable")
-    monkeypatch.setattr(update_replacer, "_busy_remove", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        update_replacer, "_busy_remove", lambda *_args, **_kwargs: False
+    )
 
     assert not update_replacer._restore_backup_snapshot(app_dir)
     assert backup.is_dir()

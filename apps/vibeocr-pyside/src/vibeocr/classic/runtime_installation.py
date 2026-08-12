@@ -157,6 +157,7 @@ class RuntimeLaunch:
 
 
 ProgressCallback = Callable[[RuntimeMaintenanceUpdate], None]
+RUNTIME_INSPECT_TIMEOUT_SECONDS = 60.0
 
 
 def _source_identity(value: object) -> RuntimeSourceIdentity | None:
@@ -1074,7 +1075,7 @@ class RuntimeInstallerClient:
             )
 
     def inspect(self) -> RuntimeInspection:
-        envelope = self._invoke("inspect", timeout=60)
+        envelope = self._invoke("inspect", timeout=RUNTIME_INSPECT_TIMEOUT_SECONDS)
         try:
             value = envelope["state"]
             accelerator = str(value["accelerator"])

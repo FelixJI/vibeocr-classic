@@ -267,6 +267,7 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         "qasync==0.28.0",
         "numpy==2.5.1",
         "httpx==0.28.1",
+        "jsonschema==4.25.1",
         "pillow==12.3.0",
         "velopack==1.2.0",
     ):

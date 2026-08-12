@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.4
+
+### Bug Fixes
+
+- **update:** 延长新版启动健康窗口 (#43) (685b3b9)
+
 ## 0.10.3
 
 ### Bug Fixes

@@ -48,7 +48,9 @@ if ($ReleaseInput) {
       --release-input $inputs
     if ($LASTEXITCODE -ne 0) { throw 'resolved component verification failed' }
 }
+$protocol = Join-Path $inputs 'protocol'
 $protocolSdk = Join-Path $inputs 'protocol-sdk'
+$backend = Join-Path $inputs 'backend'
 $lock = Join-Path $inputs 'component-lock.json'
 $frontendProtocolLock = Join-Path $inputs 'frontend-protocol-lock.json'
 if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {

@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject
 
+from vibeocr.classic.json_storage import write_json_atomic
+
 logger = logging.getLogger(__name__)
 
 
@@ -83,11 +85,9 @@ class ConfigManager(QObject):
     def _save_json(self, filename: str, data: dict) -> bool:
         filepath = self._config_dir / filename
         try:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            write_json_atomic(filepath, data)
             return True
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
             logger.error("保存配置文件 %s 失败: %s", filename, e)
             return False
 
@@ -110,11 +110,9 @@ class ConfigManager(QObject):
     def _save_cache_json(self, filename: str, data: dict) -> bool:
         filepath = self._cache_dir / filename
         try:
-            filepath.parent.mkdir(parents=True, exist_ok=True)
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            write_json_atomic(filepath, data)
             return True
-        except OSError as e:
+        except (OSError, TypeError, ValueError) as e:
             logger.error("保存缓存文件 %s 失败: %s", filename, e)
             return False
 
@@ -127,9 +125,7 @@ class ConfigManager(QObject):
         data = self._load_json("app_settings.json", {})
         raw = data.get("preload_pipelines")
         if raw is None:
-            legacy = self._load_cache_json("cache.json", {}).get(
-                "preload_pipelines"
-            )
+            legacy = self._load_cache_json("cache.json", {}).get("preload_pipelines")
             raw = legacy if isinstance(legacy, list) else ["OCR"]
         valid = {
             pipeline.value.lower(): pipeline.value

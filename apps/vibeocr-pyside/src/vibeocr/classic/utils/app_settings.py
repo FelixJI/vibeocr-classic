@@ -7,6 +7,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from vibeocr.classic.json_storage import write_json_atomic
+
 if TYPE_CHECKING:
     from vibeocr.classic.managers.config_manager import ConfigManager
 
@@ -97,7 +99,6 @@ class AppSettings:
         # 旧路径兼容
         import json
 
-        self._config_dir.mkdir(parents=True, exist_ok=True)
         try:
             existing = {}
             if self._config_path.exists():
@@ -107,8 +108,7 @@ class AppSettings:
                         existing = {}
             existing.update(self._data)
             existing["version"] = _CONFIG_VERSION
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                json.dump(existing, f, ensure_ascii=False, indent=2)
+            write_json_atomic(self._config_path, existing)
             return True
         except Exception as e:
             logger.error(f"保存应用设置失败: {e}")

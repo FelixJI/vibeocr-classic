@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QByteArray
 
+from vibeocr.classic.json_storage import write_json_atomic
+
 if TYPE_CHECKING:
     from vibeocr.classic.managers.config_manager import ConfigManager
 
@@ -130,12 +132,8 @@ class LayoutManager:
             self._cm._save_json(self.CONFIG_FILENAME, data)
             logger.debug("布局配置已保存")
         else:
-            import json
-
-            self._config_dir.mkdir(parents=True, exist_ok=True)
             try:
-                with open(self._config_path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
+                write_json_atomic(self._config_path, data)
                 logger.debug("布局配置已保存")
             except Exception as e:
                 logger.error(f"保存布局配置失败: {e}")

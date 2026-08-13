@@ -185,9 +185,7 @@ def test_migrate_legacy_bool_value_falls_back_to_default(cm, tmp_path):
 
     config = tmp_path / "config" / "app_settings.json"
     config.parent.mkdir(parents=True, exist_ok=True)
-    config.write_text(
-        json.dumps({"pipeline_ttl_seconds": True}), encoding="utf-8"
-    )
+    config.write_text(json.dumps({"pipeline_ttl_seconds": True}), encoding="utf-8")
 
     ttls = cm.get_pipeline_ttls()
     # True 不应被当作 1，应回退到默认 300
@@ -200,3 +198,15 @@ def test_migrate_legacy_bool_value_falls_back_to_default(cm, tmp_path):
     data = json.loads(config.read_text(encoding="utf-8"))
     assert "pipeline_ttl_seconds" not in data
     assert data["pipeline_ttls"]["PP-StructureV3"] == 300
+
+
+def test_save_json_preserves_existing_file_when_data_is_not_serializable(cm, tmp_path):
+    """序列化失败不能先截断用户已有配置。"""
+    import json
+
+    config = tmp_path / "config" / "app_settings.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('{"theme": "light"}', encoding="utf-8")
+
+    assert cm._save_json("app_settings.json", {"invalid": object()}) is False
+    assert json.loads(config.read_text(encoding="utf-8")) == {"theme": "light"}

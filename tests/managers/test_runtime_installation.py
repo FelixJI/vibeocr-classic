@@ -105,6 +105,20 @@ def test_manifest_tamper_is_rejected_before_executable(tmp_path: Path) -> None:
         client._verify_installer_executable()
 
 
+def test_runtime_host_response_requires_protocol_schema(
+    tmp_path: Path, monkeypatch
+) -> None:
+    script = 'print(\'{"protocol_version":2,"ok":true,"operation":"ensure"}\')'
+    client = RuntimeInstallerClient(
+        tmp_path,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+
+    with pytest.raises(RuntimeInstallerClientError):
+        client._invoke("ensure", timeout=3)
+
+
 def test_explicit_layout_environment_is_forwarded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -455,12 +469,16 @@ print(json.dumps({
     },
     "message_code": "runtime.installing",
 }), flush=True)
+state = {
+    "status": "ready", "runtime_root": "C:/runtime", "accelerator": "cpu",
+    "integrity": "verified", "manifest_sha256": "a" * 64,
+    "backend_version": "0.11.1",
+}
 print(json.dumps({
     "protocol_version": 2,
     "ok": True,
     "operation": "ensure",
-    "state": {},
-    "launch": {},
+    "state": state,
 }), flush=True)
 """
     client = RuntimeInstallerClient(
@@ -500,11 +518,16 @@ event = {
     "event_type": "progress", "sequence": 3, "operation": "ensure",
     "snapshot": snapshot, "message_code": "runtime.installing",
 }
+state = {
+    "status": "ready", "runtime_root": "C:/runtime", "accelerator": "cpu",
+    "integrity": "verified", "manifest_sha256": "a" * 64,
+    "backend_version": "0.11.1",
+}
 print(json.dumps(event), flush=True)
 print(json.dumps(event), flush=True)
 print(json.dumps({
     "protocol_version": 2, "ok": True, "operation": "ensure",
-    "state": {}, "launch": {},
+    "state": state,
 }), flush=True)
 """
     client = RuntimeInstallerClient(

@@ -160,6 +160,19 @@ ProgressCallback = Callable[[RuntimeMaintenanceUpdate], None]
 RUNTIME_INSPECT_TIMEOUT_SECONDS = 60.0
 
 
+def _parse_runtime_host_response_line(line: str) -> dict[str, Any] | None:
+    """Return one schema-valid Runtime Host response, ignoring diagnostic output."""
+    from vibeocr.runtime_client import (
+        RuntimeHostValidationError,
+        parse_runtime_host_response,
+    )
+
+    try:
+        return dict(parse_runtime_host_response(line))
+    except RuntimeHostValidationError:
+        return None
+
+
 def _source_identity(value: object) -> RuntimeSourceIdentity | None:
     if value is None:
         return None
@@ -589,11 +602,10 @@ class RuntimeInstallerClient:
             raise RuntimeInstallerClientError("Runtime 控制命令执行失败") from exc
         envelopes: list[dict[str, Any]] = []
         for line in result.stdout.splitlines():
-            try:
-                value = json.loads(line)
-            except ValueError:
+            value = _parse_runtime_host_response_line(line)
+            if value is None:
                 continue
-            if isinstance(value, dict) and value.get("event_version") != 1:
+            if value.get("event_version") != 1:
                 envelopes.append(value)
         envelope = envelopes[-1] if envelopes else None
         if result.returncode != 0 or envelope is None or envelope.get("ok") is not True:
@@ -915,11 +927,8 @@ class RuntimeInstallerClient:
                 stderr_lines.append(line)
                 continue
             stdout_lines.append(line)
-            try:
-                value: Any = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(value, dict):
+            value = _parse_runtime_host_response_line(line)
+            if value is None:
                 continue
             try:
                 if value.get("event_version") == 1:

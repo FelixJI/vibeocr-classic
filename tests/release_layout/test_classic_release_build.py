@@ -336,10 +336,10 @@ def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
     dependencies = set(project["project"]["dependencies"])
 
     assert compatibility == {"supported_majors": [2], "minor_compatible": True}
-    assert policy["protocol"]["sdk_version"] == "2.4.0"
+    assert policy["protocol"]["sdk_version"] == "2.5.0"
     assert policy["protocol"]["version"] == "2.0.0"
-    assert "vibeocr-runtime-contracts>=2.4.0,<3.0.0" in dependencies
-    assert "vibeocr-runtime-client>=2.4.0,<3.0.0" in dependencies
+    assert "vibeocr-runtime-contracts>=2.5.0,<3.0.0" in dependencies
+    assert "vibeocr-runtime-client>=2.5.0,<3.0.0" in dependencies
 
 
 def test_artifact_frontend_protocol_lock_requires_hash_and_same_major(

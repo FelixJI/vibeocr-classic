@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.5
+
+### Features
+
+- **protocol:** 适配 Runtime Protocol 2.5 (#48) (8d97857)
+- **updater:** 迁移 Velopack 更新与数据根 (#45) (8c0576c)
+
 ## 0.10.4
 
 ### Bug Fixes

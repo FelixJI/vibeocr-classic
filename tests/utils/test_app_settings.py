@@ -151,12 +151,12 @@ class TestAppSettingsPathModeEdgeCases:
         """save 写入异常时返回 False（line 110-112）。"""
         settings = AppSettings(tmp_path)
 
-        def _fail_open(*_a, **_kw):
+        def _fail_write(*_a, **_kw):
             raise OSError("denied")
 
-        import builtins
-
-        monkeypatch.setattr(builtins, "open", _fail_open)
+        monkeypatch.setattr(
+            "vibeocr.classic.utils.app_settings.write_json_atomic", _fail_write
+        )
         assert settings.save() is False
 
     def test_backward_compat_infers_show_toolbar(self, tmp_path):

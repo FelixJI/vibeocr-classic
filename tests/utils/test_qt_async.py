@@ -50,9 +50,7 @@ class TestAsyncTaskRunner:
             captured = []
 
             async def driver():
-                task = runner.run(
-                    coro(), on_complete=lambda r: captured.append(r)
-                )
+                task = runner.run(coro(), on_complete=lambda r: captured.append(r))
                 await task
 
             loop.run_until_complete(asyncio.wait_for(driver(), timeout=2.0))
@@ -218,11 +216,7 @@ class TestQasyncFailFast:
 
 
 class TestAsyncTaskDrainAndError:
-    """AsyncTaskRunner drain + on_error + async_slot 错误观测。
-
-    根因：cancel_all 只 cancel 不 await（无 drain）；run_coroutine 不透传
-    on_error；async_slot 用 ensure_future + WeakSet，异常成为未检索任务异常。
-    """
+    """AsyncTaskRunner drain 与 on_error 错误观测。"""
 
     def test_cancel_all_async_drains_tasks(self):
         """cancel_all_async 取消后任务真正完成（drained）"""
@@ -286,27 +280,6 @@ class TestAsyncTaskDrainAndError:
             with pytest.raises(RuntimeError, match="running qasync"):
                 run_coroutine(coroutine)
             assert coroutine.cr_frame is None
-        finally:
-            loop.close()
-
-    def test_async_slot_logs_exception(self, caplog):
-        """async_slot 中协程抛异常应被记录，不留未检索异常"""
-        import logging
-
-        from vibeocr.classic.utils.qt_async import async_slot
-
-        @async_slot()
-        async def failing():
-            raise ValueError("slot error")
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            with caplog.at_level(logging.ERROR):
-                failing()
-                # 让循环处理任务
-                loop.run_until_complete(asyncio.sleep(0.1))
-            assert any("slot error" in r.message for r in caplog.records)
         finally:
             loop.close()
 

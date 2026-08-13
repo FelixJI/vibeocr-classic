@@ -10,14 +10,10 @@ import functools
 import logging
 import threading
 import warnings
-import weakref
 from collections.abc import Callable, Coroutine
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-# 存储异步任务引用，防止垃圾回收
-_async_tasks: weakref.WeakSet[asyncio.Task] = weakref.WeakSet()
 
 # ``asyncio.to_thread`` 的 asyncio Future 被取消时会立即进入 done，但其原生
 # executor callable 仍可能运行。应用关闭若只探测 Task，会过早销毁 callable
@@ -135,9 +131,7 @@ def run_coroutine(
             建议为可能长时间阻塞的协程传入兜底超时，避免 UI 协程永久挂起。
         on_error: 可选的错误回调函数，接收异常作为参数。
     """
-    logger.debug(
-        f"[run_coroutine] 开始执行协程 (timeout={timeout})..."
-    )
+    logger.debug(f"[run_coroutine] 开始执行协程 (timeout={timeout})...")
     try:
         asyncio.get_running_loop()
     except RuntimeError as error:
@@ -145,53 +139,11 @@ def run_coroutine(
         # it leaks both the wrapper and the caller-created coroutine forever.
         # Production calls originate from Qt slots while qasync is running.
         coro.close()
-        raise RuntimeError("run_coroutine requires a running qasync event loop") from error
+        raise RuntimeError(
+            "run_coroutine requires a running qasync event loop"
+        ) from error
     runner = get_async_runner()
     runner.run(coro, on_complete=callback, on_error=on_error, timeout=timeout)
-
-
-def async_slot(*types):
-    """将异步函数转换为 Qt 槽的装饰器
-
-    使用示例:
-        @async_slot()
-        async def on_button_clicked(self):
-            result = await some_async_operation()
-            self.label.setText(result)
-
-    Args:
-        *types: 可选的槽参数类型（与 PySide6.Slot 相同）
-
-    Returns:
-        装饰后的函数，可作为 Qt 槽使用
-    """
-
-    def decorator(async_func: Callable[..., Coroutine]) -> Callable:
-        @functools.wraps(async_func)
-        def wrapper(*args, **kwargs):
-            coro = async_func(*args, **kwargs)
-            task = asyncio.ensure_future(coro)
-            # 存储引用以防止垃圾回收
-            _async_tasks.add(task)
-            task.add_done_callback(_async_tasks.discard)
-
-            # 错误观测：记录异常，避免 "Task exception was never retrieved"
-            def _log_exception(t):
-                if t.cancelled():
-                    return
-                exc = t.exception()
-                if exc is not None:
-                    logger.error("async_slot 协程异常: %s", exc, exc_info=exc)
-
-            task.add_done_callback(_log_exception)
-
-        # 添加 Qt 槽信息（用于 PySide6 元对象系统）
-        wrapper.__signature__ = getattr(async_func, "__signature__", None)  # type: ignore[attr-defined]
-        wrapper.__annotations__ = getattr(async_func, "__annotations__", {})
-
-        return wrapper
-
-    return decorator
 
 
 class AsyncTaskRunner:

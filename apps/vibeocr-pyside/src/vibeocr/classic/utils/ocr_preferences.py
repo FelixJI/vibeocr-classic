@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
+from vibeocr.classic.json_storage import write_json_atomic
 from vibeocr.classic.recognition_settings import (
     OCROptions,
     PdfGlobalSettings,
@@ -248,9 +249,7 @@ class OCRPreferences(QObject):
         if self._cm is not None:
             return self._cm._save_json(_CONFIG_FILENAME, save_data)
         try:
-            self._config_dir.mkdir(parents=True, exist_ok=True)
-            with open(self._config_path, "w", encoding="utf-8") as f:
-                json.dump(save_data, f, ensure_ascii=False, indent=2)
+            write_json_atomic(self._config_path, save_data)
             return True
         except Exception as e:
             logger.error(f"保存 OCR 选项失败: {e}")

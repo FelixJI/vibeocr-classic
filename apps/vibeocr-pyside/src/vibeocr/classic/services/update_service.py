@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import httpx
 
+from vibeocr.classic.json_storage import write_json_atomic
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from pathlib import Path
@@ -38,34 +40,9 @@ from vibeocr.classic.update_config import (  # noqa: E402
     build_asset_url_pairs,
 )
 from vibeocr.runtime_contracts.utils.http_log import (  # noqa: E402
-    guess_request_size,
     guess_response_size,
     log_http_response,
 )
-
-# ---------------------------------------------------------------------------
-# 版本比较与数据模型
-# ---------------------------------------------------------------------------
-
-
-def compare_versions(v1: str, v2: str) -> int:
-    """比较两个语义化版本号
-
-    Returns:
-        1 if v1 > v2, 0 if v1 == v2, -1 if v1 < v2
-    """
-    parts1 = [int(x) for x in v1.lstrip("v").split(".")]
-    parts2 = [int(x) for x in v2.lstrip("v").split(".")]
-    for a, b in zip(parts1, parts2):
-        if a > b:
-            return 1
-        if a < b:
-            return -1
-    if len(parts1) > len(parts2):
-        return 1
-    if len(parts1) < len(parts2):
-        return -1
-    return 0
 
 
 def _log_http_exchange(
@@ -142,140 +119,6 @@ class UpdateInfo:
     zip_filename: str = ""
     sha256_filename: str = ""
 
-    @classmethod
-    def from_release(cls, release: dict) -> UpdateInfo:
-        zip_name, zip_url = _find_asset(release, ".zip")
-        sha_name, sha_url = _find_asset(release, ".sha256")
-        return cls(
-            version=release["tag_name"].lstrip("v"),
-            download_url=zip_url,
-            sha256_url=sha_url,
-            changelog=release.get("body", ""),
-            file_size=_find_asset_size(release, ".zip"),
-            zip_filename=zip_name,
-            sha256_filename=sha_name,
-        )
-
-
-def _asset_matches(name: str, suffix: str) -> bool:
-    """判断 asset 名是否匹配目标类型（zip 主包 / sha256 校验文件）。
-
-    主包（.zip）：必须 ``.zip`` 结尾，排除 ``.sha256`` 自身（避免把
-    ``VibeOCR-...-win64.zip.sha256`` 当主包）和 ``-webengine-``（历史单独发布
-    的 webengine 资源包，现已内置主包，保留排除作历史 release 防御）。
-    校验文件（.sha256）：同理排除 webengine 的。
-    """
-    if suffix == ".zip":
-        return (
-            name.endswith(".zip")
-            and ".sha256" not in name
-            and "-webengine-" not in name
-        )
-    if suffix == ".sha256":
-        return name.endswith(".sha256") and "-webengine-" not in name
-    return False
-
-
-def _find_asset(release: dict, suffix: str) -> tuple[str, str]:
-    """从 release assets 中选出本模块要下载的 asset (name, url)。
-
-    本模块（update_service.py）**只在 Classic（PySide6/Python）进程运行**——
-    WinUI Next 是 C# 应用，有独立更新链路，不 import 本文件。故当 release 同时
-    发布 Classic 与 Next 两个 zip 时（release.yml 双前端产物命名规则），
-    必须选 ``-Classic-`` 命名的那个，否则会下到错误前端的包。
-
-    选择规则：
-    1. **优先**：名字含 ``-Classic-`` 且匹配 suffix（本运行态前端）。
-    2. **回退**：任意匹配 suffix 的 asset（兼容历史 release v0.4.28 及之前无
-       ``-Classic-`` 命名的产物，以及单元测试 fixture）。回退取第一个匹配项。
-
-    找不到返回 ``("", "")``。
-    """
-    assets = release.get("assets", [])
-    fallback: tuple[str, str] = ("", "")
-    for asset in assets:
-        name = asset["name"]
-        if not _asset_matches(name, suffix):
-            continue
-        url = asset.get("browser_download_url") or asset.get("download_url", "")
-        # 优先：Classic 命名（本模块运行态前端）。命中即返回，不继续。
-        if "-Classic-" in name:
-            return name, url
-        # 回退：记下第一个匹配的非 Classic asset，循环结束若无 Classic 命中再用。
-        if fallback == ("", ""):
-            fallback = (name, url)
-    return fallback
-
-
-def _find_asset_url(release: dict, suffix: str) -> str:
-    """薄封装：返回匹配 asset 的 URL（向后兼容现有调用点）。"""
-    return _find_asset(release, suffix)[1]
-
-
-def _find_asset_size(release: dict, suffix: str) -> int:
-    """返回匹配 asset 的 size（与 _find_asset 同选择规则，保证 name/size/url 一致）。"""
-    name = _find_asset(release, suffix)[0]
-    if not name:
-        return 0
-    for asset in release.get("assets", []):
-        if asset["name"] == name:
-            return asset.get("size", 0)
-    return 0
-
-
-def read_local_version(version_json_path: Path) -> str:
-    """读取本地 version.json 中的版本号
-
-    打包态：便携 Python 独立运行，无法 import 主包的 __version__，只能读
-    version.json（由 bump_version._generate_version_json 在打包时写入）。
-    开发态：version.json 不存在时回退到 __version__，让本地也能正常检查
-    更新（与 sync_client._app_version 的回退模式一致）。两条路径都失败
-    才返回 "0.0.0"，调用方据此跳过更新检查。
-    """
-    if version_json_path.exists():
-        try:
-            data = json.loads(version_json_path.read_text(encoding="utf-8"))
-            version = data.get("version")
-            if version:
-                return version
-        except (json.JSONDecodeError, OSError):
-            pass  # 损坏时落到下方 __version__ 回退
-    try:
-        from vibeocr.classic import __version__
-
-        if __version__:
-            return str(__version__)
-    except Exception:
-        pass
-    return "0.0.0"
-
-
-# ---------------------------------------------------------------------------
-# 远程版本检查
-# ---------------------------------------------------------------------------
-
-
-async def _fetch_release(url: str, headers: dict | None = None) -> dict | None:
-    """通用：获取单个 release API 端点的 JSON，失败返回 None。"""
-    try:
-        started = time.perf_counter()
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, headers=headers or {})
-            _log_http_exchange(
-                "GET",
-                url,
-                resp,
-                request_bytes=guess_request_size(
-                    getattr(resp.request, "content", None)
-                ),
-                start_time=started,
-            )
-            if resp.status_code == 200:
-                return resp.json()
-    except Exception:
-        logger.debug(f"release API 请求失败: {url}")
-    return None
-
 
 async def _probe_github_reachable(timeout: float = 3.0) -> bool:
     """快速探测 GitHub API（api.github.com）是否可达。
@@ -305,43 +148,6 @@ async def _probe_github_reachable(timeout: float = 3.0) -> bool:
     except Exception as e:
         logger.debug(f"GitHub 可达性探测失败（视为不可达）: {e}")
         return False
-
-
-async def check_for_updates(
-    current_version: str,
-) -> tuple[UpdateInfo | None, bool]:
-    """检查是否有新版本（GitHub Release API）
-
-    Returns:
-        (update_info, fetch_ok)：
-        - fetch_ok=False 表示请求 GitHub 失败（上层应提示手动下载）。
-        - fetch_ok=True 且 update_info=None 表示已是最新。
-    """
-    sources = [
-        (GITHUB_API_LATEST, {"Accept": "application/vnd.github+json"}),
-    ]
-
-    release: dict | None = None
-    for url, headers in sources:
-        release = await _fetch_release(url, headers)
-        if release is not None:
-            break
-
-    if release is None:
-        logger.info("无法获取远程版本信息（GitHub 失败）")
-        return None, False
-
-    remote = UpdateInfo.from_release(release)
-
-    if compare_versions(remote.version, current_version) <= 0:
-        logger.debug(f"当前版本 {current_version} 已是最新")
-        return None, True
-
-    if not remote.download_url:
-        logger.warning("未找到下载链接")
-        return None, True
-
-    return remote, True
 
 
 # ---------------------------------------------------------------------------
@@ -532,8 +338,8 @@ async def download_update(
     来源在国内有 gh 代理加速（gh-proxy / ghfast）。校验文件 URL 与 zip 同源同 tag
     精确匹配，不再盲拼 ``{zip}.sha256``。
 
-    文件名取自 ``update_info.zip_filename`` / ``sha256_filename``（由 ``UpdateInfo.from_release``
-    从 release API 的 assets 列表带下来，按当前运行态前端选 ``-Classic-`` 命名的 asset）。
+    文件名取自调用方提供的 ``update_info.zip_filename`` / ``sha256_filename``；
+    调用方负责从 release metadata 选择当前运行态的 ``-Classic-`` asset。
     早期版本在此硬编码 ``VibeOCR-v{version}-win64.zip``，但 v0.4.29+ 发版产物改名加
     ``-Classic-``（区分双前端）后，硬编码名拼出的 URL 全部 404，导致更新全挂。
 
@@ -574,7 +380,7 @@ async def download_update(
             except OSError:
                 pass
 
-    # 真实文件名来自 release API（UpdateInfo.from_release 按 -Classic- 优先选 asset）。
+    # 真实文件名由调用方从 release metadata 中选择。
     # 不再硬编码 ``VibeOCR-v{version}-win64.zip``——v0.4.29+ 产物改名后硬编码会拼出
     # 404 URL。sha256 文件名优先用 release 带下来的；缺失时退化为 ``{zip}.sha256``
     # （历史上 sha 文件名恒等于 zip 名加 .sha256，此退化路径仅作防御）。
@@ -727,7 +533,6 @@ def load_skip_version(settings_path: Path) -> str:
 
 
 def save_skip_version(version: str, settings_path: Path) -> None:
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if settings_path.exists():
         try:
@@ -735,9 +540,7 @@ def save_skip_version(version: str, settings_path: Path) -> None:
         except (json.JSONDecodeError, OSError):
             data = {}
     data["skip_version"] = version
-    settings_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_json_atomic(settings_path, data)
 
 
 def should_skip_version(version: str, settings_path: Path) -> bool:
@@ -785,7 +588,6 @@ def save_remind_later(until_ts: float, settings_path: Path) -> None:
 
     与 save_skip_version 共用同一文件（update_settings.json），合并写回，互不覆盖。
     """
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {}
     if settings_path.exists():
         try:
@@ -793,9 +595,7 @@ def save_remind_later(until_ts: float, settings_path: Path) -> None:
         except (json.JSONDecodeError, OSError):
             data = {}
     data["remind_later_until"] = until_ts
-    settings_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    write_json_atomic(settings_path, data)
 
 
 def is_remind_later_active(settings_path: Path, *, now: float | None = None) -> bool:

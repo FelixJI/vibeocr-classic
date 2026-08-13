@@ -63,6 +63,20 @@ def test_update_health_signal_is_confined_to_update_cache(
     assert not outside.exists()
 
 
+def test_bridge_health_accepts_retained_legacy_ingress_cache(
+    monkeypatch, tmp_path
+) -> None:
+    install_root = tmp_path / "portable"
+    stable_root = tmp_path / "stable"
+    legacy_health = install_root / "data" / "cache" / "update" / "startup.health"
+    monkeypatch.setattr(main, "get_install_root", lambda: install_root)
+    monkeypatch.setenv("VIBEOCR_UPDATE_HEALTH_FILE", str(legacy_health))
+
+    main._publish_update_health(stable_root)
+
+    assert legacy_health.read_text(encoding="utf-8") == "ready\n"
+
+
 def test_update_health_is_scheduled_after_event_loop_turn() -> None:
     source = Path(main.__file__).read_text(encoding="utf-8")
     assert (

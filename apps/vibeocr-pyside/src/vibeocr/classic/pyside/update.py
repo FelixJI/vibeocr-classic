@@ -41,14 +41,19 @@ from vibeocr.classic.services.update_service import (
     DOWNLOAD_REASON_SHA_MISSING,
     REMIND_LATER_SECONDS,
     UpdateInfo,
-    check_for_updates,
     download_update,
     is_remind_later_active,
-    read_local_version,
     save_remind_later,
     save_skip_version,
     should_skip_version,
 )
+from vibeocr.classic.services.update_coordinator import (
+    UpdateApplyStatus,
+    UpdateCheckStatus,
+    UpdateCoordinator,
+)
+from vibeocr.classic.services.update_transport import resolve_update_source_candidates
+from vibeocr.classic.services.velopack_update import VelopackUpdateCoordinator
 from vibeocr.classic.ui import theme
 
 # 纯逻辑层（backend）：版本比较、下载、校验、skip-version。pyside→services 合法。
@@ -405,6 +410,7 @@ class UpdateService:
         self,
         app_dir: Path,
         status_callback: Callable[[str, int], None] | None = None,
+        coordinator: UpdateCoordinator | None = None,
     ) -> None:
         self._app_dir = app_dir
         self._version_json_path = app_dir / "version.json"
@@ -418,6 +424,9 @@ class UpdateService:
 
         self._cache_dir = get_update_cache_dir()
         self._settings_path = get_update_settings_path()
+        self._coordinator = coordinator or VelopackUpdateCoordinator(
+            source_resolver=resolve_update_source_candidates
+        )
         # 状态栏文本回调（复用 main_window 的 self._statusbar.showMessage 约定，
         # 与 ClipboardController / SettingsPageController 一致）。无 callback 时
         # （如单测）_status 静默跳过。
@@ -480,67 +489,100 @@ class UpdateService:
         """
         async with self._get_check_lock():
             self._status("正在检查更新…", 0)
-            current = read_local_version(self._version_json_path)
-            if current == "0.0.0":
-                logger.debug("无法读取本地版本，跳过更新检查")
-                self._status("无法读取当前版本，已跳过更新检查", 5000)
-                return
+            coordinator_result = await self._coordinator.check()
+            await self._handle_velopack_result(
+                coordinator_result,
+                parent,
+                manual=manual,
+                now=now,
+            )
 
-            update_info, fetch_ok = await check_for_updates(current)
-
-            # 自动检查失败：提示用户去下载页手动下载并覆盖安装（需先退出程序）。
-            if not fetch_ok:
-                self._status("检查更新失败，请检查网络", 5000)
-                manual_url = GITHUB_RELEASES_BASE
+    async def _handle_velopack_result(
+        self,
+        result,
+        parent: QWidget | None,
+        *,
+        manual: bool,
+        now: float | None,
+    ) -> None:
+        if result.status is UpdateCheckStatus.FETCH_FAILED:
+            self._status("检查更新失败，请检查网络", 5000)
+            if manual:
                 await await_dialog(
                     QMessageBox(
                         QMessageBox.Icon.Warning,
                         "检查更新",
-                        "自动检查更新失败，可能是网络问题。\n\n"
-                        "可前往 GitHub 手动下载对应版本，"
-                        "覆盖安装前请先退出本程序：\n"
-                        f"{manual_url}",
+                        result.detail or "无法连接 Velopack 更新源。",
+                        QMessageBox.StandardButton.Ok,
+                        parent,
+                    )
+                )
+            return
+        if result.status is UpdateCheckStatus.LATEST:
+            self._status("当前已是最新版本", 3000)
+            return
+        if result.status is not UpdateCheckStatus.AVAILABLE or not result.version:
+            return
+        if not manual and is_remind_later_active(self._settings_path, now=now):
+            self._status("已暂缓更新提醒，稍后再试", 3000)
+            return
+        if should_skip_version(result.version, self._settings_path):
+            self._status(f"已跳过版本 v{result.version}", 3000)
+            return
+        dialog_info = UpdateInfo(
+            version=result.version,
+            download_url="",
+            sha256_url="",
+            changelog=result.release_notes,
+            zip_filename="",
+            sha256_filename="",
+        )
+        dialog = UpdateDialog(
+            dialog_info,
+            result.current_version or "",
+            parent,
+        )
+        await await_dialog(dialog)
+        if dialog.user_action == "skip":
+            save_skip_version(result.version, self._settings_path)
+            return
+        if dialog.user_action == "later":
+            current_now = time.time() if now is None else now
+            save_remind_later(
+                current_now + REMIND_LATER_SECONDS,
+                self._settings_path,
+            )
+            return
+        if dialog.user_action != "update":
+            return
+        cls = type(self)
+        cancel_event = asyncio.Event()
+        cls._active_cancel_event = cancel_event
+        cls._set_download_state("downloading")
+        try:
+            applied = await self._coordinator.download_and_apply(
+                lambda value: self._status(f"正在下载更新… {value}%", 0),
+                cancel_event,
+            )
+            if applied.status is UpdateApplyStatus.CANCELLED:
+                self._status("已取消下载更新", 3000)
+                return
+            if applied.status is UpdateApplyStatus.FAILED:
+                await await_dialog(
+                    QMessageBox(
+                        QMessageBox.Icon.Critical,
+                        "更新失败",
+                        applied.detail or "Velopack 更新失败。",
                         QMessageBox.StandardButton.Ok,
                         parent,
                     )
                 )
                 return
-
-            if update_info is None:
-                self._status("当前已是最新版本", 3000)
-                return
-
-            # 自动检查（非用户主动）命中「稍后提醒」暂缓窗口：静默跳过。
-            # 手动检查（manual=True）忽略暂缓——用户主动点按钮即表示现在想看。
-            if not manual and is_remind_later_active(self._settings_path, now=now):
-                logger.debug("更新提醒处于「稍后提醒」暂缓窗口内，跳过自动弹窗")
-                self._status("已暂缓更新提醒，稍后再试", 3000)
-                return
-
-            if should_skip_version(update_info.version, self._settings_path):
-                logger.debug(f"用户已跳过版本 {update_info.version}")
-                self._status(f"已跳过版本 v{update_info.version}", 3000)
-                return
-
-            dialog = UpdateDialog(update_info, current, parent)
-            await await_dialog(dialog)
-
-            if dialog.user_action == "skip":
-                save_skip_version(update_info.version, self._settings_path)
-                return
-
-            if dialog.user_action == "later":
-                # 「稍后提醒」：持久化暂缓到期时间戳，1 天内自动检查不再弹窗。
-                # （手动检查仍弹——见上文 manual 分支。）
-                current_now = time.time() if now is None else now
-                save_remind_later(
-                    current_now + REMIND_LATER_SECONDS, self._settings_path
-                )
-                self._status("将在明天再次提醒", 3000)
-                return
-
-            if dialog.user_action == "update":
-                await self._do_download_and_update(update_info, parent)
+            self._status("更新已就绪，正在重启…", 0)
+            self._force_quit()
+        finally:
+            cls._active_cancel_event = None
+            cls._set_download_state("idle")
 
     async def _do_download_and_update(
         self, info: UpdateInfo, parent: QWidget | None

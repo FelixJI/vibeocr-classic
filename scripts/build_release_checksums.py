@@ -50,10 +50,10 @@ def write_sidecar_checksum(path: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("artifacts_dir", type=Path)
-    parser.add_argument("--sidecar-for", type=Path)
+    parser.add_argument("--sidecar-for", type=Path, action="append", default=[])
     args = parser.parse_args(argv)
-    if args.sidecar_for is not None:
-        print(write_sidecar_checksum(args.sidecar_for))
+    for path in args.sidecar_for:
+        print(write_sidecar_checksum(path))
     print(build_release_checksums(args.artifacts_dir))
     return 0
 

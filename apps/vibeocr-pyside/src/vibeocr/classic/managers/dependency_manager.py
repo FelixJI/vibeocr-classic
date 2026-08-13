@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
-from vibeocr.classic.app_paths import get_install_root
+from vibeocr.classic.app_paths import get_state_root
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerClient,
     RuntimeInstallerClientError,
@@ -75,7 +75,7 @@ class DependencyManager(QObject):
             parent: 父对象
         """
         super().__init__(parent)
-        self._project_root = project_root or get_install_root()
+        self._project_root = project_root or get_state_root()
         self._client = RuntimeInstallerClient(self._project_root)
         self._thread_pool = QThreadPool()
         self._is_checking = False

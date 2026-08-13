@@ -44,15 +44,19 @@ os.environ["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
 @pytest.fixture(scope="session", autouse=True)
 def isolate_application_log_root(tmp_path_factory):
     """Route process-wide application logs outside the repository during tests."""
+    from types import SimpleNamespace
+
     from vibeocr.classic.services import log_service
 
-    original_get_install_root = log_service.get_install_root
+    original_get_active_app_paths = log_service.get_active_app_paths
     test_install_root = tmp_path_factory.mktemp("vibeocr-test-install-root")
-    log_service.get_install_root = lambda: test_install_root
+    log_service.get_active_app_paths = lambda: SimpleNamespace(
+        data_root=test_install_root / "data"
+    )
     try:
         yield
     finally:
-        log_service.get_install_root = original_get_install_root
+        log_service.get_active_app_paths = original_get_active_app_paths
 
 
 @pytest.fixture(scope="session")

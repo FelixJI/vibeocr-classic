@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vibeocr.classic.app_paths import get_install_root
+from vibeocr.classic.app_paths import get_state_root
 from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.managers.config_manager import ConfigManager
 from vibeocr.classic.managers.dependency_manager import DependencyManager
@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self._project_root = get_install_root()
+        self._project_root = get_state_root()
         self._ocr_ready = False
         self._dependency_check_complete = False  # 依赖检测是否完成
 

@@ -7,6 +7,7 @@ import pytest
 
 from scripts.build_release_checksums import (
     build_release_checksums,
+    main,
     write_sidecar_checksum,
 )
 
@@ -39,3 +40,26 @@ def test_writes_updater_compatible_sidecar(tmp_path: Path) -> None:
     assert sidecar.read_text(encoding="utf-8") == (
         f"{hashlib.sha256(b'zip').hexdigest()}  VibeOCR.zip\n"
     )
+
+
+def test_cli_writes_legacy_zip_and_setup_sidecars(tmp_path: Path) -> None:
+    legacy = tmp_path / "VibeOCR-Classic-v1.2.3-win64.zip"
+    setup = tmp_path / "VibeOCRClassic-win-Setup.exe"
+    legacy.write_bytes(b"legacy bridge")
+    setup.write_bytes(b"velopack setup")
+
+    assert (
+        main(
+            [
+                str(tmp_path),
+                "--sidecar-for",
+                str(legacy),
+                "--sidecar-for",
+                str(setup),
+            ]
+        )
+        == 0
+    )
+
+    assert (tmp_path / f"{legacy.name}.sha256").is_file()
+    assert (tmp_path / f"{setup.name}.sha256").is_file()

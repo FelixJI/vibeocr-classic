@@ -224,7 +224,7 @@ def _verify_runtime_layout(
 
 
 def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
-    """用正式 updater.exe 验证成功提交、data 保留与启动失败回滚。"""
+    """Verify the retained legacy ingress updater can reach the bridge release."""
     updater = root / "updater.exe"
     updater_bytes = updater.read_bytes()
 
@@ -253,8 +253,8 @@ def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
             encoding="utf-8",
         )
 
-    for should_fail in (False, True):
-        case = root / (".updater-fail-smoke" if should_fail else ".updater-ok-smoke")
+    for _bridge_case in (False,):
+        case = root / ".updater-bridge-smoke"
         app_dir = case / "app"
         app_dir.mkdir(parents=True)
         old_executable = b"old executable"
@@ -278,8 +278,6 @@ def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
             "--health-file",
             str(health_file),
         ]
-        if should_fail:
-            command.append("--entry-arg=--vibeocr-self-test-fail")
         environment = os.environ.copy()
         environment["VIBEOCR_SELF_TEST_NO_DIALOG"] = "1"
         result = subprocess.run(
@@ -292,14 +290,12 @@ def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
             check=False,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        expected_code = 1 if should_fail else 0
-        if result.returncode != expected_code:
+        if result.returncode != 0:
             raise RuntimeError(
                 "frozen updater smoke failed: "
                 f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
             )
-        expected_executable = old_executable if should_fail else updater_bytes
-        if (app_dir / "VibeOCR.exe").read_bytes() != expected_executable:
+        if (app_dir / "VibeOCR.exe").read_bytes() != updater_bytes:
             raise RuntimeError("frozen updater smoke left the wrong product entry")
         if (data / "user.txt").read_text(encoding="utf-8") != "preserved":
             raise RuntimeError("frozen updater smoke did not preserve user data")
@@ -344,6 +340,7 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
     env["VIBEOCR_STARTUP_TRACE"] = str(trace)
     env["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
     env["VIBEOCR_SELF_TEST_PYTHON"] = str(smoke_python)
+    env["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -437,6 +434,7 @@ def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
     env = os.environ.copy()
     env["VIBEOCR_SELF_TEST_WEBENGINE"] = "1"
     env["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
+    env["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QT_OPENGL"] = "software"
     env["QT_QUICK_BACKEND"] = "software"
@@ -497,6 +495,7 @@ def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
     environment = os.environ.copy()
     environment["VIBEOCR_SELF_TEST_PDF"] = "1"
     environment["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
+    environment["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         with (

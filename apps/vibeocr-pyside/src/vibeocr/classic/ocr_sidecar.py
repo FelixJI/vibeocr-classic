@@ -12,7 +12,7 @@ import json
 import logging
 from pathlib import Path
 
-from vibeocr.classic.app_paths import get_install_root
+from vibeocr.classic.app_paths import get_active_app_paths
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def compute_fingerprint(file_path: str) -> str:
 
 def _sessions_dir() -> Path:
     """Keep the version 1 storage directory compatible with existing installs."""
-    return get_install_root().resolve() / "data" / "backend" / _SIDECAR_SUBDIR
+    return get_active_app_paths().data_root / "backend" / _SIDECAR_SUBDIR
 
 
 def _path_slug(file_path: str) -> str:

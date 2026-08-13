@@ -28,6 +28,7 @@ def verify_release_assets(
     required: Iterable[str] = (),
     require_one: Iterable[str] = (),
     require_index: bool = True,
+    exact: bool = False,
 ) -> tuple[str, ...]:
     """Verify checksums, the indexed file set, and repository asset requirements."""
     root = artifacts_dir.resolve(strict=True)
@@ -37,7 +38,6 @@ def verify_release_assets(
     checksum_path = root / "SHA256SUMS"
     if require_index and not checksum_path.is_file():
         raise ReleaseAssetError("missing required asset: SHA256SUMS")
-
     checksums: dict[str, str] = {}
     actual = {
         path.name
@@ -85,10 +85,12 @@ def verify_release_assets(
             ):
                 raise ReleaseAssetError(f"sidecar SHA-256 mismatch: {sidecar.name}")
 
+    expected = set()
     for name in required:
         safe_name = _asset_name(name)
         if safe_name not in actual:
             raise ReleaseAssetError(f"missing required asset: {safe_name}")
+        expected.add(safe_name)
 
     for pattern in require_one:
         matches = sorted(name for name in actual if fnmatch.fnmatchcase(name, pattern))
@@ -97,6 +99,13 @@ def verify_release_assets(
                 f"required pattern must match exactly one asset: {pattern!r}; "
                 f"matches={matches}"
             )
+        expected.update(matches)
+
+    if exact and actual != expected:
+        raise ReleaseAssetError(
+            "exact asset set mismatch; "
+            f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+        )
 
     return tuple(
         sorted(actual | ({checksum_path.name} if checksum_path.is_file() else set()))
@@ -109,12 +118,14 @@ def main() -> int:
     parser.add_argument("--require", action="append", default=[])
     parser.add_argument("--require-one", action="append", default=[])
     parser.add_argument("--no-checksum-index", action="store_true")
+    parser.add_argument("--exact", action="store_true")
     args = parser.parse_args()
     for name in verify_release_assets(
         args.artifacts_dir,
         required=args.require,
         require_one=args.require_one,
         require_index=not args.no_checksum_index,
+        exact=args.exact,
     ):
         print(name)
     return 0

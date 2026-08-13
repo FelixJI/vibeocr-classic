@@ -12,6 +12,7 @@
 """
 
 import pytest
+from types import SimpleNamespace
 
 from vibeocr.classic import update_config
 from vibeocr.classic.update_config import (
@@ -30,8 +31,12 @@ from vibeocr.classic.update_config import (
 
 @pytest.fixture(autouse=True)
 def _stub_install_root(monkeypatch, tmp_path):
-    """patch get_install_root 返回 tmp_path，隔离真实安装根。"""
-    monkeypatch.setattr(update_config, "get_install_root", lambda: tmp_path)
+    """patch active paths 返回 tmp_path，隔离真实稳定数据根。"""
+    monkeypatch.setattr(
+        update_config,
+        "get_active_app_paths",
+        lambda: SimpleNamespace(data_root=tmp_path / "data"),
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -127,142 +127,6 @@ def check_production_dependencies() -> bool:
     return True
 
 
-def _resolve_replacer_module_dir() -> Path | None:
-    """定位 update_replacer.py 所在目录，用于动态 import（cleanup_leftover_old_exes 等）。
-
-    优先级：
-    1. 打包态：``sys._MEIPASS``（update_replacer.py 由 --add-data 打入 _internal/ 根）。
-    2. 开发态：仓库根下的 ``scripts/``（与 main.py 的相对位置回溯）。
-
-    找不到返回 None（调用方据此报错退出）。
-    """
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass is not None and (Path(meipass) / "update_replacer.py").exists():
-        return Path(meipass)
-    # 开发态：物理拆包后通过统一项目根定位 scripts/。
-    dev_scripts = get_install_root() / "scripts"
-    if (dev_scripts / "update_replacer.py").exists():
-        return dev_scripts
-    return None
-
-
-def _cleanup_update_artifacts(app_dir: Path) -> None:
-    """后台清理上次更新的残留产物（成功路径下 updater 不再清理，移交本函数）。
-
-    新架构下 updater 启动新主程序后立即退出，不做 cleanup（避免 55s I/O 阻塞
-    关键路径）。本函数由新主程序在后台 daemon 线程调用，清理：
-    - data/cache/update/tmp/（解压临时目录，数百 MB）
-    - data/cache/update/_backup/（备份目录，防御性兜底）
-    - data/cache/update/*.zip + *.sha256（更新包）
-    - data/cache/update/updater.exe（暂存的新 updater，此刻已退出不锁）
-    - data/cache/update/updater.ready（就绪信号）
-    - *.exe.old（由 _cleanup_leftover_old_exes 单独负责）
-
-    保留 data/cache/update/progress.json（关于页读取展示"上次更新各阶段耗时"）。
-
-    幂等：多次调用无副作用。失败仅 log，绝不阻断启动。
-    """
-    try:
-        cache_dir = app_dir / "data" / "cache" / "update"
-        if not cache_dir.is_dir():
-            return
-
-        import shutil
-
-        # tmp/ 解压目录
-        tmp_dir = cache_dir / "tmp"
-        if tmp_dir.exists():
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-        # 非更新启动时清理历史备份。由 updater 启动的新版进程必须保留本轮备份，
-        # 直到窗口发布健康信号、updater 提交事务。
-        backup_dir = cache_dir / "_backup"
-        recovery_marker = cache_dir / "manual-recovery-required.json"
-        if (
-            backup_dir.exists()
-            and not os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
-            and not recovery_marker.is_file()
-        ):
-            shutil.rmtree(backup_dir, ignore_errors=True)
-
-        # zip + sha256 + 暂存 updater + ready（保留 progress.json）
-        for item in cache_dir.iterdir():
-            if item.name == "progress.json":
-                continue
-            if not item.is_file():
-                continue
-            if item.name.endswith((".zip", ".sha256")) or item.name in (
-                "updater.exe",
-                "updater.ready",
-            ):
-                try:
-                    item.unlink(missing_ok=True)
-                except OSError:
-                    pass
-
-        # 空 update 目录可删（progress.json 不在时）
-        if cache_dir.exists() and not any(cache_dir.iterdir()):
-            try:
-                cache_dir.rmdir()
-            except OSError:
-                pass
-    except Exception as e:
-        print(f"[VibeOCR] 清理更新残留失败（不影响启动）: {e}")
-
-
-def _publish_update_health(app_dir: Path) -> None:
-    """Confirm startup to the retained ingress updater after data migration."""
-    configured = os.environ.get("VIBEOCR_UPDATE_HEALTH_FILE")
-    if not configured:
-        return
-    try:
-        health_file = Path(configured).resolve()
-        update_caches = {
-            (app_dir / "data" / "cache" / "update").resolve(),
-            (get_install_root() / "data" / "cache" / "update").resolve(),
-        }
-        if (
-            not any(health_file.is_relative_to(cache) for cache in update_caches)
-            or health_file.name != "startup.health"
-        ):
-            raise ValueError("更新健康信号路径越出产品更新缓存")
-        health_file.parent.mkdir(parents=True, exist_ok=True)
-        health_file.write_text("ready\n", encoding="utf-8")
-    except Exception as error:
-        print(f"[VibeOCR] 发布更新健康信号失败: {error}")
-
-
-def _cleanup_leftover_old_exes() -> None:
-    """清理上次更新残留的 ``*.exe.old``（主程序启动入口）。
-
-    背景：updater.exe / VibeOCR.exe 更新时把运行中的自己改名为 ``.old`` 后继续运行，
-    Windows 禁止删运行中 exe（PE 映射锁），所以改名后的旧进程映像在 updater 的
-    cleanup 阶段**必然删不掉**。updater 侧有 ``MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)``
-    标记重启清理，但：旧版 updater（如 v0.4.13）没有 MoveFileEx 兜底、用户可能从不重启
-    （笔记本常态）→ ``.old`` 永久堆积（8-9MB/个）。
-
-    本函数是兜底的兜底：主程序每次启动（此刻旧进程已退出、锁已释放），清掉残留。
-    复用 ``update_replacer.cleanup_leftover_old_exes``（同 module 的动态 import 路径
-    与 _resolve_replacer_module_dir 一致），保证行为统一。任何异常仅打印、绝不阻断启动——
-    清理残留是「锦上添花」，不能因它让应用起不来。
-    """
-    try:
-        replacer_dir = _resolve_replacer_module_dir()
-        if replacer_dir is None:
-            return
-        if str(replacer_dir) not in sys.path:
-            sys.path.insert(0, str(replacer_dir))
-        from update_replacer import (  # pyright: ignore[reportMissingImports]
-            cleanup_leftover_old_exes,
-        )
-
-        app_dir = get_install_root()
-        cleanup_leftover_old_exes(app_dir)
-    except Exception as e:
-        # 清理失败不影响启动；残留最多占点空间，下次启动再试。
-        print(f"[VibeOCR] 清理上次更新残留失败（不影响启动）: {e}")
-
-
 def _create_tray_icon(app, window, app_settings):
     """创建系统托盘图标
 
@@ -649,9 +513,6 @@ def launch_application() -> int:
     # 从「首次截图显示结果时」前移到「启动空闲片段」，避免首次结果前的多次闪烁。
     from PySide6.QtCore import QTimer
 
-    # 至少经过一次 Qt 事件循环和首帧绘制窗口后再提交更新事务。若主窗口在首次
-    # paint/事件分发阶段崩溃，updater 收不到健康信号并会回滚。
-    QTimer.singleShot(250, lambda: _publish_update_health(project_root))
     QTimer.singleShot(0, window.prewarm_result_webengine)
 
     # 第二实例通知提到前台时，恢复并激活主窗口。
@@ -724,9 +585,8 @@ def main() -> int:
     启动流程：
     1. 检测生产环境依赖（PySide6, Pillow）
     2. 失败 → 控制台错误提示，退出
-    3. 通过 → 启动后台清理线程（tmp/zip/sha/暂存 updater/ready + *.exe.old）
-    4. 启动GUI
-    5. GUI启动后 → 异步检测嵌入式OCR依赖
+    3. 通过 → 启动 GUI
+    4. GUI 启动后 → 异步检测嵌入式 OCR 依赖
     """
 
     # 1. 检查生产环境依赖
@@ -739,25 +599,6 @@ def main() -> int:
             except (EOFError, OSError, RuntimeError, ValueError):
                 pass
         return 1
-
-    # 清理上次更新残留（后台 daemon 线程，不阻塞启动）。
-    # 新架构：updater 不再做 cleanup，移交本主程序后台完成。包含：
-    # - tmp/zip/sha256/暂存 updater/ready（_cleanup_update_artifacts）
-    # - *.exe.old（_cleanup_leftover_old_exes）
-    # 用 daemon 线程让出资源，避免抢 UI 冷启动；launch_application 以 os._exit
-    # 结尾从不返回，故线程必须在其之前启动（与 Qt 事件循环并行后台跑）。
-    import threading
-
-    def _background_cleanup() -> None:
-        try:
-            app_dir = get_install_root()
-            _cleanup_update_artifacts(app_dir)
-            _cleanup_leftover_old_exes()
-        except Exception as e:
-            print(f"[VibeOCR] 后台清理异常（不影响启动）: {e}")
-
-    cleanup_thread = threading.Thread(target=_background_cleanup, daemon=True)
-    cleanup_thread.start()
 
     # 2. 启动应用
     print("[VibeOCR] 启动应用...")

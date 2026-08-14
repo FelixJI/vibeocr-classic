@@ -156,25 +156,16 @@ $product = Join-Path $dist 'VibeOCR'
 & $buildPython (Join-Path $root 'scripts/prune_pyside_artifact.py') `
   --product-root $product
 if ($LASTEXITCODE -ne 0) { throw 'Classic PySide6 payload pruning failed' }
-& $buildPython -m PyInstaller --noconfirm --clean --onefile --windowed `
-  --name updater --distpath (Join-Path $build 'updater-dist') `
-  --workpath (Join-Path $build 'updater-work') `
-  --specpath (Join-Path $build 'updater-spec') `
-  (Join-Path $root 'scripts/updater_main.py')
-if ($LASTEXITCODE -ne 0) { throw 'Classic updater build failed' }
-Copy-Item -LiteralPath (Join-Path $build 'updater-dist/updater.exe') `
-  -Destination $product
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
-$zip = Join-Path $artifacts "VibeOCR-Classic-v$Version-win64.zip"
-& $buildPython (Join-Path $root 'scripts/package_product_release.py') `
+& $buildPython (Join-Path $root 'scripts/finalize_product_release.py') `
   --product-root $product --frontend classic --frontend-version $Version `
   --source-commit (git -C $root rev-parse HEAD).Trim() `
   --component-lock $lock --frontend-protocol-lock $frontendProtocolLock `
   --frontend-protocol-release-dir $protocolSdk `
   --protocol-release-dir $protocol `
-  --backend-release-dir $backend --output $zip
+  --backend-release-dir $backend
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
-& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $zip
+& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
 $velopackOutput = Join-Path $build 'velopack'
 New-Item -ItemType Directory -Path $velopackOutput -Force | Out-Null
@@ -203,7 +194,7 @@ Copy-Item -LiteralPath $frontendProtocolLock `
   -Destination (Join-Path $artifacts 'frontend-protocol-lock.json')
 & $buildPython (Join-Path $root 'scripts/build_release_checksums.py') `
   $artifacts `
-  --sidecar-for $zip --sidecar-for $publishedVelopackSetup
+  --sidecar-for $publishedVelopackSetup
 if ($LASTEXITCODE -ne 0) { throw 'sidecar checksum build failed' }
 Remove-Item -LiteralPath (Join-Path $artifacts 'SHA256SUMS') -Force
 & $buildPython (Join-Path $root 'scripts/build_spdx_sbom.py') `

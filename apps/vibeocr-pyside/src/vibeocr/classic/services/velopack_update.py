@@ -9,13 +9,11 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import Protocol
 
 from vibeocr.classic.services.update_coordinator import (
-    UpdateApplyMode,
     UpdateApplyResult,
     UpdateApplyStatus,
     UpdateCheckResult,
     UpdateCheckStatus,
 )
-from vibeocr.classic.services.setup_bridge import SetupBridge
 from vibeocr.classic.services.update_transport import UpdateSourceCandidate
 from vibeocr.classic.services.update_transport import (
     HttpxFeedMaterializer,
@@ -84,9 +82,7 @@ class VelopackUpdateCoordinator:
         *,
         source_candidates: Iterable[UpdateSourceCandidate | str] = (),
         manager_factory: ManagerFactory = _default_manager_factory,
-        setup_bridge: SetupBridge | None = None,
         source_resolver: SourceResolver | None = None,
-        migration_ready: Callable[[], bool] | None = None,
         materializer: _FeedMaterializer | None = None,
     ) -> None:
         self._source_candidates = tuple(
@@ -97,11 +93,8 @@ class VelopackUpdateCoordinator:
         )
         self._manager_factory = manager_factory
         self._source_resolver = source_resolver
-        self._migration_ready = migration_ready
         self._materializer = materializer
         self._materialized_source: MaterializedUpdateSource | None = None
-        self._setup_bridge = setup_bridge
-        self._apply_mode = UpdateApplyMode.VELOPACK
         self._manager: _VelopackManager | None = None
         self._update: _VelopackUpdateInfo | None = None
 
@@ -111,7 +104,6 @@ class VelopackUpdateCoordinator:
             self._materialized_source = None
         self._manager = None
         self._update = None
-        self._apply_mode = UpdateApplyMode.VELOPACK
         if self._source_resolver is not None:
             self._source_candidates = tuple(await self._source_resolver())
         failures: list[str] = []
@@ -121,7 +113,10 @@ class VelopackUpdateCoordinator:
             try:
                 manager = self._manager_factory(source)
                 if await asyncio.to_thread(manager.get_is_portable):
-                    return await self._check_setup_bridge()
+                    return UpdateCheckResult(
+                        UpdateCheckStatus.FETCH_FAILED,
+                        detail="便携版不支持自动更新，请手动下载新版 Setup 或 Portable。",
+                    )
                 current = await asyncio.to_thread(manager.get_current_version)
             except Exception as exc:
                 failures.append(f"{source}: {exc}")
@@ -146,9 +141,9 @@ class VelopackUpdateCoordinator:
                 version=asset.Version,
                 release_notes=asset.NotesMarkdown or "",
             )
-        if not installed_runtime_seen:
-            return await self._check_setup_bridge(failures)
-        if os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY"):
+        if installed_runtime_seen and (
+            os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+        ):
             fallback = await self._check_materialized_source(failures)
             if fallback is not None:
                 return fallback
@@ -187,69 +182,11 @@ class VelopackUpdateCoordinator:
             release_notes=asset.NotesMarkdown or "",
         )
 
-    async def _check_setup_bridge(
-        self, prior_failures: list[str] | None = None
-    ) -> UpdateCheckResult:
-        if not self._is_migration_ready():
-            return UpdateCheckResult(
-                UpdateCheckStatus.FETCH_FAILED,
-                detail="稳定数据根迁移尚未完成，已保留 portable 数据并跳过 Setup",
-                apply_mode=UpdateApplyMode.SETUP_BRIDGE,
-            )
-        if self._setup_bridge is None:
-            self._setup_bridge = self._build_setup_bridge()
-        try:
-            release = await self._setup_bridge.check()
-        except Exception as exc:
-            failures = [*(prior_failures or ()), f"setup: {exc}"]
-            return UpdateCheckResult(
-                UpdateCheckStatus.FETCH_FAILED,
-                detail="; ".join(failures),
-                apply_mode=UpdateApplyMode.SETUP_BRIDGE,
-            )
-        from vibeocr.classic import __version__
-
-        self._apply_mode = UpdateApplyMode.SETUP_BRIDGE
-        return UpdateCheckResult(
-            UpdateCheckStatus.AVAILABLE,
-            current_version=__version__,
-            version=release.version,
-            release_notes="安装 Velopack 版本以继续接收安全更新。",
-            apply_mode=UpdateApplyMode.SETUP_BRIDGE,
-        )
-
-    def _build_setup_bridge(self) -> SetupBridge:
-        from vibeocr.classic.update_config import get_update_cache_dir
-
-        return SetupBridge(
-            source_candidates=self._source_candidates,
-            cache_dir=get_update_cache_dir(),
-        )
-
-    def _is_migration_ready(self) -> bool:
-        if self._migration_ready is not None:
-            return self._migration_ready()
-        from vibeocr.classic.data_migration import is_stable_data_root_ready
-
-        return is_stable_data_root_ready()
-
     async def download_and_apply(
         self,
         progress: Callable[[int], None] | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> UpdateApplyResult:
-        if self._apply_mode is UpdateApplyMode.SETUP_BRIDGE:
-            if cancel_event is not None and cancel_event.is_set():
-                return UpdateApplyResult(UpdateApplyStatus.CANCELLED)
-            try:
-                if self._setup_bridge is None:
-                    raise RuntimeError("Setup bridge has not checked a release")
-                await self._setup_bridge.download_and_launch(progress, cancel_event)
-            except asyncio.CancelledError:
-                return UpdateApplyResult(UpdateApplyStatus.CANCELLED)
-            except Exception as exc:
-                return UpdateApplyResult(UpdateApplyStatus.FAILED, str(exc))
-            return UpdateApplyResult(UpdateApplyStatus.APPLY_STARTED)
         manager = self._manager
         update = self._update
         if manager is None or update is None:

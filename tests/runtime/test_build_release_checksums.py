@@ -33,19 +33,17 @@ def test_checksums_reject_empty_directory(tmp_path: Path) -> None:
         build_release_checksums(tmp_path)
 
 
-def test_writes_updater_compatible_sidecar(tmp_path: Path) -> None:
-    artifact = tmp_path / "VibeOCR.zip"
-    artifact.write_bytes(b"zip")
+def test_writes_release_asset_sidecar(tmp_path: Path) -> None:
+    artifact = tmp_path / "VibeOCRClassic-win-Setup.exe"
+    artifact.write_bytes(b"setup")
     sidecar = write_sidecar_checksum(artifact)
     assert sidecar.read_text(encoding="utf-8") == (
-        f"{hashlib.sha256(b'zip').hexdigest()}  VibeOCR.zip\n"
+        f"{hashlib.sha256(b'setup').hexdigest()}  VibeOCRClassic-win-Setup.exe\n"
     )
 
 
-def test_cli_writes_legacy_zip_and_setup_sidecars(tmp_path: Path) -> None:
-    legacy = tmp_path / "VibeOCR-Classic-v1.2.3-win64.zip"
+def test_cli_writes_requested_setup_sidecar(tmp_path: Path) -> None:
     setup = tmp_path / "VibeOCRClassic-win-Setup.exe"
-    legacy.write_bytes(b"legacy bridge")
     setup.write_bytes(b"velopack setup")
 
     assert (
@@ -53,13 +51,10 @@ def test_cli_writes_legacy_zip_and_setup_sidecars(tmp_path: Path) -> None:
             [
                 str(tmp_path),
                 "--sidecar-for",
-                str(legacy),
-                "--sidecar-for",
                 str(setup),
             ]
         )
         == 0
     )
 
-    assert (tmp_path / f"{legacy.name}.sha256").is_file()
     assert (tmp_path / f"{setup.name}.sha256").is_file()

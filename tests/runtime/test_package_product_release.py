@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from scripts.bind_component_releases import bind_product_releases, bind_protocol_release
-from scripts.package_product_release import package_product_release
+from scripts.finalize_product_release import finalize_product_release
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -117,7 +117,7 @@ def _frontend_release(tmp_path: Path) -> tuple[Path, Path]:
     return release, lock
 
 
-def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> None:
+def test_product_finalizer_is_deterministic_and_binds_runtime(tmp_path: Path) -> None:
     protocol, backend = _releases(tmp_path)
     frontend_protocol, frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
@@ -132,14 +132,13 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
         required_capabilities=("ocr.recognition.v2",),
         output=component_lock,
     )
-    outputs = []
+    manifests = []
     for name in ("first", "second"):
         product = tmp_path / name / "VibeOCR"
         product.mkdir(parents=True)
         (product / "VibeOCR.exe").write_bytes(b"app")
-        output = tmp_path / f"{name}.zip"
-        outputs.append(
-            package_product_release(
+        manifests.append(
+            finalize_product_release(
                 product_root=product,
                 frontend="classic",
                 frontend_version="0.7.0",
@@ -149,22 +148,25 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
                 frontend_protocol_release_dir=frontend_protocol,
                 protocol_release_dir=protocol,
                 backend_release_dir=backend,
-                output=output,
             )
         )
-    assert outputs[0].read_bytes() == outputs[1].read_bytes()
-    with zipfile.ZipFile(outputs[0]) as archive:
-        members = set(archive.namelist())
-        version = json.loads(archive.read("VibeOCR/version.json"))
-        manifest = json.loads(archive.read("VibeOCR/product-release-manifest.json"))
-    assert "VibeOCR/component-lock.json" in members
-    assert "VibeOCR/frontend-protocol-lock.json" in members
-    assert "VibeOCR/runtime-installer/vibeocr-runtime-installer.exe" not in members
-    assert "VibeOCR/backend/installer.zip" in members
-    assert "VibeOCR/backend/python.tar.gz" in members
-    assert "VibeOCR/backend/runtime-manifest.json" in members
-    assert "VibeOCR/backend/SHA256SUMS" not in members
-    assert "VibeOCR/backend/SBOM.spdx.json" not in members
+    assert manifests[0].read_bytes() == manifests[1].read_bytes()
+    product = manifests[0].parent
+    members = {
+        path.relative_to(product).as_posix()
+        for path in product.rglob("*")
+        if path.is_file()
+    }
+    version = json.loads((product / "version.json").read_text(encoding="utf-8"))
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert "component-lock.json" in members
+    assert "frontend-protocol-lock.json" in members
+    assert "runtime-installer/vibeocr-runtime-installer.exe" not in members
+    assert "backend/installer.zip" in members
+    assert "backend/python.tar.gz" in members
+    assert "backend/runtime-manifest.json" in members
+    assert "backend/SHA256SUMS" not in members
+    assert "backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
     assert manifest["shared_root"] == "data"
     assert manifest["products"] == {
@@ -177,7 +179,7 @@ def test_product_package_is_deterministic_and_binds_runtime(tmp_path: Path) -> N
     assert manifest["frontend_protocol_lock_sha256"] == _sha(frontend_lock.read_bytes())
 
 
-def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> None:
+def test_product_finalizer_rejects_unexpected_top_level_items(tmp_path: Path) -> None:
     protocol, backend = _releases(tmp_path)
     frontend_protocol, frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
@@ -198,7 +200,7 @@ def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> N
     (product / "debug-notes.txt").write_text("not a product file", encoding="utf-8")
 
     with pytest.raises(ValueError, match="unexpected product root items"):
-        package_product_release(
+        finalize_product_release(
             product_root=product,
             frontend="classic",
             frontend_version="0.7.0",
@@ -208,11 +210,10 @@ def test_product_package_rejects_unexpected_top_level_items(tmp_path: Path) -> N
             frontend_protocol_release_dir=frontend_protocol,
             protocol_release_dir=protocol,
             backend_release_dir=backend,
-            output=tmp_path / "product.zip",
         )
 
 
-def test_product_package_accepts_equivalent_crlf_component_lock(
+def test_product_finalizer_accepts_equivalent_crlf_component_lock(
     tmp_path: Path,
 ) -> None:
     protocol, backend = _releases(tmp_path)
@@ -236,7 +237,7 @@ def test_product_package_accepts_equivalent_crlf_component_lock(
     product.mkdir(parents=True)
     (product / "VibeOCR.exe").write_bytes(b"app")
 
-    output = package_product_release(
+    output = finalize_product_release(
         product_root=product,
         frontend="classic",
         frontend_version="0.7.0",
@@ -246,13 +247,12 @@ def test_product_package_accepts_equivalent_crlf_component_lock(
         frontend_protocol_release_dir=frontend_protocol,
         protocol_release_dir=protocol,
         backend_release_dir=backend,
-        output=tmp_path / "product.zip",
     )
 
     assert output.is_file()
 
 
-def test_product_package_rejects_interchanged_frontend_lock(tmp_path: Path) -> None:
+def test_product_finalizer_rejects_interchanged_frontend_lock(tmp_path: Path) -> None:
     protocol, backend = _releases(tmp_path)
     frontend_protocol, _frontend_lock = _frontend_release(tmp_path)
     component_lock = tmp_path / "component-lock.json"
@@ -272,7 +272,7 @@ def test_product_package_rejects_interchanged_frontend_lock(tmp_path: Path) -> N
     (product / "VibeOCR.exe").write_bytes(b"app")
 
     with pytest.raises(ValueError, match="frontend Protocol lock is incomplete"):
-        package_product_release(
+        finalize_product_release(
             product_root=product,
             frontend="classic",
             frontend_version="0.7.0",
@@ -282,5 +282,4 @@ def test_product_package_rejects_interchanged_frontend_lock(tmp_path: Path) -> N
             frontend_protocol_release_dir=frontend_protocol,
             protocol_release_dir=protocol,
             backend_release_dir=backend,
-            output=tmp_path / "product.zip",
         )

@@ -29,11 +29,7 @@ from vibeocr.classic.app_paths import (
     get_install_root,
 )
 from vibeocr.classic.ui import theme
-from vibeocr.classic.update_config import (
-    GITEE_REPO_BASE,
-    GITHUB_REPO_BASE,
-    get_update_progress_path,
-)
+from vibeocr.classic.update_config import GITEE_REPO_BASE, GITHUB_REPO_BASE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,27 +63,6 @@ _CHANGELOG_MARKDOWN_FEATURES = (
     QTextDocument.MarkdownFeature.MarkdownDialectGitHub
     | QTextDocument.MarkdownFeature.MarkdownNoHTML
 )
-
-
-def _load_update_progress() -> dict | None:
-    """读取上次更新的进度记录（progress.json），不存在/损坏返回 None。
-
-    替换器（updater.exe / self-update）在替换各阶段写入耗时记录（见
-    update_replacer._StageTimer），新版启动后由此读取并在关于页展示
-    「上次更新各阶段耗时」，方便用户/开发者排查更新慢的瓶颈。
-
-    首次安装或从未更新过的机器上文件不存在 → 返回 None（关于页不显示该卡片）。
-    """
-    path = get_update_progress_path()
-    if not path.exists():
-        return None
-    try:
-        import json
-
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug(f"读取更新进度记录失败: {path}")
-        return None
 
 
 class AboutTab(QWidget):
@@ -128,7 +103,7 @@ class AboutTab(QWidget):
         )
         container_layout.setSpacing(theme.Spacing.lg)
 
-        # 左栏：品牌卡片 + 详细信息卡片 + 上次更新耗时卡片（如有）
+        # 左栏：品牌卡片 + 详细信息卡片
         left_column = QWidget()
         left_column.setObjectName("leftColumn")
         left_layout = QVBoxLayout(left_column)
@@ -136,10 +111,6 @@ class AboutTab(QWidget):
         left_layout.setSpacing(theme.Spacing.lg)
         left_layout.addWidget(self._create_brand_card())
         left_layout.addWidget(self._create_info_card())
-        # 上次更新耗时详情卡片（仅当存在 progress.json 时显示）
-        timing_card = self._create_update_timing_card()
-        if timing_card is not None:
-            left_layout.addWidget(timing_card)
         left_layout.addStretch()
 
         # 右栏：更新日志卡片 + 检查更新按钮
@@ -317,83 +288,6 @@ class AboutTab(QWidget):
         else:
             self._changelog_browser.setMarkdown("暂无更新日志")
         card_layout.addWidget(self._changelog_browser)
-        return card
-
-    def _create_update_timing_card(self) -> QFrame | None:
-        """上次更新耗时详情卡片。
-
-        读取 progress.json（由替换器写入），把各阶段耗时渲染成紧凑的 HTML 表格。
-        文件不存在（首次安装/未更新过）时返回 None，_setup_ui 据此跳过添加卡片。
-
-        展示策略：
-        - 顶部一行汇总：版本、成功/失败、总耗时；
-        - 各阶段按 depth 缩进（子阶段缩进一级），慢阶段（≥10s）标红，失败阶段标红；
-        - 用 HTML 而非 QFormLayout：阶段数不定（11~12 行），HTML 表格更紧凑可控。
-        """
-        data = _load_update_progress()
-        if data is None or not data.get("stages"):
-            return None
-
-        card, card_layout = self._create_card()
-
-        title = QLabel("上次更新耗时")
-        title.setStyleSheet(
-            f"font-size: {theme.Typography.h1}px;"
-            f" font-weight: {theme.Typography.weight_bold};"
-            f" color: {theme.Colors.text};"
-        )
-        card_layout.addWidget(title)
-
-        # 汇总行
-        version = data.get("version", "")
-        success = data.get("success", False)
-        total = data.get("total_seconds", 0.0)
-        status_text = "成功" if success else "失败"
-        status_color = theme.Colors.success if success else theme.Colors.danger
-        summary = QLabel(
-            f"更新到 v{version} · <span style='color:{status_color};'>{status_text}</span>"
-            f" · 总耗时 {total:.1f}s"
-        )
-        summary.setStyleSheet(f"color: {theme.Colors.text_muted};")
-        card_layout.addWidget(summary)
-
-        # 阶段表格（HTML）
-        muted = theme.Colors.text_muted
-        danger = theme.Colors.danger
-        text_color = theme.Colors.text
-        rows_html: list[str] = []
-        for stage in data["stages"]:
-            depth = stage.get("depth", 0)
-            name = stage.get("name", "")
-            secs = stage.get("seconds", 0.0)
-            is_slow = stage.get("slow", False)
-            is_failed = stage.get("failed", False)
-            # 子阶段缩进（depth=1 缩进 1 个 em）；顶层阶段不缩进
-            indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * depth
-            color = danger if (is_slow or is_failed) else text_color
-            flag = ""
-            if is_failed:
-                flag = f" <span style='color:{danger};'>[失败]</span>"
-            elif is_slow:
-                flag = f" <span style='color:{danger};'>[慢]</span>"
-            rows_html.append(
-                f"<tr>"
-                f"<td style='color:{color};padding:1px 8px 1px 0;'>{indent}{name}{flag}</td>"
-                f"<td style='color:{muted};text-align:right;'>{secs:.2f}s</td>"
-                f"</tr>"
-            )
-        html = (
-            f"<table style='font-size:{theme.Typography.body}px;'>"
-            + "".join(rows_html)
-            + "</table>"
-        )
-        browser = QTextBrowser()
-        browser.setOpenExternalLinks(True)
-        browser.setMaximumHeight(280)
-        browser.setFrameShape(QTextBrowser.Shape.NoFrame)
-        browser.setStyleSheet("background: transparent;")
-        browser.setHtml(html)
-        card_layout.addWidget(browser)
         return card
 
     @staticmethod

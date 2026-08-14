@@ -12,7 +12,6 @@ from typing import Protocol
 class UpdateCheckStatus(str, Enum):
     LATEST = "latest"
     AVAILABLE = "available"
-    NOT_INSTALLED = "not-installed"
     FETCH_FAILED = "fetch-failed"
 
 
@@ -23,11 +22,6 @@ class UpdateApplyStatus(str, Enum):
     FAILED = "failed"
 
 
-class UpdateApplyMode(str, Enum):
-    VELOPACK = "velopack"
-    SETUP_BRIDGE = "setup-bridge"
-
-
 @dataclass(frozen=True, slots=True)
 class UpdateCheckResult:
     status: UpdateCheckStatus
@@ -35,7 +29,6 @@ class UpdateCheckResult:
     version: str | None = None
     release_notes: str = ""
     detail: str | None = None
-    apply_mode: UpdateApplyMode = UpdateApplyMode.VELOPACK
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +49,6 @@ class UpdateCoordinator(Protocol):
 
 __all__ = [
     "UpdateApplyResult",
-    "UpdateApplyMode",
     "UpdateApplyStatus",
     "UpdateCheckResult",
     "UpdateCheckStatus",

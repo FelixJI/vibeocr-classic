@@ -4,14 +4,11 @@ import asyncio
 from dataclasses import dataclass
 
 from vibeocr.classic.services.update_coordinator import (
-    UpdateApplyMode,
     UpdateApplyStatus,
     UpdateCheckStatus,
 )
-from vibeocr.classic.services.setup_bridge import SetupBridgeRelease
 from vibeocr.classic.services.velopack_update import VelopackUpdateCoordinator
 from vibeocr.classic.services.update_transport import (
-    UpdateSourceCandidate,
     build_update_source_candidates,
     resolve_update_source_candidates,
 )
@@ -58,21 +55,6 @@ class _Manager:
         self.apply_started = True
 
 
-class _Bridge:
-    def __init__(self) -> None:
-        self.launched = False
-
-    async def check(self) -> SetupBridgeRelease:
-        return SetupBridgeRelease(
-            "0.11.0", UpdateSourceCandidate("direct", "https://updates.invalid/")
-        )
-
-    async def download_and_launch(self, progress=None, cancel_event=None) -> None:
-        if progress is not None:
-            progress(100)
-        self.launched = True
-
-
 def test_coordinator_exposes_available_update_and_starts_apply():
     manager = _Manager()
     observed: list[int] = []
@@ -94,43 +76,21 @@ def test_coordinator_exposes_available_update_and_starts_apply():
     assert observed == [25, 100]
 
 
-def test_not_installed_coordinator_bridges_to_setup_without_legacy_packages():
+def test_portable_coordinator_requires_manual_download():
     manager = _Manager(portable=True)
-    bridge = _Bridge()
     coordinator = VelopackUpdateCoordinator(
         source_candidates=("https://updates.invalid/",),
         manager_factory=lambda _source: manager,
-        setup_bridge=bridge,
-        migration_ready=lambda: True,
-    )
-
-    checked = asyncio.run(coordinator.check())
-    applied = asyncio.run(coordinator.download_and_apply())
-
-    assert checked.status is UpdateCheckStatus.AVAILABLE
-    assert checked.apply_mode is UpdateApplyMode.SETUP_BRIDGE
-    assert applied.status is UpdateApplyStatus.APPLY_STARTED
-    assert bridge.launched is True
-    assert manager.downloaded is False
-
-
-def test_failed_data_migration_blocks_setup_check_and_apply():
-    manager = _Manager(portable=True)
-    bridge = _Bridge()
-    coordinator = VelopackUpdateCoordinator(
-        source_candidates=("https://updates.invalid/",),
-        manager_factory=lambda _source: manager,
-        setup_bridge=bridge,
-        migration_ready=lambda: False,
     )
 
     checked = asyncio.run(coordinator.check())
     applied = asyncio.run(coordinator.download_and_apply())
 
     assert checked.status is UpdateCheckStatus.FETCH_FAILED
-    assert "迁移尚未完成" in (checked.detail or "")
+    assert "便携版" in (checked.detail or "")
+    assert "手动下载" in (checked.detail or "")
     assert applied.status is UpdateApplyStatus.FAILED
-    assert bridge.launched is False
+    assert manager.downloaded is False
 
 
 def test_installed_forward_proxy_falls_back_to_materialized_local_feed(

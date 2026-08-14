@@ -34,14 +34,15 @@ OCR/PDF 推理由独立的 VibeOCR Backend 进程执行，Classic 通过绑定�
 ## 下载与使用
 
 1. 从 [Releases](https://github.com/FelixJI/vibeocr-classic/releases/latest) 下载最新的
-   `VibeOCR-Classic-v*-win64.zip` 与同名 `.sha256`。
-2. 在 PowerShell 中校验 ZIP：
+   `VibeOCRClassic-win-Setup.exe` 与同名 `.sha256`，或下载免安装版
+   `VibeOCRClassic-win-Portable.zip`。
+2. 安装版可在 PowerShell 中校验：
 
    ```powershell
-   Get-FileHash .\VibeOCR-Classic-v*-win64.zip -Algorithm SHA256
+   Get-FileHash .\VibeOCRClassic-win-Setup.exe -Algorithm SHA256
    ```
 
-3. 解压并运行包内主程序。首次需要相关能力时，应用会按组件锁解析并安装本地运行时。
+3. 运行安装程序；免安装版则解压后运行。首次需要相关能力时，应用会按组件锁解析并安装本地运行时。
 
 模型按需加载；“Supervisor 已就绪”不代表所有模型已经提前载入内存。
 
@@ -108,7 +109,7 @@ uv run --no-sync python -m pytest
 
 正式资产包括：
 
-- `VibeOCR-Classic-v*-win64.zip` 与 SHA-256；
+- Velopack full nupkg、Setup（含 SHA-256 sidecar）、Portable 与 `releases.win.json`；
 - Backend component lock 与前端 Protocol lock；
 - build identity 与 SPDX SBOM。
 

@@ -59,7 +59,6 @@ FORBIDDEN_BACKEND_APP_PATH_HELPERS = {
 }
 APP_PATH_ONLY_CONSUMERS = (
     CLASSIC_SOURCE_ROOT / "main.py",
-    CLASSIC_SOURCE_ROOT / "services" / "update_service.py",
     CLASSIC_SOURCE_ROOT / "views" / "main_window.py",
     CLASSIC_SOURCE_ROOT / "views" / "tabs" / "about_tab.py",
 )

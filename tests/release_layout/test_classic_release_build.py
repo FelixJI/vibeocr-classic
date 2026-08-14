@@ -11,8 +11,6 @@ import pytest
 from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_velopack_release import verify_velopack_release
 from scripts.verify_pyside_artifact import (
-    MAX_CLASSIC_ARCHIVE_BYTES,
-    _verify_archive_size,
     _verify_bound_installer_inspect,
     _verify_bound_python_archive,
     _verify_embedded_app_icon,
@@ -95,7 +93,7 @@ def test_release_build_uses_candidate_version_and_direct_publish_contract() -> N
 
     assert "[string]$Version" in script
     assert "frontend-version $Version" in script
-    assert "VibeOCR-Classic-v$Version-win64.zip" in script
+    assert "VibeOCR-Classic-v$Version-win64.zip" not in script
     assert "vibeocr_classic-$Version-*.whl" in script
     assert config["ci"]["release_build"][0][-4:] == [
         "-ReleaseInput",
@@ -112,7 +110,7 @@ def test_release_build_uses_candidate_version_and_direct_publish_contract() -> N
 
 def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
-    binding_index = script.index("package_product_release.py")
+    binding_index = script.index("finalize_product_release.py")
     velopack_index = script.index("dnx --yes vpk@1.2.0 -- pack")
 
     assert velopack_index > binding_index
@@ -129,16 +127,10 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "uv pip sync --python $buildPython" in script
     assert "requirements-build.lock" in script
     assert script.index("uv venv --python") < script.index("& $buildPython")
-    verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
-        encoding="utf-8"
-    )
-    updater_smoke = verifier.split("def _verify_frozen_updater", maxsplit=1)[1].split(
-        "def _prepare_smoke_python", maxsplit=1
-    )[0]
-    assert "--vibeocr-self-test-fail" not in updater_smoke
+    assert "updater.exe" not in script
 
 
-def test_release_contract_keeps_bridge_zip_and_adds_exact_velopack_assets() -> None:
+def test_release_contract_publishes_only_exact_velopack_assets() -> None:
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
     required = set(config["release"]["required_assets"])
     smoke = config["ci"]["release_smoke"]
@@ -147,8 +139,6 @@ def test_release_contract_keeps_bridge_zip_and_adds_exact_velopack_assets() -> N
         "component-lock.json",
         "frontend-protocol-lock.json",
         "SBOM.spdx.json",
-        "VibeOCR-Classic-v*-win64.zip",
-        "VibeOCR-Classic-v*-win64.zip.sha256",
         "VibeOCRClassic-*-full.nupkg",
         "VibeOCRClassic-win-Setup.exe",
         "VibeOCRClassic-win-Setup.exe.sha256",
@@ -425,22 +415,6 @@ def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None
     assert not (pyside / "Qt6Quick3DRuntimeRender.dll").exists()
     assert not (pyside / "Qt6QuickDialogs2QuickImpl.dll").exists()
     assert not (pyside / "Qt63DQuick.dll").exists()
-
-
-def test_classic_archive_budget_rejects_regression(tmp_path: Path) -> None:
-    artifact = tmp_path / "classic.zip"
-    artifact.write_bytes(b"x" * 11)
-
-    _verify_archive_size(artifact, max_bytes=11)
-
-    try:
-        _verify_archive_size(artifact, max_bytes=10)
-    except RuntimeError as error:
-        assert "size budget" in str(error)
-    else:
-        raise AssertionError("oversized Classic archive was accepted")
-
-    assert MAX_CLASSIC_ARCHIVE_BYTES <= 260_000_000
 
 
 def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -> None:

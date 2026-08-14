@@ -1,4 +1,4 @@
-"""Update source routing shared by Velopack and the legacy Setup bridge."""
+"""Update source routing for Velopack feeds and package downloads."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from vibeocr.classic.update_config import GITHUB_PROXY_PREFIXES
+from vibeocr.classic.update_config import GITHUB_API_LATEST, GITHUB_PROXY_PREFIXES
 
 GITHUB_LATEST_DOWNLOAD_BASE = (
     "https://github.com/FelixJI/vibeocr-classic/releases/latest/download/"
@@ -201,11 +201,18 @@ def build_update_source_candidates(
     return (direct, *prefixed)
 
 
-async def _github_reachable() -> bool:
-    # Keep the established reachability probe as the single network authority.
-    from vibeocr.classic.services.update_service import _probe_github_reachable
+async def _github_reachable(timeout: float = 3.0) -> bool:
+    """Use GitHub API reachability only to order the complete candidate list."""
 
-    return await _probe_github_reachable()
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.head(
+                GITHUB_API_LATEST,
+                headers={"Accept": "application/vnd.github+json"},
+            )
+        return response.status_code < 500
+    except Exception:
+        return False
 
 
 async def resolve_update_source_candidates() -> tuple[UpdateSourceCandidate, ...]:

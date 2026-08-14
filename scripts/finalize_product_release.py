@@ -1,4 +1,4 @@
-"""Bind verified Runtime assets into a deterministic portable product ZIP."""
+"""Bind verified Runtime assets and finalize the Velopack pack directory."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import hashlib
 import json
 import shutil
 import tempfile
-import zipfile
 from pathlib import Path
 
 if __package__:
@@ -15,13 +14,11 @@ if __package__:
 else:
     from bind_component_releases import bind_product_releases, bind_protocol_release
 
-FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 PROHIBITED_ROOTS = {".git", "apps", "contracts", "packages", "supervisor", "tests"}
 EXPECTED_PRODUCT_ROOTS = {
     "_internal",
     "frontend-protocol-lock.json",
     "LICENSE",
-    "updater.exe",
     "VibeOCR.exe",
 }
 
@@ -63,7 +60,7 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def package_product_release(
+def finalize_product_release(
     *,
     product_root: Path,
     frontend: str,
@@ -74,7 +71,6 @@ def package_product_release(
     frontend_protocol_release_dir: Path,
     protocol_release_dir: Path,
     backend_release_dir: Path,
-    output: Path,
 ) -> Path:
     product_root = product_root.resolve(strict=True)
     if not product_root.is_dir():
@@ -192,23 +188,7 @@ def package_product_release(
         newline="\n",
     )
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    archive_files = sorted(path for path in product_root.rglob("*") if path.is_file())
-    with zipfile.ZipFile(
-        output,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
-    ) as archive:
-        for path in archive_files:
-            relative = (
-                Path(product_root.name) / path.relative_to(product_root)
-            ).as_posix()
-            info = zipfile.ZipInfo(relative, date_time=FIXED_ZIP_TIME)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
-            archive.writestr(info, path.read_bytes(), compresslevel=9)
-    return output
+    return manifest_path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -222,10 +202,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frontend-protocol-release-dir", type=Path, required=True)
     parser.add_argument("--protocol-release-dir", type=Path, required=True)
     parser.add_argument("--backend-release-dir", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     print(
-        package_product_release(
+        finalize_product_release(
             product_root=args.product_root,
             frontend=args.frontend,
             frontend_version=args.frontend_version,
@@ -235,7 +214,6 @@ def main(argv: list[str] | None = None) -> int:
             frontend_protocol_release_dir=args.frontend_protocol_release_dir,
             protocol_release_dir=args.protocol_release_dir,
             backend_release_dir=args.backend_release_dir,
-            output=args.output,
         )
     )
     return 0

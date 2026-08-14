@@ -1,4 +1,4 @@
-"""Verify the PySide Classic ZIP and exact backend-wheel binding."""
+"""Verify the PySide Classic Velopack input and exact backend-wheel binding."""
 
 from __future__ import annotations
 
@@ -10,11 +10,8 @@ import shutil
 import struct
 import subprocess
 import sys
-import tempfile
 import zipfile
 from pathlib import Path
-
-MAX_CLASSIC_ARCHIVE_BYTES = 260_000_000
 
 
 def _verify_embedded_app_icon(executable: Path, icon: Path) -> None:
@@ -35,16 +32,6 @@ def _verify_embedded_app_icon(executable: Path, icon: Path) -> None:
                 raise ValueError(f"ICO frame {index} is not embedded")
     except (OSError, struct.error, ValueError) as error:
         raise RuntimeError("VibeOCR.exe has no embedded custom app icon") from error
-
-
-def _verify_archive_size(
-    artifact: Path, *, max_bytes: int = MAX_CLASSIC_ARCHIVE_BYTES
-) -> None:
-    actual = artifact.stat().st_size
-    if actual > max_bytes:
-        raise RuntimeError(
-            f"Classic archive exceeds size budget: {actual} > {max_bytes} bytes"
-        )
 
 
 def _verify_product_file_closure(root: Path, records: dict[str, object]) -> None:
@@ -221,87 +208,6 @@ def _verify_runtime_layout(
     expected = (root / "data" / "runtime").resolve()
     if Path(runtime_root).resolve() != expected:
         raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
-
-
-def _verify_frozen_updater(root: Path, timeout_seconds: float = 45.0) -> None:
-    """Verify the retained legacy ingress updater can reach the bridge release."""
-    updater = root / "updater.exe"
-    updater_bytes = updater.read_bytes()
-
-    def write_update_zip(path: Path) -> None:
-        version = b'{"version":"0.7.2"}'
-        records = {
-            "VibeOCR.exe": {
-                "sha256": hashlib.sha256(updater_bytes).hexdigest(),
-                "size": len(updater_bytes),
-            },
-            "version.json": {
-                "sha256": hashlib.sha256(version).hexdigest(),
-                "size": len(version),
-            },
-        }
-        manifest = json.dumps(
-            {"frontend": "classic", "files": records},
-            sort_keys=True,
-        ).encode()
-        with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("VibeOCR/VibeOCR.exe", updater_bytes)
-            archive.writestr("VibeOCR/version.json", version)
-            archive.writestr("VibeOCR/product-release-manifest.json", manifest)
-        Path(f"{path}.sha256").write_text(
-            hashlib.sha256(path.read_bytes()).hexdigest(),
-            encoding="utf-8",
-        )
-
-    for _bridge_case in (False,):
-        case = root / ".updater-bridge-smoke"
-        app_dir = case / "app"
-        app_dir.mkdir(parents=True)
-        old_executable = b"old executable"
-        (app_dir / "VibeOCR.exe").write_bytes(old_executable)
-        (app_dir / "version.json").write_text('{"version":"0.7.1"}', encoding="utf-8")
-        data = app_dir / "data"
-        data.mkdir()
-        (data / "user.txt").write_text("preserved", encoding="utf-8")
-        update_zip = case / "update.zip"
-        write_update_zip(update_zip)
-        health_file = data / "cache" / "update" / "startup.health"
-        command = [
-            str(updater),
-            "--update",
-            str(update_zip),
-            "--app-dir",
-            str(app_dir),
-            "--entry",
-            "VibeOCR.exe",
-            "--entry-arg=--vibeocr-self-test-health",
-            "--health-file",
-            str(health_file),
-        ]
-        environment = os.environ.copy()
-        environment["VIBEOCR_SELF_TEST_NO_DIALOG"] = "1"
-        result = subprocess.run(
-            command,
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "frozen updater smoke failed: "
-                f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
-            )
-        if (app_dir / "VibeOCR.exe").read_bytes() != updater_bytes:
-            raise RuntimeError("frozen updater smoke left the wrong product entry")
-        if (data / "user.txt").read_text(encoding="utf-8") != "preserved":
-            raise RuntimeError("frozen updater smoke did not preserve user data")
-        if (data / "cache" / "update" / "_backup").exists():
-            raise RuntimeError("frozen updater smoke left a committed backup")
-        shutil.rmtree(case, ignore_errors=True)
 
 
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
@@ -534,17 +440,14 @@ def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("artifact", type=Path)
+    parser.add_argument("product_root", type=Path)
     args = parser.parse_args()
-    _verify_archive_size(args.artifact)
-    with tempfile.TemporaryDirectory(prefix="vibeocr-pyside-verify-") as temp:
-        with zipfile.ZipFile(args.artifact) as archive:
-            archive.extractall(temp)
-        roots = list(Path(temp).iterdir())
-        root = roots[0] if len(roots) == 1 and roots[0].is_dir() else Path(temp)
+    root = args.product_root.resolve(strict=True)
+    if not root.is_dir():
+        raise RuntimeError("PySide product root must be a directory")
+    if root.is_dir():
         required = [
             root / "VibeOCR.exe",
-            root / "updater.exe",
             root / "component-lock.json",
             root / "frontend-protocol-lock.json",
             root / "product-release-manifest.json",
@@ -564,8 +467,6 @@ def main() -> int:
             raise RuntimeError(
                 f"Next executable present in Classic artifact: {prohibited}"
             )
-        if (root / "updater.exe").stat().st_size == 0:
-            raise RuntimeError("Classic updater is empty")
         manifest = json.loads(
             (root / "product-release-manifest.json").read_text(encoding="utf-8")
         )
@@ -636,7 +537,6 @@ def main() -> int:
                 installer_executable,
                 str(backend.get("accelerator", "")),
             )
-            _verify_frozen_updater(root)
             _verify_frozen_startup(root)
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)

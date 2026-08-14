@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, Slot
@@ -60,6 +61,91 @@ def _format_byte_count(value: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     raise AssertionError("unreachable")
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceProgressDetail:
+    """由 RuntimeMaintenanceUpdate 派生的进度条区间与阶段文案渲染结果。"""
+
+    detail: str
+    phase_label: str
+    state_label: str
+    determinate: bool = False
+    progress_value: int = 0
+    progress_maximum: int = 0
+
+
+class MaintenanceActivityClock:
+    """按维护事件签名跟踪当前阶段已用时（秒），签名变化时重置起点。"""
+
+    def __init__(self) -> None:
+        self._signature: tuple[str, str, str, str] | None = None
+        self._started_at = 0.0
+
+    def elapsed_seconds(self, update: RuntimeMaintenanceUpdate) -> int:
+        signature = (
+            update.operation_id,
+            update.phase,
+            update.component_id or "",
+            update.message_code or "",
+        )
+        now = time.monotonic()
+        if signature != self._signature:
+            self._signature = signature
+            self._started_at = now
+        return max(0, int(now - self._started_at))
+
+
+def build_maintenance_detail(
+    update: RuntimeMaintenanceUpdate,
+    clock: MaintenanceActivityClock | None = None,
+) -> MaintenanceProgressDetail:
+    """把维护事件统一渲染为进度条区间与阶段文案。
+
+    首启 BackendChoiceDialog 与设置页 InstallDialog 共用，避免百分比、
+    字节与步数格式化逻辑出现两份逐渐分歧的实现。仅在渲染不确定进度的
+    running 事件时才读取 clock（保持阶段计时的调用语义不变）。
+    """
+    phase = _PHASE_LABELS.get(update.phase, update.phase)
+    state = _STATE_LABELS.get(update.operation_state, update.operation_state)
+    if update.has_determinate_progress:
+        assert update.progress_total is not None
+        assert update.progress_current is not None
+        percent = update.progress_current * 100 / update.progress_total
+        percent_text = f"{percent:.1f}".rstrip("0").rstrip(".")
+        if update.progress_unit == "bytes":
+            detail = (
+                f"{phase} · {percent_text}% · "
+                f"{_format_byte_count(update.progress_current)} / "
+                f"{_format_byte_count(update.progress_total)}"
+            )
+        else:
+            detail = (
+                f"{phase} · {percent_text}% · "
+                f"{update.progress_current}/{update.progress_total} 项"
+            )
+        if update.estimated_remaining_seconds is not None:
+            detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        return MaintenanceProgressDetail(
+            detail=detail,
+            phase_label=phase,
+            state_label=state,
+            determinate=True,
+            progress_value=update.progress_current,
+            progress_maximum=update.progress_total,
+        )
+    detail = phase
+    if (
+        update.progress_unit == "steps"
+        and update.progress_current is not None
+        and update.progress_total is not None
+    ):
+        detail = f"{phase} · {update.progress_current}/{update.progress_total} 步"
+    if update.operation_state == "running" and clock is not None:
+        detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
+    return MaintenanceProgressDetail(
+        detail=detail, phase_label=phase, state_label=state
+    )
 
 
 class InstallWorker(QThread):
@@ -244,8 +330,7 @@ class InstallDialog(QDialog):
         self._maintenance_callback = maintenance_callback
         self._component_items: dict[str, QTreeWidgetItem] = {}
         self._last_maintenance_summary: str | None = None
-        self._maintenance_activity_signature: tuple[str, str, str, str] | None = None
-        self._maintenance_activity_started_at = 0.0
+        self._activity_clock = MaintenanceActivityClock()
         self._setup_ui()
         self._worker: InstallWorker | None = None
 
@@ -381,73 +466,34 @@ class InstallDialog(QDialog):
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
-        phase = _PHASE_LABELS.get(update.phase, update.phase)
-        state = _STATE_LABELS.get(update.operation_state, update.operation_state)
-        detail = phase
-        if update.has_determinate_progress:
-            assert update.progress_total is not None
-            assert update.progress_current is not None
-            self._progress_bar.setRange(0, update.progress_total)
-            self._progress_bar.setValue(update.progress_current)
-            percent = update.progress_current * 100 / update.progress_total
-            percent_text = f"{percent:.1f}".rstrip("0").rstrip(".")
-            if update.progress_unit == "bytes":
-                detail = (
-                    f"{phase} · {percent_text}% · "
-                    f"{_format_byte_count(update.progress_current)} / "
-                    f"{_format_byte_count(update.progress_total)}"
-                )
-            else:
-                detail = (
-                    f"{phase} · {percent_text}% · "
-                    f"{update.progress_current}/{update.progress_total} 项"
-                )
-            if update.estimated_remaining_seconds is not None:
-                detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        rendered = build_maintenance_detail(update, clock=self._activity_clock)
+        if rendered.determinate:
+            self._progress_bar.setRange(0, rendered.progress_maximum)
+            self._progress_bar.setValue(rendered.progress_value)
         else:
             self._progress_bar.setRange(0, 0)
-            if (
-                update.progress_unit == "steps"
-                and update.progress_current is not None
-                and update.progress_total is not None
-            ):
-                detail = (
-                    f"{phase} · {update.progress_current}/{update.progress_total} 步"
-                )
-            if update.operation_state == "running":
-                detail += f" · 已用时 {self._maintenance_elapsed(update)} 秒"
-        self._stage_label.setText(f"{detail} · {state}")
+        self._stage_label.setText(f"{rendered.detail} · {rendered.state_label}")
 
         if update.component_id:
             item = self._component_items.get(update.component_id)
             if item is not None:
-                item.setText(1, state)
+                item.setText(1, rendered.state_label)
                 self._components_tree.scrollToItem(item)
 
-        summary = f"Runtime {phase}：{state}"
+        summary = f"Runtime {rendered.phase_label}：{rendered.state_label}"
         if update.component_id:
             item = self._component_items.get(update.component_id)
             component_name = item.text(0) if item is not None else update.component_id
-            summary = f"Runtime {phase}：{component_name} · {state}"
+            summary = (
+                f"Runtime {rendered.phase_label}：{component_name} · "
+                f"{rendered.state_label}"
+            )
         if summary != self._last_maintenance_summary:
             if update.event_type != "heartbeat":
                 self._log(summary)
             if self._maintenance_callback is not None:
                 self._maintenance_callback(summary)
             self._last_maintenance_summary = summary
-
-    def _maintenance_elapsed(self, update: RuntimeMaintenanceUpdate) -> int:
-        signature = (
-            update.operation_id,
-            update.phase,
-            update.component_id or "",
-            update.message_code or "",
-        )
-        now = time.monotonic()
-        if signature != self._maintenance_activity_signature:
-            self._maintenance_activity_signature = signature
-            self._maintenance_activity_started_at = now
-        return max(0, int(now - self._maintenance_activity_started_at))
 
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:

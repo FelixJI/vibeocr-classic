@@ -11,7 +11,11 @@ from unittest.mock import MagicMock, patch
 
 from PySide6.QtWidgets import QMessageBox
 
-from vibeocr.classic.widgets.install_dialog import InstallDialog, InstallWorker
+from vibeocr.classic.widgets.install_dialog import (
+    InstallDialog,
+    InstallWorker,
+    build_maintenance_detail,
+)
 from vibeocr.classic.runtime_installation import (
     RuntimeComponentDescriptor,
     RuntimeMaintenanceUpdate,
@@ -154,6 +158,66 @@ class TestSetupUiTitleBranches:
         # 完成前关闭/取消按钮均隐藏
         assert not dlg._close_button.isVisible()
         assert not dlg._cancel_button.isVisible()
+
+
+class TestBuildMaintenanceDetail:
+    """共享渲染 helper：首启与设置页两个对话框的进度文案契约。"""
+
+    def test_bytes_progress_is_determinate(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=3,
+            operation="ensure",
+            operation_state="running",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            progress_current=50 * 1024 * 1024,
+            progress_total=100 * 1024 * 1024,
+            progress_unit="bytes",
+        )
+        rendered = build_maintenance_detail(update)
+        assert rendered.determinate
+        assert rendered.progress_value == 50 * 1024 * 1024
+        assert rendered.progress_maximum == 100 * 1024 * 1024
+        assert "50%" in rendered.detail
+        assert "MiB" in rendered.detail
+        assert rendered.phase_label == "准备 Python 运行时"
+        assert rendered.state_label == "进行中"
+
+    def test_steps_progress_without_clock_has_no_elapsed(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=4,
+            operation="ensure",
+            operation_state="running",
+            phase="install_profile",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            progress_current=2,
+            progress_total=7,
+            progress_unit="steps",
+        )
+        rendered = build_maintenance_detail(update)
+        assert not rendered.determinate
+        assert "2/7 步" in rendered.detail
+        assert "已用时" not in rendered.detail
+
+    def test_running_without_clock_omits_fake_elapsed(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=5,
+            operation="ensure",
+            operation_state="running",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+        )
+        rendered = build_maintenance_detail(update)
+        assert "已用时" not in rendered.detail
 
 
 class TestOnProgress:

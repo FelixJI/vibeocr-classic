@@ -4,25 +4,36 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QRadioButton,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from vibeocr.classic.hardware_probe import detect_gpu_info
+from vibeocr.classic.runtime_installation import (
+    RuntimeMaintenanceUpdate,
+    RuntimeProfileDescriptor,
+)
 from vibeocr.classic.utils.dialog_workers import track_dialog_worker
-from vibeocr.classic.widgets.install_dialog import InstallWorker
+from vibeocr.classic.widgets.install_dialog import (
+    InstallWorker,
+    MaintenanceActivityClock,
+    build_maintenance_detail,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,12 +83,15 @@ class BackendChoiceDialog(QDialog):
         self._has_gpu = False
         self._reinstall_python = reinstall_python
         self._missing_only = missing_only
+        self._component_items: dict[str, QTreeWidgetItem] = {}
+        self._last_maintenance_summary: str | None = None
+        self._activity_clock = MaintenanceActivityClock()
         self._setup_ui()
         self._detect_and_set_default()
 
     def _setup_ui(self) -> None:
         self.setWindowTitle("选择 OCR 推理后端")
-        self.setMinimumSize(520, 480)
+        self.setMinimumSize(560, 520)
         # 非模态：设置页重装时不阻塞主窗口（首启路径由 main_window.exec() 调起，
         # exec() 自身是模态事件循环，与 setModal 无关，首启仍阻塞，符合预期）。
         self.setModal(False)
@@ -123,6 +137,20 @@ class BackendChoiceDialog(QDialog):
         self._progress_bar.setRange(0, 0)  # 不确定进度
         self._progress_bar.setVisible(False)
         layout.addWidget(self._progress_bar)
+
+        # 重依赖组件进度树（初始隐藏；profile 信号到达后逐组件更新状态）
+        self._components_tree = QTreeWidget()
+        self._components_tree.setObjectName("firstRunComponentsTree")
+        self._components_tree.setHeaderLabels(["Backend 组件", "状态", "版本"])
+        self._components_tree.setRootIsDecorated(False)
+        self._components_tree.setAlternatingRowColors(True)
+        self._components_tree.setMinimumHeight(120)
+        header = self._components_tree.header()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._components_tree.setVisible(False)
+        layout.addWidget(self._components_tree)
 
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
@@ -194,6 +222,7 @@ class BackendChoiceDialog(QDialog):
         self._cancel_button.setVisible(True)
         self._progress_label.setVisible(True)
         self._progress_bar.setVisible(True)
+        self._components_tree.setVisible(True)
         self._log_text.setVisible(True)
 
         backend = self.selected_backend()
@@ -207,6 +236,8 @@ class BackendChoiceDialog(QDialog):
         )
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
+        self._worker.profile.connect(self._on_profile)
+        self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
         self._worker.start()
 
@@ -234,11 +265,53 @@ class BackendChoiceDialog(QDialog):
         self._progress_label.setText(f"[{stage}] {message}")
         self._log(f"[{stage}] {message}")
 
+    @Slot(object)
+    def _on_profile(self, profile: RuntimeProfileDescriptor) -> None:
+        self._components_tree.clear()
+        self._component_items.clear()
+        for component in profile.components:
+            item = QTreeWidgetItem(
+                [component.display_name, "等待中", component.version or "—"]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, component.component_id)
+            self._components_tree.addTopLevelItem(item)
+            self._component_items[component.component_id] = item
+
+    @Slot(object)
+    def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        rendered = build_maintenance_detail(update, clock=self._activity_clock)
+        if rendered.determinate:
+            self._progress_bar.setRange(0, rendered.progress_maximum)
+            self._progress_bar.setValue(rendered.progress_value)
+        else:
+            self._progress_bar.setRange(0, 0)
+        self._progress_label.setText(f"{rendered.detail} · {rendered.state_label}")
+
+        if update.component_id:
+            item = self._component_items.get(update.component_id)
+            if item is not None:
+                item.setText(1, rendered.state_label)
+
+        summary = f"Runtime {rendered.phase_label}：{rendered.state_label}"
+        if update.component_id:
+            item = self._component_items.get(update.component_id)
+            component_name = item.text(0) if item is not None else update.component_id
+            summary = (
+                f"Runtime {rendered.phase_label}：{component_name} · "
+                f"{rendered.state_label}"
+            )
+        if summary != self._last_maintenance_summary:
+            if update.event_type != "heartbeat":
+                self._log(summary)
+            self._last_maintenance_summary = summary
+
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         self._progress_bar.setVisible(False)
         self._cancel_button.setVisible(False)
         if success:
+            for item in self._component_items.values():
+                item.setText(1, "已就绪")
             self._progress_label.setText("安装成功！")
             self._log(f"\n{message}")
             self._close_button.setVisible(True)

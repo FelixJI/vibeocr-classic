@@ -351,3 +351,35 @@ def test_engine_selection_persists_to_config(selection_controller) -> None:
     combo.setCurrentIndex(index)
 
     config.set_ocr_engine.assert_called_once_with("windows")
+
+
+def test_repeated_health_reload_does_not_accumulate_source_rows(
+    selection_controller,
+    qtbot,
+) -> None:
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    controller, host, _adapter, _config, _manager = selection_controller
+
+    for _ in range(3):
+        controller._on_health_loaded(_health_payload())
+        # deleteLater 的行容器要等 DeferredDelete 派发后才真正销毁
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    assert len(host.findChildren(QComboBox, "comboDownloadSource_package_index")) == 1
+    assert controller._resolve_download_source_ids() == ("tuna-pypi",)
+
+
+def test_save_download_sources_waits_for_settings_snapshot(
+    selection_controller,
+) -> None:
+    controller, host, adapter, _config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload())
+    assert controller._runtime_settings_snapshot is None
+
+    controller._on_save_download_sources()
+
+    # 未读到 Backend 现有设置前不得全量 PUT（避免覆盖 residency 策略）
+    assert adapter.update_calls == []
+    assert adapter.fetch_settings_calls == 1

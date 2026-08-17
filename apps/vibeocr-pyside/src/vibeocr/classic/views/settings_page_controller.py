@@ -124,6 +124,7 @@ class SettingsPageController:
         self._selection_accelerator: str | None = None
         self._engine_combo_initialized = False
         self._source_combo_rows: dict[str, QComboBox] = {}
+        self._source_combo_row_widgets: list[QWidget] = []
         self._runtime_action = ""
         self._pending_ttl_sync = False
         self._backend_options = None
@@ -2169,6 +2170,18 @@ class SettingsPageController:
             )
         )
 
+    def _clear_source_combo_rows(self) -> None:
+        """移除动态下载源行；行容器必须整行销毁，不能只移除内层 combo。"""
+
+        layout = self._ui.findChild(QVBoxLayout, "ocrRuntimeLayout")
+        for row in self._source_combo_row_widgets:
+            if layout is not None:
+                layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+        self._source_combo_row_widgets.clear()
+        self._source_combo_rows.clear()
+
     def _render_download_sources(self, capabilities: set) -> None:
         """按 Backend catalog 渲染每 kind 的下载源单选。"""
 
@@ -2178,6 +2191,7 @@ class SettingsPageController:
         catalog = self._selection_catalog
         if label is None or layout is None or catalog is None:
             return
+        self._clear_source_combo_rows()
         if DOWNLOAD_SOURCES_CAPABILITY not in capabilities:
             label.setText("下载源：当前 Backend 不支持下载源选择")
             self._set_source_controls_enabled(False)
@@ -2190,11 +2204,6 @@ class SettingsPageController:
         insert_at = (
             layout.indexOf(save_button) if save_button is not None else layout.count()
         )
-        for combo in self._source_combo_rows.values():
-            combo.hide()
-            layout.removeWidget(combo)
-            combo.deleteLater()
-        self._source_combo_rows.clear()
         current_snapshot = self._runtime_settings_snapshot
         selected_ids = set(
             current_snapshot.download_source_ids if current_snapshot is not None else ()
@@ -2227,6 +2236,7 @@ class SettingsPageController:
             row_layout.addWidget(kind_label)
             row_layout.addWidget(combo, 1)
             layout.insertWidget(insert_at + offset, row)
+            self._source_combo_row_widgets.append(row)
             self._source_combo_rows[kind] = combo
         note = "下载源：每类至多选择一个；endpoint 由 Backend 只读声明"
         if unknown_kinds:
@@ -2267,14 +2277,20 @@ class SettingsPageController:
         catalog = self._selection_catalog
         if catalog is None:
             return
+        # Settings 是全量 PUT：未读到现有快照前不能发送，否则会用默认
+        # residency 策略覆盖 Backend 上用户配置的 TTL/pin（与 TTL 同步同规则）。
+        if self._runtime_settings_snapshot is None:
+            adapter.fetch_settings()
+            status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+            if status is not None:
+                status.setText("正在读取现有设置，稍后再保存下载源...")
+            return
         source_ids = self._resolve_download_source_ids()
         current = self._runtime_settings_snapshot
         snapshot = SettingsSnapshot(
-            default_ttl_seconds=(
-                current.default_ttl_seconds if current is not None else 300
-            ),
-            pipelines=current.pipelines if current is not None else (),
-            extra=dict(current.extra) if current is not None else {},
+            default_ttl_seconds=current.default_ttl_seconds,
+            pipelines=current.pipelines,
+            extra=dict(current.extra),
             download_source_ids=source_ids or (),
         )
         adapter.update_settings(snapshot)

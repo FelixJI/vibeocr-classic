@@ -180,23 +180,18 @@ if ($LASTEXITCODE -ne 0) { throw 'Velopack release build failed' }
   $velopackOutput `
   --version $Version
 if ($LASTEXITCODE -ne 0) { throw 'Velopack release verification failed' }
+# Portable-only：用户可见交付只有 Portable.zip；NUPKG/feed 服务 Velopack
+# 自更新。vpk 生成的 Setup.exe 留在中间目录，不进入发布资产。
 foreach ($name in @(
     "VibeOCRClassic-$Version-full.nupkg",
-    'VibeOCRClassic-win-Setup.exe',
     'VibeOCRClassic-win-Portable.zip',
     'releases.win.json'
 )) {
     Copy-Item -LiteralPath (Join-Path $velopackOutput $name) -Destination $artifacts
 }
-$publishedVelopackSetup = Join-Path $artifacts 'VibeOCRClassic-win-Setup.exe'
 Copy-Item -LiteralPath $lock -Destination (Join-Path $artifacts 'component-lock.json')
 Copy-Item -LiteralPath $frontendProtocolLock `
   -Destination (Join-Path $artifacts 'frontend-protocol-lock.json')
-& $buildPython (Join-Path $root 'scripts/build_release_checksums.py') `
-  $artifacts `
-  --sidecar-for $publishedVelopackSetup
-if ($LASTEXITCODE -ne 0) { throw 'sidecar checksum build failed' }
-Remove-Item -LiteralPath (Join-Path $artifacts 'SHA256SUMS') -Force
 & $buildPython (Join-Path $root 'scripts/build_spdx_sbom.py') `
   --artifacts-dir $artifacts `
   --repository-name FelixJI/vibeocr-classic --version $Version

@@ -176,7 +176,7 @@ def test_product_finalizer_is_deterministic_and_binds_runtime(tmp_path: Path) ->
     assert "backend/SHA256SUMS" not in members
     assert "backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
-    assert manifest["shared_root"] == "data"
+    assert manifest["shared_root"] == "state"
     assert manifest["products"] == {
         "classic": {
             "component_lock": "component-lock.json",

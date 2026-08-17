@@ -140,18 +140,21 @@ def test_release_contract_publishes_only_exact_velopack_assets() -> None:
     required = set(config["release"]["required_assets"])
     smoke = config["ci"]["release_smoke"]
 
+    # Portable-only：不再发布 Setup 与其 checksum sidecar；NUPKG/feed 仅服务
+    # Velopack 自更新，用户可见交付只有 Portable.zip。
     assert required == {
         "component-lock.json",
         "frontend-protocol-lock.json",
         "SBOM.spdx.json",
         "VibeOCRClassic-*-full.nupkg",
-        "VibeOCRClassic-win-Setup.exe",
-        "VibeOCRClassic-win-Setup.exe.sha256",
         "VibeOCRClassic-win-Portable.zip",
         "releases.win.json",
     }
+    assert "VibeOCRClassic-win-Setup.exe" not in required
+    assert "VibeOCRClassic-win-Setup.exe.sha256" not in required
     assert any("scripts/verify_velopack_release.py" in command for command in smoke)
     assert "--exact" in smoke[0]
+    assert "VibeOCRClassic-win-Setup.exe" not in " ".join(smoke[0])
 
 
 def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) -> None:
@@ -178,9 +181,9 @@ def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) ->
 
     publishable = verify_velopack_release(tmp_path, "1.2.3")
 
+    # Setup.exe 留在 vpk 中间目录，不进入发布集合
     assert {path.name for path in publishable} == {
         package.name,
-        "VibeOCRClassic-win-Setup.exe",
         "VibeOCRClassic-win-Portable.zip",
         "releases.win.json",
     }
@@ -422,10 +425,10 @@ def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None
     assert not (pyside / "Qt63DQuick.dll").exists()
 
 
-def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -> None:
+def test_runtime_layout_requires_single_static_path_under_state(tmp_path: Path) -> None:
     good = {
         "accelerator": "cpu",
-        "runtime_root": str(tmp_path / "data" / "runtime"),
+        "runtime_root": str(tmp_path / "state" / "runtime"),
     }
     _verify_runtime_layout(good, tmp_path, "cpu")
 
@@ -433,7 +436,7 @@ def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -
         _verify_runtime_layout(
             {
                 "accelerator": "nvidia_cuda",
-                "runtime_root": str(tmp_path / "data" / "runtime"),
+                "runtime_root": str(tmp_path / "state" / "runtime"),
             },
             tmp_path,
             "cpu",
@@ -443,7 +446,7 @@ def test_runtime_layout_requires_single_static_path_under_data(tmp_path: Path) -
         _verify_runtime_layout(
             {
                 "accelerator": "cpu",
-                "runtime_root": str(tmp_path / "data" / "runtimes" / "cpu"),
+                "runtime_root": str(tmp_path / "state" / "runtimes" / "cpu"),
             },
             tmp_path,
             "cpu",
@@ -489,7 +492,7 @@ def test_bound_installer_inspect_uses_backend_timeout_contract(
             "status": "missing",
             "integrity": "not-installed",
             "accelerator": "cpu",
-            "runtime_root": str(tmp_path / "data" / "runtime"),
+            "runtime_root": str(tmp_path / "state" / "runtime"),
         }
         envelope = {
             "protocol_version": 2,

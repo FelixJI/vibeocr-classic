@@ -17,13 +17,17 @@ def _digest(path: Path, algorithm: str) -> str:
 
 
 def verify_velopack_release(root: Path, version: str) -> tuple[Path, ...]:
-    """Return the exact publishable set after validating the pinned vpk output."""
+    """Return the exact publishable set after validating the pinned vpk output.
+
+    Portable-only delivery: users get the Portable zip, machines get the
+    NUPKG/feed for Velopack self-update. vpk's generated Setup.exe stays in
+    the intermediate output directory and is never part of this set.
+    """
     root = root.resolve(strict=True)
     package = root / f"VibeOCRClassic-{version}-full.nupkg"
-    setup = root / "VibeOCRClassic-win-Setup.exe"
     portable = root / "VibeOCRClassic-win-Portable.zip"
     feed = root / "releases.win.json"
-    publishable = (package, setup, portable, feed)
+    publishable = (package, portable, feed)
     missing = [path.name for path in publishable if not path.is_file()]
     if missing:
         raise RuntimeError(f"Velopack output is missing: {', '.join(missing)}")

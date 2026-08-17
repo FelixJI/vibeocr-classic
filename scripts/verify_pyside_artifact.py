@@ -192,6 +192,9 @@ def _verify_bound_installer_inspect(
     if state.get("integrity") != "not-installed":
         raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
     _verify_runtime_layout(state, root, accelerator)
+    return (
+        root / "data" / "cache" / "runtime-installer" / "vibeocr-runtime-installer.exe"
+    )
 
 
 def _verify_runtime_layout(
@@ -205,9 +208,10 @@ def _verify_runtime_layout(
     runtime_root = envelope.get("runtime_root")
     if not isinstance(runtime_root, str):
         raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    expected = (root / "data" / "runtime").resolve()
+    # shared_root=state：runtime store 固定在 <portable-root>/state/runtime
+    expected = (root / "state" / "runtime").resolve()
     if Path(runtime_root).resolve() != expected:
-        raise RuntimeError("bound Runtime Installer escaped the data runtime layout")
+        raise RuntimeError("bound Runtime Installer escaped the state runtime layout")
 
 
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
@@ -568,6 +572,123 @@ def _verify_portable_state_smoke(root: Path, timeout_seconds: float = 45.0) -> N
         shutil.rmtree(smoke_parent, ignore_errors=True)
 
 
+_PROXY_BLACKHOLE = "http://127.0.0.1:9"
+_PROXY_VARIABLES = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
+
+
+def _verify_offline_base_smoke(
+    root: Path,
+    installer_executable: Path,
+    *,
+    client_factory=None,
+    timeout_seconds: float = 1200.0,
+) -> str:
+    """C6：base 禁网安装 + 幂等复用 + 模拟 apply 后 state 保留。
+
+    - 通过先 ``inspect()`` 协商能力；Runtime Host 协商
+      ``runtime.component-selection.v1`` 时强制执行：显式 base-only intent
+      激活内嵌 runtime pack 的 ``--no-index`` 离线路径，出网请求经黑洞代理
+      一律失败——离线安装成功即“base 禁网”证据。
+    - 随后重复 base-only ensure 断言 ``state/runtime`` 安装树不变（幂等
+      复用、不重复下载）；再用同内容重写应用层绑定（backend manifest 与
+      双 lock，模拟 Velopack apply 替换应用文件）后第三次 ensure 仍幂等，
+      且 state 未被触碰——“自更新前后组件复用”。
+    - Backend v0.12.0 尚未协商该能力（manifest capability 缺失，属 C0
+      闸门）时输出原因并跳过；下一版合格 Backend Release 后本 smoke 自动
+      转为强制。
+
+    Returns ``"enforced"`` or ``"skipped"``.
+    """
+
+    def snapshot_runtime_tree() -> list[tuple[str, int]]:
+        runtime = root / "state" / "runtime"
+        return sorted(
+            (path.relative_to(runtime).as_posix(), path.stat().st_size)
+            for path in runtime.rglob("*")
+            if path.is_file()
+        )
+
+    if client_factory is None:
+
+        def client_factory():  # noqa: F811 - lazy import keeps tests stdlib-only
+            from vibeocr.classic.runtime_installation import RuntimeInstallerClient
+
+            return RuntimeInstallerClient(
+                root,
+                content_root=root,
+                command=(str(installer_executable),),
+            )
+
+    client = client_factory()
+    client.inspect()
+    if "runtime.component-selection.v1" not in client.negotiated_capabilities:
+        reason = (
+            "offline base smoke skipped: bound Runtime "
+            "v"
+            + str(
+                json.loads(
+                    (root / "backend" / "runtime-manifest.json").read_text(
+                        encoding="utf-8"
+                    )
+                ).get("backend_version", "?")
+            )
+            + " does not negotiate runtime.component-selection.v1 "
+            "(manifest capability fix ships with the next qualified Backend "
+            "release)"
+        )
+        print(reason)
+        return "skipped"
+
+    saved_env = {name: os.environ.get(name) for name in _PROXY_VARIABLES}
+    saved_no_proxy = {name: os.environ.get(name) for name in ("no_proxy", "NO_PROXY")}
+    try:
+        for name in _PROXY_VARIABLES:
+            os.environ[name] = _PROXY_BLACKHOLE
+        os.environ["no_proxy"] = ""
+        os.environ["NO_PROXY"] = ""
+
+        launch = client.ensure(install_component_ids=())
+        runtime_dir = root / "state" / "runtime"
+        if not runtime_dir.is_dir() or not launch.python_executable:
+            raise RuntimeError("offline base ensure produced no runtime tree")
+        if not Path(launch.python_executable).is_file():
+            raise RuntimeError("offline base ensure python executable missing")
+        first_tree = snapshot_runtime_tree()
+
+        client.ensure(install_component_ids=())
+        if snapshot_runtime_tree() != first_tree:
+            raise RuntimeError(
+                "idempotent re-ensure rewrote the runtime tree (re-download)"
+            )
+
+        # 模拟 Velopack apply：应用层绑定被新版本替换，state 不被触碰
+        for bound in (
+            root / "backend" / "runtime-manifest.json",
+            root / "component-lock.json",
+            root / "frontend-protocol-lock.json",
+        ):
+            bound.write_bytes(bound.read_bytes())
+
+        client.ensure(install_component_ids=())
+        if snapshot_runtime_tree() != first_tree:
+            raise RuntimeError(
+                "post-apply ensure rewrote the runtime tree (update did not "
+                "reuse installed components)"
+            )
+    finally:
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        for name, value in saved_no_proxy.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    return "enforced"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("product_root", type=Path)
@@ -661,7 +782,7 @@ def main() -> int:
             raise RuntimeError("backend wheel has no Supervisor entry")
 
         if os.name == "nt":
-            _verify_bound_installer_inspect(
+            installer_executable_path = _verify_bound_installer_inspect(
                 root,
                 runtime_manifest,
                 installer_executable,
@@ -671,6 +792,7 @@ def main() -> int:
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)
             _verify_portable_state_smoke(root)
+            _verify_offline_base_smoke(root, installer_executable_path)
     return 0
 
 

@@ -24,7 +24,10 @@ class _FakeRuntimeAdapter(QObject):
     residency_status = Signal(object)
     residency_error = Signal(str)
     settings_updated = Signal(object)
+    settings_loaded = Signal(object)
     settings_error = Signal(str)
+    health_loaded = Signal(object)
+    health_error = Signal(str)
     preload_completed = Signal(object)
     preload_error = Signal(str)
 
@@ -35,6 +38,8 @@ class _FakeRuntimeAdapter(QObject):
         self.release_calls: list[str | None] = []
         self.update_calls: list[SettingsSnapshot] = []
         self.preload_calls: list[tuple[str, ...]] = []
+        self.fetch_health_calls = 0
+        self.fetch_settings_calls = 0
 
     def refresh_residency(self) -> None:
         self.refresh_calls += 1
@@ -47,6 +52,12 @@ class _FakeRuntimeAdapter(QObject):
 
     def preload(self, pipelines: tuple[str, ...]) -> None:
         self.preload_calls.append(pipelines)
+
+    def fetch_health(self) -> None:
+        self.fetch_health_calls += 1
+
+    def fetch_settings(self) -> None:
+        self.fetch_settings_calls += 1
 
 
 class _LifecycleOnlyManager:

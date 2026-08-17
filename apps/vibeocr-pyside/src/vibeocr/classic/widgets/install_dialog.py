@@ -164,6 +164,8 @@ class InstallWorker(QThread):
         missing_only: bool = False,
         single_pkg: str | None = None,
         packages: list[str] | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
         self._project_root = project_root
@@ -172,6 +174,8 @@ class InstallWorker(QThread):
         self._missing_only = missing_only
         self._single_pkg = single_pkg
         self._packages = packages
+        self._install_component_ids = install_component_ids
+        self._download_source_ids = download_source_ids
         self._cancel_event = threading.Event()
         self._maintenance_signature: tuple[str, str, str, str, str] | None = None
         self._maintenance_logged_signature: tuple[str, str, str, str, str] | None = None
@@ -234,6 +238,8 @@ class InstallWorker(QThread):
                 client.ensure(
                     progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
+                    install_component_ids=self._install_component_ids,
+                    download_source_ids=self._download_source_ids,
                 )
             self.completed.emit(
                 True,
@@ -320,6 +326,8 @@ class InstallDialog(QDialog):
         single_pkg: str | None = None,
         packages: list[str] | None = None,
         maintenance_callback: Callable[[str], None] | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
@@ -328,6 +336,8 @@ class InstallDialog(QDialog):
         self._single_pkg = single_pkg
         self._packages = packages
         self._maintenance_callback = maintenance_callback
+        self._install_component_ids = install_component_ids
+        self._download_source_ids = download_source_ids
         self._component_items: dict[str, QTreeWidgetItem] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
@@ -414,6 +424,8 @@ class InstallDialog(QDialog):
             force_backend=self._force_backend,
             single_pkg=self._single_pkg,
             packages=self._packages,
+            install_component_ids=self._install_component_ids,
+            download_source_ids=self._download_source_ids,
         )
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)

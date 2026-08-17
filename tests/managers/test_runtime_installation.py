@@ -852,3 +852,169 @@ def test_runtime_error_preserves_canonical_retry_metadata() -> None:
     assert error.retryable is True
     assert error.retry_after == 2
     assert error.detail == {"owner": "other"}
+
+
+def _selection_capable_client(
+    tmp_path: Path, *, capabilities: list[str] | None = None
+) -> RuntimeInstallerClient:
+    client = _bound_client(tmp_path)
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    manifest["capabilities"] = (
+        capabilities
+        if capabilities is not None
+        else [
+            "runtime.maintenance.v2",
+            "runtime.capability-metadata.v1",
+            "runtime.component-repair.v1",
+            "runtime.component-selection.v1",
+            "runtime.download-sources.v1",
+        ]
+    )
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    return client
+
+
+def _request_of(client: RuntimeInstallerClient, *args, **kwargs) -> dict:
+    arguments = client._arguments(*args, **kwargs)
+    return json.loads(arguments[arguments.index("--request-json") + 1])
+
+
+def test_ensure_install_scope_distinguishes_omission_and_base_only(
+    tmp_path: Path,
+) -> None:
+    client = _selection_capable_client(tmp_path)
+
+    assert "install_component_ids" not in _request_of(client, "ensure")
+    assert (
+        _request_of(client, "ensure", install_component_ids=())["install_component_ids"]
+        == []
+    )
+    assert _request_of(
+        client, "ensure", install_component_ids=("win-x64-cpu-document-parsing",)
+    )["install_component_ids"] == ["win-x64-cpu-document-parsing"]
+
+
+def test_ensure_download_source_ids_reject_empty_list(tmp_path: Path) -> None:
+    client = _selection_capable_client(tmp_path)
+
+    with pytest.raises(RuntimeInstallerClientError, match="download_source_ids"):
+        client._arguments("ensure", download_source_ids=())
+
+    assert _request_of(client, "ensure", download_source_ids=("tuna-pypi",))[
+        "download_source_ids"
+    ] == ["tuna-pypi"]
+
+
+def test_install_intent_is_isolated_from_repair_component_ids(tmp_path: Path) -> None:
+    client = _selection_capable_client(tmp_path)
+
+    with pytest.raises(RuntimeInstallerClientError, match="仅用于 ensure"):
+        client._arguments("repair", install_component_ids=())
+    with pytest.raises(RuntimeInstallerClientError, match="仅用于 ensure"):
+        client._arguments("repair", download_source_ids=("tuna-pypi",))
+
+    repair_request = _request_of(client, "repair", component_ids=("some-component",))
+    assert repair_request["component_ids"] == ["some-component"]
+    assert "install_component_ids" not in repair_request
+    assert "download_source_ids" not in repair_request
+
+
+def test_install_intent_requires_selection_capabilities(tmp_path: Path) -> None:
+    client = _selection_capable_client(
+        tmp_path,
+        capabilities=["runtime.maintenance.v2", "runtime.capability-metadata.v1"],
+    )
+
+    with pytest.raises(RuntimeInstallerClientError, match="组件手动选择"):
+        client._arguments("ensure", install_component_ids=())
+    with pytest.raises(RuntimeInstallerClientError, match="下载源选择"):
+        client._arguments("ensure", download_source_ids=("tuna-pypi",))
+
+
+def test_negotiated_capabilities_override_manifest_for_intent_gating(
+    tmp_path: Path,
+) -> None:
+    # v0.12.0 的 manifest 尚未声明新能力，但运行时协商结果包含它们；
+    # 协商结果必须优先，否则运行中的合格 Backend 无法接收选择意图。
+    client = _selection_capable_client(
+        tmp_path, capabilities=["runtime.maintenance.v2"]
+    )
+    client._negotiated_capabilities = (
+        "runtime.maintenance.v2",
+        "runtime.component-selection.v1",
+        "runtime.download-sources.v1",
+    )
+
+    request = _request_of(
+        client,
+        "ensure",
+        install_component_ids=("win-x64-cu126-gpu-runtime",),
+        download_source_ids=("tuna-pypi",),
+    )
+    assert request["install_component_ids"] == ["win-x64-cu126-gpu-runtime"]
+    assert request["download_source_ids"] == ["tuna-pypi"]
+
+
+def test_retry_command_carries_install_intent_with_capability_gate(
+    tmp_path: Path,
+) -> None:
+    client = _selection_capable_client(tmp_path)
+    captured: dict[str, object] = {}
+
+    def _fake_invoke_control(request, *, timeout=30):
+        captured.update(request)
+        return {"protocol_version": 2, "ok": True}
+
+    client._invoke_control = _fake_invoke_control  # type: ignore[method-assign]
+
+    client.retry(
+        "op-1",
+        install_component_ids=(),
+        download_source_ids=("tuna-pypi",),
+    )
+
+    assert captured["command"] == "retry"
+    assert captured["install_component_ids"] == []
+    assert captured["download_source_ids"] == ["tuna-pypi"]
+
+    with pytest.raises(RuntimeInstallerClientError, match="download_source_ids"):
+        client.retry("op-1", download_source_ids=())
+
+
+def test_maintenance_update_parses_download_source_scope() -> None:
+    from vibeocr.classic.runtime_installation import _maintenance_update
+
+    wire = {
+        "protocol_version": 2,
+        "event_version": 1,
+        "operation": "ensure",
+        "event_type": "snapshot",
+        "message_code": "runtime.ensure.snapshot",
+        "snapshot": {
+            "operation_id": "op-42",
+            "sequence": 1,
+            "operation": "ensure",
+            "operation_state": "running",
+            "phase": "install_profile",
+            "profile_id": "win-x64-cpu",
+            "updated_at": "2026-08-17T00:00:00+00:00",
+            "requested_component_ids": ["win-x64-cpu-document-parsing"],
+            "effective_component_ids": ["win-x64-cpu-document-parsing"],
+            "requested_download_source_ids": ["tuna-pypi"],
+            "effective_download_source_ids": ["tuna-pypi"],
+        },
+    }
+
+    parsed = _maintenance_update(wire, expected_operation="ensure")
+    assert parsed.requested_download_source_ids == ("tuna-pypi",)
+    assert parsed.effective_download_source_ids == ("tuna-pypi",)
+
+    invalid = {
+        **wire,
+        "snapshot": {
+            **wire["snapshot"],
+            "effective_download_source_ids": ["tuna-pypi", ""],
+        },
+    }
+    with pytest.raises(RuntimeInstallerClientError, match="scope"):
+        _maintenance_update(invalid, expected_operation="ensure")

@@ -105,6 +105,8 @@ class RuntimeMaintenanceUpdate:
     message_code: str | None = None
     requested_component_ids: tuple[str, ...] = ()
     effective_component_ids: tuple[str, ...] = ()
+    requested_download_source_ids: tuple[str, ...] = ()
+    effective_download_source_ids: tuple[str, ...] = ()
     source: RuntimeSourceIdentity | None = None
 
     @property
@@ -306,10 +308,12 @@ def _maintenance_update(
             raise RuntimeInstallerClientError("Runtime maintenance progress 字段无效")
     requested = snapshot.get("requested_component_ids", [])
     effective = snapshot.get("effective_component_ids", [])
+    requested_sources = snapshot.get("requested_download_source_ids", [])
+    effective_sources = snapshot.get("effective_download_source_ids", [])
     if any(
         not isinstance(items, list)
         or any(not isinstance(item, str) or not item for item in items)
-        for items in (requested, effective)
+        for items in (requested, effective, requested_sources, effective_sources)
     ):
         raise RuntimeInstallerClientError("Runtime maintenance component scope 无效")
     event_type = wire.get("event_type")
@@ -337,6 +341,8 @@ def _maintenance_update(
         message_code=message_code,
         requested_component_ids=tuple(requested),
         effective_component_ids=tuple(effective),
+        requested_download_source_ids=tuple(requested_sources),
+        effective_download_source_ids=tuple(effective_sources),
         source=_source_identity(snapshot.get("source")),
     )
 
@@ -538,6 +544,8 @@ class RuntimeInstallerClient:
         *,
         operation_id: str | None = None,
         component_ids: tuple[str, ...] = (),
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
     ) -> list[str]:
         request = {
@@ -553,6 +561,27 @@ class RuntimeInstallerClient:
                 if not self._supports_capability("runtime.component-repair.v1"):
                     raise RuntimeInstallerClientError("Runtime 不支持按组件 repair")
                 request["component_ids"] = list(component_ids)
+            if install_component_ids is not None or download_source_ids is not None:
+                if operation != "ensure":
+                    raise RuntimeInstallerClientError(
+                        "install_component_ids/download_source_ids 仅用于 ensure"
+                    )
+                if download_source_ids is not None and not download_source_ids:
+                    raise RuntimeInstallerClientError(
+                        "download_source_ids 不能发送空列表；空选择应省略字段"
+                    )
+                if install_component_ids is not None and not self._supports_capability(
+                    "runtime.component-selection.v1"
+                ):
+                    raise RuntimeInstallerClientError("Runtime 不支持组件手动选择")
+                if download_source_ids is not None and not self._supports_capability(
+                    "runtime.download-sources.v1"
+                ):
+                    raise RuntimeInstallerClientError("Runtime 不支持下载源选择")
+                if install_component_ids is not None:
+                    request["install_component_ids"] = list(install_component_ids)
+                if download_source_ids is not None:
+                    request["download_source_ids"] = list(download_source_ids)
             if required_capabilities:
                 if not self._supports_capability("runtime.capability-metadata.v1"):
                     raise RuntimeInstallerClientError(
@@ -576,6 +605,10 @@ class RuntimeInstallerClient:
         return self._supports_capability("runtime.maintenance.v1")
 
     def _supports_capability(self, capability: str) -> bool:
+        # 协商结果来自实际 installer 信封，优先于 manifest 声明；首轮操作前
+        # manifest 是唯一可用近似（两者只会出现代码新于 manifest 的偏差）。
+        if self._negotiated_capabilities:
+            return capability in self._negotiated_capabilities
         try:
             capabilities = self._manifest().get("capabilities", [])
         except RuntimeInstallerClientError:
@@ -754,17 +787,34 @@ class RuntimeInstallerClient:
         *,
         command_id: str | None = None,
         new_operation_id: str | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        return self._invoke_control(
-            {
-                "request_kind": "command",
-                "command_id": command_id or str(uuid4()),
-                "command": "retry",
-                "target_operation_id": operation_id,
-                "new_operation_id": new_operation_id or str(uuid4()),
-            },
-            timeout=3600,
-        )
+        if install_component_ids is not None or download_source_ids is not None:
+            if download_source_ids is not None and not download_source_ids:
+                raise RuntimeInstallerClientError(
+                    "download_source_ids 不能发送空列表；空选择应省略字段"
+                )
+            if install_component_ids is not None and not self._supports_capability(
+                "runtime.component-selection.v1"
+            ):
+                raise RuntimeInstallerClientError("Runtime 不支持组件手动选择")
+            if download_source_ids is not None and not self._supports_capability(
+                "runtime.download-sources.v1"
+            ):
+                raise RuntimeInstallerClientError("Runtime 不支持下载源选择")
+        request: dict[str, Any] = {
+            "request_kind": "command",
+            "command_id": command_id or str(uuid4()),
+            "command": "retry",
+            "target_operation_id": operation_id,
+            "new_operation_id": new_operation_id or str(uuid4()),
+        }
+        if install_component_ids is not None:
+            request["install_component_ids"] = list(install_component_ids)
+        if download_source_ids is not None:
+            request["download_source_ids"] = list(download_source_ids)
+        return self._invoke_control(request, timeout=3600)
 
     def profile_descriptor(self) -> RuntimeProfileDescriptor:
         manifest = self._manifest()
@@ -807,6 +857,8 @@ class RuntimeInstallerClient:
         timeout: float = 3600,
         operation_id: str | None = None,
         component_ids: tuple[str, ...] = (),
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         self._verify_installer_executable()
@@ -848,6 +900,8 @@ class RuntimeInstallerClient:
                     operation,
                     operation_id=operation_id,
                     component_ids=component_ids,
+                    install_component_ids=install_component_ids,
+                    download_source_ids=download_source_ids,
                     required_capabilities=required_capabilities,
                 ),
                 cwd=self.content_root,
@@ -1134,8 +1188,19 @@ class RuntimeInstallerClient:
         progress: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
         operation_id: str | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
     ) -> RuntimeLaunch:
+        """Ensure the runtime with an explicit optional-component install scope.
+
+        ``install_component_ids`` follows the Protocol
+        ``runtime.component-selection.v1`` semantics: ``None`` omits the wire
+        field (Backend default scope) while ``()`` explicitly installs the
+        base runtime only.  ``download_source_ids`` snapshots the download
+        sources for this operation and must be non-empty when provided.
+        """
+
         if not required_capabilities and self._supports_capability(
             "runtime.maintenance.v2"
         ):
@@ -1146,6 +1211,8 @@ class RuntimeInstallerClient:
                 progress=progress,
                 cancel_event=cancel_event,
                 operation_id=operation_id,
+                install_component_ids=install_component_ids,
+                download_source_ids=download_source_ids,
                 required_capabilities=required_capabilities,
             )
         )

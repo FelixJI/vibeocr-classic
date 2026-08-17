@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTimer
+from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -36,6 +36,15 @@ from vibeocr.classic.machine_cache import is_cache_valid
 from vibeocr.classic.pyside import settings_runtime
 from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
+from vibeocr.classic.runtime_selection import (
+    DOWNLOAD_SOURCES_CAPABILITY,
+    ENGINE_AVAILABILITY_LABELS,
+    ENGINE_DISPLAY_NAMES,
+    VALID_ENGINE_IDS,
+    RuntimeSelectionCatalog,
+    RuntimeSelectionError,
+    parse_capability_catalogs,
+)
 from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
 from vibeocr.runtime_contracts import (
@@ -111,6 +120,10 @@ class SettingsPageController:
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._runtime_adapter = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
+        self._selection_catalog: RuntimeSelectionCatalog | None = None
+        self._selection_accelerator: str | None = None
+        self._engine_combo_initialized = False
+        self._source_combo_rows: dict[str, QComboBox] = {}
         self._runtime_action = ""
         self._pending_ttl_sync = False
         self._backend_options = None
@@ -315,6 +328,9 @@ class SettingsPageController:
         adapter.residency_error.connect(self._on_residency_error)
         adapter.settings_updated.connect(self._on_settings_updated)
         adapter.settings_error.connect(self._on_settings_error)
+        adapter.settings_loaded.connect(self._on_settings_loaded)
+        adapter.health_loaded.connect(self._on_health_loaded)
+        adapter.health_error.connect(self._on_health_error)
         adapter.preload_completed.connect(self._on_preload_completed)
         adapter.preload_error.connect(self._on_preload_error)
         self._runtime_adapter = adapter
@@ -329,6 +345,9 @@ class SettingsPageController:
             (adapter.residency_error, self._on_residency_error),
             (adapter.settings_updated, self._on_settings_updated),
             (adapter.settings_error, self._on_settings_error),
+            (adapter.settings_loaded, self._on_settings_loaded),
+            (adapter.health_loaded, self._on_health_loaded),
+            (adapter.health_error, self._on_health_error),
             (adapter.preload_completed, self._on_preload_completed),
             (adapter.preload_error, self._on_preload_error),
         ):
@@ -709,6 +728,7 @@ class SettingsPageController:
         # ComboBox。前者由 typed ResidencyStatus signal 写入，后者由用户操作触发。
         self._init_pipeline_cache_status_label()
         self._init_pipeline_ttl_combos()
+        self._init_ocr_runtime_group()
 
     def _init_log_level_control(self) -> None:
         """在应用设置页加入持久化日志级别选择。"""
@@ -1381,6 +1401,8 @@ class SettingsPageController:
         force_backend: str | None = None,
         single_pkg: str | None = None,
         packages: list[str] | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         """显示非模态 Runtime 安装进度；操作只通过 Installer ensure/repair。"""
         from vibeocr.classic.widgets.install_dialog import InstallDialog
@@ -1392,6 +1414,8 @@ class SettingsPageController:
             single_pkg=single_pkg,
             packages=packages,
             maintenance_callback=self._status_callback,
+            install_component_ids=install_component_ids,
+            download_source_ids=download_source_ids,
         )
 
         def _on_finished(_result: int) -> None:
@@ -1426,6 +1450,10 @@ class SettingsPageController:
         backend_options = self._backend_options
         if backend_options is not None:
             backend_options.refresh_runtime_state()
+        adapter = self._connect_runtime_adapter()
+        if adapter.is_started and not self._closing:
+            adapter.fetch_health()
+            adapter.fetch_settings()
 
     def _on_reinstall_single_dep(self, pkg: str) -> None:
         """单包重装入口（依赖表格"重装"按钮）。
@@ -1885,6 +1913,7 @@ class SettingsPageController:
             default_ttl_seconds=current.default_ttl_seconds,
             pipelines=pipelines,
             extra=dict(current.extra),
+            download_source_ids=current.download_source_ids,
         )
         self._runtime_action = "settings"
         self._update_release_status("正在更新 TTL...")
@@ -1914,6 +1943,384 @@ class SettingsPageController:
         self._pending_ttl_sync = False
         self._update_release_status(f"TTL 更新失败：{error}")
 
+    # ----------------------------------------------------------------
+    # OCR 引擎 / 离线能力 / 下载源（Protocol 2.7 选择面）
+    # ----------------------------------------------------------------
+
+    _FEATURE_LABELS = {
+        "document_parsing": "文档智能解析（MinerU）",
+        "gpu_runtime": "GPU 运行时",
+    }
+
+    _SOURCE_KIND_LABELS = {
+        "package_index": "Python 包索引",
+        "model_registry": "模型仓库",
+    }
+
+    def _init_ocr_runtime_group(self) -> None:
+        """初始化 OCR 引擎与 Runtime 能力分组；catalog 数据等待 health。"""
+
+        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
+        if combo is not None and not self._engine_combo_initialized:
+            self._engine_combo_initialized = True
+            combo.currentIndexChanged.connect(self._on_engine_selected)
+        button = self._ui.findChild(QPushButton, "btnInstallOfflineFeatures")
+        if button is not None:
+            button.clicked.connect(self._on_install_offline_features)
+        save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
+        if save_button is not None:
+            save_button.clicked.connect(self._on_save_download_sources)
+        try:
+            self._selection_accelerator = (
+                self._runtime_installer.profile_descriptor().accelerator
+            )
+        except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
+            self._selection_accelerator = None
+        self._populate_engine_combo()
+        self._refresh_selection_availability()
+
+    def _populate_engine_combo(self) -> None:
+        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
+        if combo is None:
+            return
+        combo.blockSignals(True)
+        combo.clear()
+        for engine_id in ("rapidocr", "windows", "paddleocr"):
+            combo.addItem(ENGINE_DISPLAY_NAMES.get(engine_id, engine_id), engine_id)
+        engine_id: str | None = None
+        requires_selection = False
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            selection = ConfigManager.instance().get_ocr_engine_selection()
+            if isinstance(selection, tuple) and len(selection) == 2:
+                engine_id, requires_selection = selection
+        except RuntimeError:
+            engine_id = None
+        effective = engine_id or "rapidocr"
+        index = combo.findData(effective)
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+        if requires_selection:
+            self._set_engine_status("检测到未知的旧引擎配置，请重新选择识别引擎")
+
+    def _set_engine_status(self, text: str) -> None:
+        label = self._ui.findChild(QLabel, "labelOcrEngineStatus")
+        if label is not None:
+            label.setText(text)
+
+    def _on_engine_selected(self, index: int) -> None:
+        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
+        if combo is None or index < 0:
+            return
+        engine_id = combo.itemData(index)
+        if not isinstance(engine_id, str) or engine_id not in VALID_ENGINE_IDS:
+            return
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            if not ConfigManager.instance().set_ocr_engine(engine_id):
+                self._set_engine_status(f"引擎 {engine_id} 不是有效选择，未保存")
+                return
+        except RuntimeError:
+            return
+        self._render_engine_availability()
+
+    def _render_engine_availability(self) -> None:
+        catalog = self._selection_catalog
+        if catalog is None:
+            return
+        parts = []
+        for entry in catalog.engines:
+            label = ENGINE_AVAILABILITY_LABELS.get(
+                entry.availability, entry.availability
+            )
+            suffix = ""
+            if entry.reason_code:
+                suffix = f"（{entry.reason_code}）"
+            parts.append(f"{entry.display_name}：{label}{suffix}")
+        if parts:
+            self._set_engine_status("；".join(parts))
+
+    def _on_health_loaded(self, health: object) -> None:
+        if self._closing or not isinstance(health, dict):
+            return
+        descriptors = health.get("capability_descriptors")
+        if not isinstance(descriptors, list):
+            descriptors = []
+        capabilities = health.get("capabilities")
+        capabilities = set(capabilities) if isinstance(capabilities, list) else set()
+        try:
+            catalog = parse_capability_catalogs(descriptors)
+        except RuntimeSelectionError as exc:
+            self._set_engine_status(f"Backend 选择目录无效：{exc}")
+            return
+        self._selection_catalog = catalog
+        self._render_engine_availability()
+        self._render_offline_features()
+        self._render_download_sources(capabilities)
+        self._refresh_selection_availability()
+
+    def _on_health_error(self, error: str) -> None:
+        if self._closing:
+            return
+        self._set_engine_status(f"引擎状态读取失败：{error}")
+        status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+        if status is not None:
+            status.setText(f"下载源读取失败：{error}")
+
+    def _render_offline_features(self) -> None:
+        """按当前 accelerator 渲染可选能力勾选列表（catalog 驱动）。"""
+
+        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
+        catalog = self._selection_catalog
+        if tree is None or catalog is None:
+            return
+        accelerator = self._selection_accelerator
+        if accelerator is None:
+            tree.clear()
+            return
+        variants = catalog.variants_for_accelerator(accelerator)
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            selected = set(
+                ConfigManager.instance().get_offline_component_features(accelerator)
+            )
+        except RuntimeError:
+            selected = set()
+        tree.clear()
+        for variant in variants:
+            label = self._FEATURE_LABELS.get(variant.feature_id, variant.feature_id)
+            item = QTreeWidgetItem([label, "未安装"])
+            item.setData(0, Qt.ItemDataRole.UserRole, variant.feature_id)
+            item.setCheckState(
+                0,
+                Qt.CheckState.Checked
+                if variant.feature_id in selected
+                else Qt.CheckState.Unchecked,
+            )
+            tree.addTopLevelItem(item)
+
+    def _selected_offline_features(self) -> tuple[str, ...]:
+        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
+        if tree is None:
+            return ()
+        features: list[str] = []
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item.checkState(0) != Qt.CheckState.Checked:
+                continue
+            feature_id = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(feature_id, str):
+                features.append(feature_id)
+        return tuple(features)
+
+    def _on_install_offline_features(self) -> None:
+        catalog = self._selection_catalog
+        accelerator = self._selection_accelerator
+        if catalog is None or accelerator is None:
+            QMessageBox.information(
+                None,
+                "暂不可用",
+                "当前 Backend 未提供可选能力目录，无法安装可选组件。",
+            )
+            return
+        features = self._selected_offline_features()
+        if not features:
+            QMessageBox.information(
+                None,
+                "未选择能力",
+                "请先勾选需要安装的可选能力。",
+            )
+            return
+        try:
+            component_ids = catalog.component_ids_for_features(features, accelerator)
+        except RuntimeSelectionError as exc:
+            QMessageBox.warning(None, "无法解析所选能力", str(exc))
+            return
+        names = "、".join(
+            self._FEATURE_LABELS.get(feature, feature) for feature in features
+        )
+        answer = QMessageBox.question(
+            None,
+            "安装可选组件",
+            (
+                f"即将在线下载并安装：{names}。\n"
+                "下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            ConfigManager.instance().set_offline_component_features(
+                accelerator, list(features)
+            )
+        except RuntimeError:
+            pass
+        source_ids = self._resolve_download_source_ids()
+        self._run_after_supervisor_invalidated(
+            lambda: self._show_install_dialog(
+                install_component_ids=component_ids,
+                download_source_ids=source_ids,
+            )
+        )
+
+    def _render_download_sources(self, capabilities: set) -> None:
+        """按 Backend catalog 渲染每 kind 的下载源单选。"""
+
+        label = self._ui.findChild(QLabel, "labelDownloadSource")
+        layout = self._ui.findChild(QVBoxLayout, "ocrRuntimeLayout")
+        save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
+        catalog = self._selection_catalog
+        if label is None or layout is None or catalog is None:
+            return
+        if DOWNLOAD_SOURCES_CAPABILITY not in capabilities:
+            label.setText("下载源：当前 Backend 不支持下载源选择")
+            self._set_source_controls_enabled(False)
+            return
+        grouped = catalog.editable_sources_by_kind()
+        if not grouped:
+            label.setText("下载源：Backend 目录未声明已知类型来源")
+            self._set_source_controls_enabled(False)
+            return
+        insert_at = (
+            layout.indexOf(save_button) if save_button is not None else layout.count()
+        )
+        for combo in self._source_combo_rows.values():
+            combo.hide()
+            layout.removeWidget(combo)
+            combo.deleteLater()
+        self._source_combo_rows.clear()
+        current_snapshot = self._runtime_settings_snapshot
+        selected_ids = set(
+            current_snapshot.download_source_ids if current_snapshot is not None else ()
+        )
+        unknown_kinds = [
+            source.kind for source in catalog.sources if not source.editable
+        ]
+        for offset, (kind, sources) in enumerate(sorted(grouped.items())):
+            row = QWidget(self._ui)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            kind_label = QLabel(f"{self._SOURCE_KIND_LABELS.get(kind, kind)}：", row)
+            combo = QComboBox(row)
+            combo.setObjectName(f"comboDownloadSource_{kind}")
+            for source in sources:
+                combo.addItem(source.source_id, source.source_id)
+                combo.setItemData(
+                    combo.count() - 1, source.endpoint, Qt.ItemDataRole.ToolTipRole
+                )
+            if sources:
+                selected = next(
+                    (
+                        source.source_id
+                        for source in sources
+                        if source.source_id in selected_ids
+                    ),
+                    sources[0].source_id,
+                )
+                combo.setCurrentIndex(max(0, combo.findData(selected)))
+            row_layout.addWidget(kind_label)
+            row_layout.addWidget(combo, 1)
+            layout.insertWidget(insert_at + offset, row)
+            self._source_combo_rows[kind] = combo
+        note = "下载源：每类至多选择一个；endpoint 由 Backend 只读声明"
+        if unknown_kinds:
+            note += f"；存在未支持的来源类型：{'、'.join(sorted(set(unknown_kinds)))}"
+        label.setText(note)
+        self._set_source_controls_enabled(True)
+
+    def _set_source_controls_enabled(self, enabled: bool) -> None:
+        save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
+        if save_button is not None:
+            save_button.setEnabled(enabled)
+        for combo in self._source_combo_rows.values():
+            combo.setEnabled(enabled)
+
+    def _resolve_download_source_ids(self) -> tuple[str, ...] | None:
+        """把当前 UI 选择转换为 wire download_source_ids；空选择省略。"""
+
+        catalog = self._selection_catalog
+        if catalog is None or not self._source_combo_rows:
+            return None
+        choices: dict[str, str] = {}
+        for kind, combo in self._source_combo_rows.items():
+            source_id = combo.currentData()
+            if isinstance(source_id, str) and source_id:
+                choices[kind] = source_id
+        try:
+            return catalog.normalize_source_selection(choices)
+        except RuntimeSelectionError:
+            return None
+
+    def _on_save_download_sources(self) -> None:
+        adapter = self._connect_runtime_adapter()
+        if not adapter.is_started:
+            status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+            if status is not None:
+                status.setText("下载源：OCR 服务未连接，未保存")
+            return
+        catalog = self._selection_catalog
+        if catalog is None:
+            return
+        source_ids = self._resolve_download_source_ids()
+        current = self._runtime_settings_snapshot
+        snapshot = SettingsSnapshot(
+            default_ttl_seconds=(
+                current.default_ttl_seconds if current is not None else 300
+            ),
+            pipelines=current.pipelines if current is not None else (),
+            extra=dict(current.extra) if current is not None else {},
+            download_source_ids=source_ids or (),
+        )
+        adapter.update_settings(snapshot)
+        status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+        if status is not None:
+            status.setText(
+                "正在保存下载源选择："
+                + ("、".join(source_ids) if source_ids else "使用 Backend 默认源")
+            )
+
+    def _on_settings_loaded(self, snapshot: object) -> None:
+        if self._closing or not isinstance(snapshot, SettingsSnapshot):
+            return
+        self._runtime_settings_snapshot = snapshot
+        selected = set(snapshot.download_source_ids)
+        for kind, combo in self._source_combo_rows.items():
+            for index in range(combo.count()):
+                if combo.itemData(index) in selected:
+                    combo.setCurrentIndex(index)
+                    break
+        status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+        if status is not None:
+            status.setText(
+                "当前下载源："
+                + ("、".join(snapshot.download_source_ids) or "Backend 默认源")
+            )
+
+    def _refresh_selection_availability(self) -> None:
+        """Backend 未声明选择能力时禁用对应 UI，而不是构造请求。"""
+
+        catalog = self._selection_catalog
+        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
+        button = self._ui.findChild(QPushButton, "btnInstallOfflineFeatures")
+        has_variants = catalog is not None and bool(catalog.variants)
+        if tree is not None:
+            tree.setEnabled(has_variants)
+        if button is not None:
+            button.setEnabled(has_variants)
+        if catalog is not None and not catalog.variants:
+            label = self._ui.findChild(QLabel, "labelOcrEngineStatus")
+            existing = label.text() if label is not None else ""
+            if not existing or existing.startswith("引擎状态"):
+                self._set_engine_status(
+                    "当前 Backend 未声明可选组件能力（不提供离线能力勾选）"
+                )
+
     def _on_residency_status(self, status: object) -> None:
         if self._closing or not isinstance(status, ResidencyStatus):
             return
@@ -1922,6 +2329,9 @@ class SettingsPageController:
             default_ttl_seconds=status.default_ttl_seconds,
             pipelines=status.pipelines,
             extra=dict(current.extra) if current is not None else {},
+            download_source_ids=(
+                current.download_source_ids if current is not None else ()
+            ),
         )
 
         action = self._runtime_action

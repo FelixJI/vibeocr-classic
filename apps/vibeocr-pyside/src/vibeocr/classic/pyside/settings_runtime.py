@@ -31,6 +31,16 @@ def get_log_level() -> str:
         return "INFO"
 
 
+def get_default_ocr_engine() -> str | None:
+    """全局默认 OCR 引擎；未知旧值/未初始化返回 None（请求省略 engine）。"""
+
+    try:
+        engine_id, _requires_selection = _config_manager().get_ocr_engine_selection()
+    except RuntimeError:
+        return None
+    return engine_id
+
+
 def set_log_level(level: str) -> bool:
     """Persist and immediately apply an application log level."""
     try:

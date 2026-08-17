@@ -526,3 +526,58 @@ def test_runtime_endpoint_factory_owns_all_protocol_clients(monkeypatch) -> None
     assert created[3][1]["timeout"] == 10.0
     adapter.shutdown()
     assert closed == ["pdf", "sync", "status"]
+
+
+def test_fetch_health_emits_capability_descriptors(adapter, qasync_loop) -> None:
+    payload = {
+        "schema_version": 2,
+        "instance_id": "runtime-1",
+        "protocol_version": 2,
+        "ready": True,
+        "draining": False,
+        "capabilities": ["ocr.engine-selection.v1"],
+        "capability_descriptors": [
+            {
+                "name": "ocr.engine-selection.v1",
+                "lifecycle": "active",
+                "introduced_in": "2.6.0",
+                "deprecated_in": None,
+                "sunset_at": None,
+                "replacement": None,
+            }
+        ],
+    }
+
+    class HealthClient(FakeSupervisorClient):
+        async def health(self):
+            return payload
+
+    runtime_adapter = SupervisorClientAdapter(client_factory=lambda: HealthClient())
+    loaded: list[object] = []
+    runtime_adapter.health_loaded.connect(loaded.append)
+
+    runtime_adapter.fetch_health()
+
+    _drive(qasync_loop, lambda: len(loaded) == 1)
+    assert loaded[0] is payload
+    runtime_adapter.shutdown()
+    _drive(qasync_loop, lambda: runtime_adapter.shutdown_drained)
+
+
+def test_fetch_settings_emits_snapshot(adapter, qasync_loop) -> None:
+    snapshot = SettingsSnapshot(download_source_ids=("tuna-pypi",))
+
+    class SettingsClient(FakeSupervisorClient):
+        async def get_settings(self) -> SettingsSnapshot:
+            return snapshot
+
+    runtime_adapter = SupervisorClientAdapter(client_factory=lambda: SettingsClient())
+    loaded: list[object] = []
+    runtime_adapter.settings_loaded.connect(loaded.append)
+
+    runtime_adapter.fetch_settings()
+
+    _drive(qasync_loop, lambda: len(loaded) == 1)
+    assert loaded[0] is snapshot
+    runtime_adapter.shutdown()
+    _drive(qasync_loop, lambda: runtime_adapter.shutdown_drained)

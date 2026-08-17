@@ -10,7 +10,7 @@
 
 from PySide6.QtCore import (QCoreApplication, QMetaObject, QSize, Qt)
 from PySide6.QtGui import (QPalette)
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFrame,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QFrame,
     QGroupBox, QHBoxLayout, QLabel,
     QListWidget, QListWidgetItem, QProgressBar, QPushButton,
     QSizePolicy, QSpacerItem, QSpinBox, QSplitter,
@@ -376,6 +376,72 @@ class Ui_MainWindowWidget(object):
 
         self.pageAppLayout.addWidget(self.groupAppSettings)
 
+        self.groupOcrRuntime = QGroupBox(self.pageAppSettings)
+        self.groupOcrRuntime.setObjectName(u"groupOcrRuntime")
+        self.ocrRuntimeLayout = QVBoxLayout(self.groupOcrRuntime)
+        self.ocrRuntimeLayout.setSpacing(8)
+        self.ocrRuntimeLayout.setObjectName(u"ocrRuntimeLayout")
+        self.ocrEngineRow = QHBoxLayout()
+        self.ocrEngineRow.setSpacing(8)
+        self.ocrEngineRow.setObjectName(u"ocrEngineRow")
+        self.labelOcrEngine = QLabel(self.groupOcrRuntime)
+        self.labelOcrEngine.setObjectName(u"labelOcrEngine")
+
+        self.ocrEngineRow.addWidget(self.labelOcrEngine)
+
+        self.comboOcrEngine = QComboBox(self.groupOcrRuntime)
+        self.comboOcrEngine.setObjectName(u"comboOcrEngine")
+
+        self.ocrEngineRow.addWidget(self.comboOcrEngine)
+
+        self.ocrEngineRowSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.ocrEngineRow.addItem(self.ocrEngineRowSpacer)
+
+
+        self.ocrRuntimeLayout.addLayout(self.ocrEngineRow)
+
+        self.labelOcrEngineStatus = QLabel(self.groupOcrRuntime)
+        self.labelOcrEngineStatus.setObjectName(u"labelOcrEngineStatus")
+        self.labelOcrEngineStatus.setWordWrap(True)
+
+        self.ocrRuntimeLayout.addWidget(self.labelOcrEngineStatus)
+
+        self.treeOfflineFeatures = QTreeWidget(self.groupOcrRuntime)
+        self.treeOfflineFeatures.setObjectName(u"treeOfflineFeatures")
+        self.treeOfflineFeatures.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.treeOfflineFeatures.setSelectionMode(QAbstractItemView.NoSelection)
+        self.treeOfflineFeatures.setRootIsDecorated(False)
+        self.treeOfflineFeatures.setMaximumHeight(140)
+        self.treeOfflineFeatures.header().setStretchLastSection(True)
+
+        self.ocrRuntimeLayout.addWidget(self.treeOfflineFeatures)
+
+        self.btnInstallOfflineFeatures = QPushButton(self.groupOcrRuntime)
+        self.btnInstallOfflineFeatures.setObjectName(u"btnInstallOfflineFeatures")
+
+        self.ocrRuntimeLayout.addWidget(self.btnInstallOfflineFeatures)
+
+        self.labelDownloadSource = QLabel(self.groupOcrRuntime)
+        self.labelDownloadSource.setObjectName(u"labelDownloadSource")
+        self.labelDownloadSource.setWordWrap(True)
+
+        self.ocrRuntimeLayout.addWidget(self.labelDownloadSource)
+
+        self.btnSaveDownloadSources = QPushButton(self.groupOcrRuntime)
+        self.btnSaveDownloadSources.setObjectName(u"btnSaveDownloadSources")
+
+        self.ocrRuntimeLayout.addWidget(self.btnSaveDownloadSources)
+
+        self.labelDownloadSourceStatus = QLabel(self.groupOcrRuntime)
+        self.labelDownloadSourceStatus.setObjectName(u"labelDownloadSourceStatus")
+        self.labelDownloadSourceStatus.setWordWrap(True)
+
+        self.ocrRuntimeLayout.addWidget(self.labelDownloadSourceStatus)
+
+
+        self.pageAppLayout.addWidget(self.groupOcrRuntime)
+
         self.groupEnvMaintenance = QGroupBox(self.pageAppSettings)
         self.groupEnvMaintenance.setObjectName(u"groupEnvMaintenance")
         self.envMaintenanceLayout = QVBoxLayout(self.groupEnvMaintenance)
@@ -561,6 +627,25 @@ class Ui_MainWindowWidget(object):
         self.chkAutoStart.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u7cfb\u7edf\u542f\u52a8\u65f6\u81ea\u52a8\u8fd0\u884c VibeOCR", None))
 #endif // QT_CONFIG(tooltip)
         self.chkAutoStart.setText(QCoreApplication.translate("MainWindowWidget", u"\u5f00\u673a\u81ea\u542f\u52a8", None))
+        self.groupOcrRuntime.setTitle(QCoreApplication.translate("MainWindowWidget", u"OCR \u5f15\u64ce\u4e0e Runtime \u80fd\u529b", None))
+        self.labelOcrEngine.setText(QCoreApplication.translate("MainWindowWidget", u"\u8bc6\u522b\u5f15\u64ce:", None))
+#if QT_CONFIG(tooltip)
+        self.comboOcrEngine.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u5168\u5c40\u9ed8\u8ba4 OCR \u5f15\u64ce\uff1b\u4efb\u52a1\u53ef\u4e34\u65f6\u8986\u76d6\uff0c\u4e0d\u5f71\u54cd\u5168\u5c40\u8bbe\u7f6e", None))
+#endif // QT_CONFIG(tooltip)
+        self.labelOcrEngineStatus.setText(QCoreApplication.translate("MainWindowWidget", u"\u5f15\u64ce\u72b6\u6001\uff1a\u7b49\u5f85 Runtime \u5c31\u7eea", None))
+        ___qtreewidgetitem_ocrfeatures = self.treeOfflineFeatures.headerItem()
+        ___qtreewidgetitem_ocrfeatures.setText(1, QCoreApplication.translate("MainWindowWidget", u"\u72b6\u6001", None))
+        ___qtreewidgetitem_ocrfeatures.setText(0, QCoreApplication.translate("MainWindowWidget", u"\u53ef\u9009\u80fd\u529b", None))
+#if QT_CONFIG(tooltip)
+        self.btnInstallOfflineFeatures.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u5b89\u88c5\u52fe\u9009\u7684\u53ef\u9009\u7ec4\u4ef6\uff1b\u786e\u8ba4\u540e\u4e0b\u8f7d\uff0c\u53ef\u53d6\u6d88", None))
+#endif // QT_CONFIG(tooltip)
+        self.btnInstallOfflineFeatures.setText(QCoreApplication.translate("MainWindowWidget", u"\u5b89\u88c5\u52fe\u9009\u7684\u53ef\u9009\u7ec4\u4ef6", None))
+        self.labelDownloadSource.setText(QCoreApplication.translate("MainWindowWidget", u"\u4e0b\u8f7d\u6e90\uff1a\u7b49\u5f85 Runtime \u5c31\u7eea\u540e\u6309 Backend \u76ee\u5f55\u5c55\u793a\u53ef\u9009\u9879", None))
+#if QT_CONFIG(tooltip)
+        self.btnSaveDownloadSources.setToolTip(QCoreApplication.translate("MainWindowWidget", u"\u4fdd\u5b58\u5230 Backend \u8bbe\u7f6e\uff1b\u53ea\u5f71\u54cd\u4e0b\u4e00\u6b21\u5b89\u88c5/\u4e0b\u8f7d", None))
+#endif // QT_CONFIG(tooltip)
+        self.btnSaveDownloadSources.setText(QCoreApplication.translate("MainWindowWidget", u"\u4fdd\u5b58\u4e0b\u8f7d\u6e90\u9009\u62e9", None))
+        self.labelDownloadSourceStatus.setText(QCoreApplication.translate("MainWindowWidget", u"\u4e0b\u8f7d\u6e90\uff1a\u7b49\u5f85 Runtime \u5c31\u7eea", None))
         self.groupEnvMaintenance.setTitle(QCoreApplication.translate("MainWindowWidget", u"\u63a8\u7406\u540e\u7aef\u4e0e\u4f9d\u8d56", None))
         self.labelEnvStatus.setText(QCoreApplication.translate("MainWindowWidget", u"Python \u8fd0\u884c\u65f6\uff1a\u68c0\u6d4b\u4e2d...", None))
         ___qtreewidgetitem = self.treeDepsStatus.headerItem()

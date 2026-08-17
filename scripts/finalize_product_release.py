@@ -62,6 +62,19 @@ def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
             raise ValueError("Backend runtime profile must be an object")
         names.add(str(record["lock"]))
         names.update(_runtime_pack_names(record))
+        # Backend 0.12 起 profile 可声明 install_scopes；每个 scope 自带
+        # 精确 lock（如 cu126 的 gpu-runtime 闭包），缺文件会让绑定
+        # Installer 的 inspect 失败。
+        scopes = record.get("install_scopes")
+        if scopes is None:
+            continue
+        if not isinstance(scopes, list):
+            raise ValueError("Backend runtime install_scopes must be a list")
+        for scope in scopes:
+            if not isinstance(scope, dict):
+                raise ValueError("Backend runtime install scope must be an object")
+            names.add(str(scope["lock"]))
+            names.update(_runtime_pack_names(scope))
     return names
 
 

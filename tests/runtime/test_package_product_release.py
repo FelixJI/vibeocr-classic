@@ -327,3 +327,47 @@ def test_runtime_asset_names_accepts_pack_string_and_part_list() -> None:
         _runtime_asset_names(_manifest(["pack.zip", 42]))
     with pytest.raises(ValueError, match="runtime_pack"):
         _runtime_asset_names(_manifest({"name": "pack.zip"}))
+
+
+def test_runtime_asset_names_includes_install_scope_locks() -> None:
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    manifest = {
+        "backend_wheel": "backend.whl",
+        "protocol_manifest": "release-manifest.json",
+        "protocol_wheel": "protocol.whl",
+        "python": {"archive": "python.tar.gz"},
+        "installer": {"archive": "installer.zip"},
+        "profiles": {
+            "win-x64-cu126": {
+                "lock": "requirements-win-x64-cu126.lock",
+                "runtime_pack": None,
+                "install_scopes": [
+                    {
+                        "scope_id": "gpu-runtime",
+                        "component_ids": ["gpu_runtime"],
+                        "lock": "requirements-win-x64-cu126-gpu.lock",
+                        "runtime_pack": ["gpu-pack.part01.zip"],
+                    }
+                ],
+            }
+        },
+    }
+
+    names = _runtime_asset_names(manifest)
+
+    assert "requirements-win-x64-cu126.lock" in names
+    assert "requirements-win-x64-cu126-gpu.lock" in names
+    assert "gpu-pack.part01.zip" in names
+
+    broken = {
+        **manifest,
+        "profiles": {
+            "win-x64-cu126": {
+                "lock": "requirements-win-x64-cu126.lock",
+                "install_scopes": {"lock": "not-a-list"},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="install_scopes"):
+        _runtime_asset_names(broken)

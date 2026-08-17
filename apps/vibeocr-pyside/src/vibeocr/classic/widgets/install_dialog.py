@@ -108,6 +108,7 @@ def build_maintenance_detail(
     """
     phase = _PHASE_LABELS.get(update.phase, update.phase)
     state = _STATE_LABELS.get(update.operation_state, update.operation_state)
+    scope_note = _component_scope_note(update)
     if update.has_determinate_progress:
         assert update.progress_total is not None
         assert update.progress_current is not None
@@ -126,6 +127,8 @@ def build_maintenance_detail(
             )
         if update.estimated_remaining_seconds is not None:
             detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        if scope_note:
+            detail += f" · {scope_note}"
         return MaintenanceProgressDetail(
             detail=detail,
             phase_label=phase,
@@ -143,8 +146,28 @@ def build_maintenance_detail(
         detail = f"{phase} · {update.progress_current}/{update.progress_total} 步"
     if update.operation_state == "running" and clock is not None:
         detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
+    if scope_note:
+        detail += f" · {scope_note}"
     return MaintenanceProgressDetail(
         detail=detail, phase_label=phase, state_label=state
+    )
+
+
+def _component_scope_note(update: RuntimeMaintenanceUpdate) -> str:
+    """requested/effective 组件回显差异说明；闭包扩大时不伪称只装勾选项。"""
+
+    effective = tuple(update.effective_component_ids)
+    requested = tuple(update.requested_component_ids)
+    if not effective and not requested:
+        return ""
+    if effective == requested:
+        return ""
+    if not requested:
+        return f"Backend 实际安装：{'、'.join(effective)}"
+    return (
+        f"实际安装 {'、'.join(effective)}（请求：{'、'.join(requested)}）"
+        if effective
+        else f"请求：{'、'.join(requested)}"
     )
 
 

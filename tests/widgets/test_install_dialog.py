@@ -219,6 +219,43 @@ class TestBuildMaintenanceDetail:
         rendered = build_maintenance_detail(update)
         assert "已用时" not in rendered.detail
 
+    def test_matching_scope_stays_silent(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=6,
+            operation="ensure",
+            operation_state="running",
+            phase="install_profile",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            requested_component_ids=("win-x64-cpu-document-parsing",),
+            effective_component_ids=("win-x64-cpu-document-parsing",),
+        )
+        rendered = build_maintenance_detail(update)
+        assert "实际安装" not in rendered.detail
+
+    def test_closure_expansion_is_reported_not_hidden(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=7,
+            operation="ensure",
+            operation_state="running",
+            phase="install_profile",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            requested_component_ids=("win-x64-cpu-document-parsing",),
+            effective_component_ids=(
+                "win-x64-cpu-document-parsing",
+                "win-x64-cpu-pinned-dep",
+            ),
+        )
+        rendered = build_maintenance_detail(update)
+        assert "实际安装" in rendered.detail
+        assert "win-x64-cpu-pinned-dep" in rendered.detail
+        assert "请求：win-x64-cpu-document-parsing" in rendered.detail
+
 
 class TestOnProgress:
     def test_progress_updates_stage_and_log(self, qapp, tmp_path):

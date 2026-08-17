@@ -110,11 +110,40 @@ class TestLangCombo:
         for i in range(widget._lang_combo.count()):
             langs.append(widget._lang_combo.itemData(i))
         assert "" in langs  # 自动检测
-        assert "zh" in langs  # 中文
+        assert "ch" in langs  # 中文
+        assert "ch_server" in langs  # 中文（高精度）
         assert "en" in langs  # 英文
-        assert "zh,en" in langs  # 中英混合
-        assert "ja" in langs  # 日文
-        assert "ko" in langs  # 韩文
+        assert "japan" in langs  # 日文
+        assert "korean" in langs  # 韩文
+
+    def test_lang_combo_items_are_valid_mineru_languages(self, widget):
+        """语言下拉框取值必须是 MinerU 公开 API 接受的语言码或其别名。
+
+        mineru-api 对 lang_list 逐项执行 validate_public_ocr_lang，
+        非法值会以 "Language ... not supported" 被 400 拒绝。
+        """
+        allowed = {
+            "ch",
+            "ch_server",
+            "korean",
+            "ta",
+            "te",
+            "ka",
+            "th",
+            "el",
+            "arabic",
+            "east_slavic",
+            "cyrillic",
+            "devanagari",
+            # mineru.utils.ocr_language 归一为 ch 的别名
+            "en",
+            "japan",
+            "chinese_cht",
+            "latin",
+        }
+        for i in range(widget._lang_combo.count()):
+            data = widget._lang_combo.itemData(i)
+            assert data == "" or data in allowed
 
     def test_lang_combo_default(self, widget):
         """测试语言下拉框默认值为自动检测"""
@@ -132,45 +161,62 @@ class TestLangCombo:
         assert options.lang_list == []
 
     def test_get_options_lang_list_chinese(self, widget, qtbot):
-        """测试 get_options - 选择中文时 lang_list 为 ['zh']"""
+        """测试 get_options - 选择中文时 lang_list 为 ['ch']"""
         index = widget._pipeline_combo.findData(OCRPipeline.DOCUMENT_PARSING.value)
         widget._pipeline_combo.setCurrentIndex(index)
         qtbot.wait(50)
 
-        lang_idx = widget._lang_combo.findData("zh")
+        lang_idx = widget._lang_combo.findData("ch")
         widget._lang_combo.setCurrentIndex(lang_idx)
         qtbot.wait(50)
 
         options = widget.get_options()
-        assert options.lang_list == ["zh"]
+        assert options.lang_list == ["ch"]
 
-    def test_get_options_lang_list_mixed(self, widget, qtbot):
-        """测试 get_options - 中英混合时 lang_list 为 ['zh', 'en']"""
+    def test_get_options_lang_list_chinese_high_accuracy(self, widget, qtbot):
+        """测试 get_options - 选择中文（高精度）时 lang_list 为 ['ch_server']"""
         index = widget._pipeline_combo.findData(OCRPipeline.DOCUMENT_PARSING.value)
         widget._pipeline_combo.setCurrentIndex(index)
         qtbot.wait(50)
 
-        lang_idx = widget._lang_combo.findData("zh,en")
+        lang_idx = widget._lang_combo.findData("ch_server")
+        assert lang_idx >= 0
         widget._lang_combo.setCurrentIndex(lang_idx)
         qtbot.wait(50)
 
         options = widget.get_options()
-        assert options.lang_list == ["zh", "en"]
+        assert options.lang_list == ["ch_server"]
 
     def test_set_options_lang(self, widget, qtbot):
         """测试 set_options 能正确设置语言"""
         new_options = OCROptions(
             pipeline=OCRPipeline.DOCUMENT_PARSING,
-            lang_list=["ja"],
+            lang_list=["korean"],
         )
         widget.set_options(new_options)
 
-        assert widget._lang_combo.currentData() == "ja"
+        assert widget._lang_combo.currentData() == "korean"
+
+    def test_set_options_lang_legacy_mapping(self, widget, qtbot):
+        """测试 set_options - 旧版 ISO 风格语言码映射到 MinerU 合法值"""
+        for legacy, expected in [
+            (["zh"], "ch"),
+            (["zh", "en"], "ch"),
+            (["ja"], "japan"),
+            (["ko"], "korean"),
+        ]:
+            new_options = OCROptions(
+                pipeline=OCRPipeline.DOCUMENT_PARSING,
+                lang_list=legacy,
+            )
+            widget.set_options(new_options)
+
+            assert widget._lang_combo.currentData() == expected, legacy
 
     def test_set_options_lang_empty(self, widget, qtbot):
         """测试 set_options - lang_list 为空时恢复自动检测"""
-        # 先设置为日文
-        widget._lang_combo.setCurrentIndex(widget._lang_combo.findData("ja"))
+        # 先设置为韩文
+        widget._lang_combo.setCurrentIndex(widget._lang_combo.findData("korean"))
 
         new_options = OCROptions(
             pipeline=OCRPipeline.DOCUMENT_PARSING,

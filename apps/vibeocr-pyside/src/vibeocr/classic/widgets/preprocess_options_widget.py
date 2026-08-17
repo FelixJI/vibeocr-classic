@@ -1,7 +1,7 @@
 # src/vibeocr/widgets/preprocess_options_widget.py
 """预处理选项组件 - 选项卡式布局"""
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +27,14 @@ from vibeocr.runtime_contracts.contracts.pipelines import (
     get_all_pipelines,
     get_pipeline_display_name,
 )
+
+# 旧版本 UI 保存过的 ISO 风格语言码，读取旧配置时映射到 MinerU 合法值。
+_LEGACY_LANG_DATA = {
+    "zh": "ch",
+    "zh,en": "ch",
+    "ja": "japan",
+    "ko": "korean",
+}
 
 
 class PreprocessOptionsWidget(CollapsibleGroupBox):
@@ -255,17 +263,27 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         self._enable_table_cb.setChecked(True)
         layout.addWidget(self._enable_table_cb)
 
-        # 语言选择
+        # 语言选择。取值必须是 MinerU 公开 API 的合法语言码
+        # （mineru.utils.ocr_language 的 PUBLIC_OCR_LANGUAGES 及其归一别名），
+        # 否则 file_parse 会被 mineru-api 以 "Language ... not supported" 拒绝。
         lang_layout = QHBoxLayout()
         lang_layout.addWidget(QLabel("文档语言:"))
         self._lang_combo = QComboBox()
         self._lang_combo.addItem("自动检测", "")
-        self._lang_combo.addItem("中文", "zh")
+        self._lang_combo.addItem("中文", "ch")
+        self._lang_combo.addItem("中文（高精度）", "ch_server")
+        self._lang_combo.setItemData(
+            self._lang_combo.findData("ch_server"),
+            "使用 server 高精度识别模型，识别精度更高但速度较慢",
+            Qt.ItemDataRole.ToolTipRole,
+        )
         self._lang_combo.addItem("英文", "en")
-        self._lang_combo.addItem("中英混合", "zh,en")
-        self._lang_combo.addItem("日文", "ja")
-        self._lang_combo.addItem("韩文", "ko")
-        self._lang_combo.setToolTip("文档主要语言，自动检测适用于混合语言")
+        self._lang_combo.addItem("日文", "japan")
+        self._lang_combo.addItem("韩文", "korean")
+        self._lang_combo.setToolTip(
+            "文档主要语言，指定后可提升识别精度（中文含中英日繁混合文档）；"
+            "自动检测默认按中文处理"
+        )
         lang_layout.addWidget(self._lang_combo)
         lang_layout.addStretch()
         layout.addLayout(lang_layout)
@@ -700,6 +718,7 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         # 设置语言
         if options.lang_list:
             lang_str = ",".join(options.lang_list)
+            lang_str = _LEGACY_LANG_DATA.get(lang_str, lang_str)
             lang_idx = self._lang_combo.findData(lang_str)
             if lang_idx >= 0:
                 self._lang_combo.setCurrentIndex(lang_idx)

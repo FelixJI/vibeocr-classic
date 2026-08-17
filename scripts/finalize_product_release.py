@@ -23,6 +23,25 @@ EXPECTED_PRODUCT_ROOTS = {
 }
 
 
+def _runtime_pack_names(record: dict[str, object]) -> set[str]:
+    """Backend 0.12 起 runtime_pack 是分片列表；兼容旧版的单字符串/缺省。"""
+
+    names: set[str] = set()
+    runtime_pack = record.get("runtime_pack")
+    if runtime_pack is None:
+        return names
+    if isinstance(runtime_pack, str):
+        parts: list[str] = [runtime_pack]
+    elif isinstance(runtime_pack, list) and all(
+        isinstance(part, str) and part for part in runtime_pack
+    ):
+        parts = list(runtime_pack)
+    else:
+        raise ValueError("Backend runtime_pack must be a file name or name list")
+    names.update(parts)
+    return names
+
+
 def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
     names = {
         "runtime-manifest.json",
@@ -42,9 +61,7 @@ def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
         if not isinstance(record, dict):
             raise ValueError("Backend runtime profile must be an object")
         names.add(str(record["lock"]))
-        runtime_pack = record.get("runtime_pack")
-        if runtime_pack:
-            names.add(str(runtime_pack))
+        names.update(_runtime_pack_names(record))
     return names
 
 

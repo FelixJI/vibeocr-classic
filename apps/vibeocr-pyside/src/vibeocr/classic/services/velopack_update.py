@@ -112,11 +112,9 @@ class VelopackUpdateCoordinator:
             source = candidate.base_url
             try:
                 manager = self._manager_factory(source)
-                if await asyncio.to_thread(manager.get_is_portable):
-                    return UpdateCheckResult(
-                        UpdateCheckStatus.FETCH_FAILED,
-                        detail="便携版不支持自动更新，请手动下载新版 Setup 或 Portable。",
-                    )
+                # Portable 与安装模式共用 Velopack check/download/apply：
+                # NUPKG/feed 是机器更新资产，Portable 根布局（state 位于
+                # 产品根下）由 Velopack apply 保留，不再硬拒绝。
                 current = await asyncio.to_thread(manager.get_current_version)
             except Exception as exc:
                 failures.append(f"{source}: {exc}")

@@ -170,7 +170,9 @@ def test_external_state_root_keeps_component_authority_in_product_content(
     arguments = client._arguments("inspect")
     request = json.loads(arguments[arguments.index("--request-json") + 1])
 
-    assert request["product_root"] == str(state.resolve())
+    # Runtime Host 的 product_root 必须是 layout 注册的产品根（content_root）；
+    # state root 只属于 Classic 自己，不进入绑定请求。
+    assert request["product_root"] == str(content.resolve())
     assert request["component_lock"] == str((content / "component-lock.json").resolve())
     assert request["runtime_manifest"] == str(
         (content / "backend" / "runtime-manifest.json").resolve()

@@ -197,7 +197,7 @@ def finalize_product_release(
                 "source_commit": source_commit,
                 "component_lock_sha256": _sha256(embedded_lock),
                 "frontend_protocol_lock_sha256": _sha256(embedded_frontend_lock),
-                "shared_root": "data",
+                "shared_root": "state",
                 "products": {
                     frontend: {
                         "root": ".",

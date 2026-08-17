@@ -52,5 +52,6 @@ def test_project_declares_protocol_compatibility_and_one_build_command() -> None
     assert "SHA256SUMS" not in project["release"]["required_assets"]
     build_script = (ROOT / "scripts/build-release.ps1").read_text(encoding="utf-8")
     assert "AUTOMATION_ARTIFACTS_DIR" in build_script
-    assert build_script.count("build_release_checksums.py") == 1
+    # Portable-only：构建不再生成 checksum sidecar（Setup 已移出发布集合）
+    assert "build_release_checksums.py" not in build_script
     assert "--no-checksum-index" in project["ci"]["release_smoke"][0]

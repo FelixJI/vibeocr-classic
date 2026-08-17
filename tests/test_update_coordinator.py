@@ -76,7 +76,8 @@ def test_coordinator_exposes_available_update_and_starts_apply():
     assert observed == [25, 100]
 
 
-def test_portable_coordinator_requires_manual_download():
+def test_portable_coordinator_shares_velopack_update_flow():
+    """Portable 不再硬拒绝：check/download/apply 与安装模式共用 Velopack 流程。"""
     manager = _Manager(portable=True)
     coordinator = VelopackUpdateCoordinator(
         source_candidates=("https://updates.invalid/",),
@@ -86,11 +87,10 @@ def test_portable_coordinator_requires_manual_download():
     checked = asyncio.run(coordinator.check())
     applied = asyncio.run(coordinator.download_and_apply())
 
-    assert checked.status is UpdateCheckStatus.FETCH_FAILED
-    assert "便携版" in (checked.detail or "")
-    assert "手动下载" in (checked.detail or "")
-    assert applied.status is UpdateApplyStatus.FAILED
-    assert manager.downloaded is False
+    assert checked.status is UpdateCheckStatus.AVAILABLE
+    assert applied.status is UpdateApplyStatus.APPLY_STARTED
+    assert manager.downloaded is True
+    assert manager.apply_started is True
 
 
 def test_installed_forward_proxy_falls_back_to_materialized_local_feed(

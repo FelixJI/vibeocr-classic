@@ -524,9 +524,12 @@ class RuntimeInstallerClient:
         self._capability_descriptors = tuple(descriptors)
 
     def _binding_request(self) -> dict[str, Any]:
+        # Runtime Host 的 product_root 语义是“产品根”（layout manifest 注册、
+        # component-lock 所在目录）；runtime store 由 shared_root 决定并落在
+        # <portable-root>/state。Classic 自身的 state root 不参与该绑定。
         request = {
             "protocol_version": 2,
-            "product_root": str(self.product_root),
+            "product_root": str(self.content_root),
             "component_lock": str(self.component_lock),
             "runtime_manifest": str(self.runtime_manifest),
         }

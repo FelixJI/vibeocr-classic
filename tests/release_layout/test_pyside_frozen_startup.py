@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -254,3 +255,110 @@ def test_portable_state_smoke_requires_fail_closed_exit(
 
     with pytest.raises(RuntimeError, match="fail-closed"):
         verifier._verify_portable_state_smoke(tmp_path)
+
+
+class _FakeOfflineClient:
+    def __init__(self, *, capabilities: tuple[str, ...], root: Path) -> None:
+        self.negotiated_capabilities = capabilities
+        self._root = root
+        self.ensure_calls: list[dict] = []
+
+    def inspect(self) -> None:
+        backend = self._root / "backend"
+        backend.mkdir(parents=True, exist_ok=True)
+        (backend / "runtime-manifest.json").write_text(
+            json.dumps({"backend_version": "0.12.0"}), encoding="utf-8"
+        )
+
+    def ensure(self, **kwargs):
+        self.ensure_calls.append(kwargs)
+        runtime = self._root / "state" / "runtime"
+        runtime.mkdir(parents=True, exist_ok=True)
+        (runtime / "python.exe").write_bytes(b"py")
+        return SimpleNamespace(python_executable=str(runtime / "python.exe"))
+
+
+def test_offline_base_smoke_skips_without_component_selection_capability(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    """v0.12.0 未协商能力：输出原因跳过，不执行任何安装。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(capabilities=("runtime.maintenance.v2",), root=tmp_path)
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
+    )
+
+    assert result == "skipped"
+    assert client.ensure_calls == []
+    assert "does not negotiate" in capsys.readouterr().out
+
+
+def test_offline_base_smoke_enforces_offline_intent_and_reuse(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """能力协商通过：三次 base-only ensure 均带显式空安装范围且断网。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=(
+            "runtime.maintenance.v2",
+            "runtime.component-selection.v1",
+        ),
+        root=tmp_path,
+    )
+    seen_proxies: list[dict] = []
+
+    real_ensure = client.ensure
+
+    def spy_ensure(**kwargs):
+        seen_proxies.append(
+            {name: os.environ.get(name) for name in ("http_proxy", "https_proxy")}
+        )
+        return real_ensure(**kwargs)
+
+    client.ensure = spy_ensure
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
+    )
+
+    assert result == "enforced"
+    assert len(client.ensure_calls) == 3
+    assert all(call.get("install_component_ids") == () for call in client.ensure_calls)
+    assert all(
+        proxy == "http://127.0.0.1:9"
+        for proxies in seen_proxies
+        for proxy in proxies.values()
+    )
+
+
+def test_offline_base_smoke_detects_rewrite_on_reensure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """幂等 ensure 重写 runtime 树（重复下载）时必须失败。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=("runtime.component-selection.v1",), root=tmp_path
+    )
+    calls = {"n": 0}
+    real_ensure = client.ensure
+
+    def grow_ensure(**kwargs):
+        calls["n"] += 1
+        result = real_ensure(**kwargs)
+        if calls["n"] == 2:
+            (tmp_path / "state" / "runtime" / f"extra-{calls['n']}.whl").write_bytes(
+                b"x"
+            )
+        return result
+
+    client.ensure = grow_ensure
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="re-download|rewrote"):
+        verifier._verify_offline_base_smoke(
+            tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
+        )

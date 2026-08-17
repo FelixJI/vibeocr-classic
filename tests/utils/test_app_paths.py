@@ -20,7 +20,11 @@ from vibeocr.classic.app_paths import (
     OUTPUT_DIR,
     PROFILES_DIR,
     RUNTIME_DIR,
-    LocalAppDataRootResolver,
+    STATE_DIR,
+    PortableRootResolver,
+    PortableStateError,
+    activate_portable_state,
+    ensure_portable_state_usable,
     get_bundle_root,
     get_bundled_changelog_path,
     get_bundled_resources_dir,
@@ -53,27 +57,37 @@ def test_resolve_app_paths_invalid_profile_message_lists_allowed(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_app_paths_production_paths(tmp_path):
-    """production 可变路径统一位于显式注入的稳定数据根。"""
-    stable_root = tmp_path / "VibeOCRClassicData"
-    paths = resolve_app_paths(
-        tmp_path / "install",
-        profile="production",
-        data_root_resolver=LocalAppDataRootResolver(stable_root.parent),
-    )
-    assert paths.install_root == (tmp_path / "install").resolve()
-    assert paths.state_root == stable_root
-    assert paths.data_root == stable_root / DATA_DIR
-    assert paths.runtime_root == stable_root / RUNTIME_DIR
-    assert paths.model_cache_root == stable_root / MODEL_CACHE_DIR
-    assert paths.output_root == stable_root / OUTPUT_DIR
-    assert paths.config_file == stable_root / CONFIG_DIR / CONFIG_FILENAME
+def test_resolve_app_paths_production_paths(tmp_path, monkeypatch):
+    """production 可变路径统一位于 <portable-root>/state。"""
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable_root = tmp_path / "install"
+    paths = resolve_app_paths(portable_root, profile="production")
+    state_root = (portable_root / STATE_DIR).resolve()
+    assert paths.install_root == portable_root.resolve()
+    assert paths.state_root == state_root
+    assert paths.data_root == state_root / DATA_DIR
+    assert paths.runtime_root == state_root / RUNTIME_DIR
+    assert paths.model_cache_root == state_root / MODEL_CACHE_DIR
+    assert paths.output_root == state_root / OUTPUT_DIR
+    assert paths.config_file == state_root / CONFIG_DIR / CONFIG_FILENAME
 
 
-def test_local_app_data_resolver_uses_stable_external_root(tmp_path):
-    resolver = LocalAppDataRootResolver(tmp_path / "Local")
+def test_portable_root_resolver_never_falls_back_to_user_dirs(tmp_path, monkeypatch):
+    """默认解析固定 portable 根；环境注入缝整体替换状态根。"""
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    assert PortableRootResolver(portable).resolve() == (portable / "state").resolve()
 
-    assert resolver.resolve() == tmp_path / "Local" / "VibeOCRClassicData"
+    injected = tmp_path / "injected-state"
+    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(injected))
+    assert PortableRootResolver(portable).resolve() == injected.resolve()
+
+
+def test_resolve_app_paths_env_override_replaces_state_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(tmp_path / "smoke-state"))
+    paths = resolve_app_paths(tmp_path / "install", profile="production")
+    assert paths.state_root == (tmp_path / "smoke-state").resolve()
+    assert paths.config_file.parent == (tmp_path / "smoke-state" / CONFIG_DIR).resolve()
 
 
 def test_resolve_app_paths_production_all_absolute(tmp_path):
@@ -318,3 +332,165 @@ def test_get_bundled_changelog_path_returns_none_when_frozen_candidates_absent(
     monkeypatch.setattr(sys, "executable", str(executable_root / "VibeOCR.exe"))
 
     assert get_bundled_changelog_path() is None
+
+
+# ---------------------------------------------------------------------------
+# 便携状态根探针：containment / 可写性 / fail closed
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_portable_state_usable_creates_and_probes(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    state = portable / STATE_DIR
+
+    resolved = ensure_portable_state_usable(state, portable_root=portable)
+
+    assert resolved == state.resolve()
+    assert state.is_dir()
+    assert not list(state.glob(".write-probe*"))
+
+
+def test_ensure_portable_state_rejects_state_declared_as_symlink(tmp_path, monkeypatch):
+    """portable/state 上的 junction/symlink 一律 fail closed。"""
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    portable.mkdir()
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    declared = portable / STATE_DIR
+    try:
+        declared.symlink_to(redirected, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform cannot create directory symlinks")
+    # 解析后仍在 tmp 内（可写），但声明路径是重定向 → 必须拒绝
+    with pytest.raises(PortableStateError, match="junction/symlink"):
+        ensure_portable_state_usable(declared, portable_root=portable)
+
+
+def test_ensure_portable_state_rejects_escape_outside_portable_root(
+    tmp_path, monkeypatch
+):
+    """解析后越界（.. 或重定向）fail closed。"""
+    import os as _os
+
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    outside = tmp_path / "outside-state"
+    declared = (
+        portable / ".." / outside.name
+        if _os.name != "nt"
+        else Path(str(portable) + f"\\..\\{outside.name}")
+    )
+
+    with pytest.raises(PortableStateError, match="越界"):
+        ensure_portable_state_usable(declared, portable_root=portable)
+
+
+def test_ensure_portable_state_rejects_unwritable_root(
+    tmp_path, monkeypatch, mocker=None
+):
+    """create/write/rename/delete 探针失败（模拟只读）时 fail closed。"""
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    state = portable / STATE_DIR
+    state.mkdir(parents=True)
+
+    from unittest.mock import patch
+
+    with patch(
+        "vibeocr.classic.app_paths.os.replace",
+        side_effect=PermissionError("read-only"),
+    ):
+        with pytest.raises(PortableStateError, match="不可用"):
+            ensure_portable_state_usable(state, portable_root=portable)
+
+
+def test_ensure_portable_state_rejects_state_blocked_by_file(tmp_path, monkeypatch):
+    """state 位置被同名文件占据（无法创建目录）时 fail closed。"""
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    portable.mkdir()
+    (portable / STATE_DIR).write_text("blocked", encoding="utf-8")
+
+    with pytest.raises(PortableStateError, match="不可用"):
+        ensure_portable_state_usable(portable / STATE_DIR, portable_root=portable)
+
+
+def test_activate_portable_state_builds_state_tree(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable 便携"
+
+    paths = activate_portable_state(portable)
+
+    assert paths.state_root == (portable / STATE_DIR).resolve()
+    for relative in (
+        "config",
+        "cache",
+        "logs",
+        "runtimes",
+        "models",
+        "output",
+        "update",
+        "locks",
+        "web/qtwebengine/cache",
+        "web/qtwebengine/persistent",
+        "temp/clipboard",
+    ):
+        assert (paths.state_root / relative).is_dir(), relative
+    assert paths.clipboard_temp_dir == paths.state_root / "temp" / "clipboard"
+    assert (
+        paths.webengine_cache_dir == paths.state_root / "web" / "qtwebengine" / "cache"
+    )
+
+
+def test_activate_portable_state_env_override_skips_containment(tmp_path, monkeypatch):
+    """注入缝仍跑可写探针，但不做 portable 根 containment（任意可写目录）。"""
+    injected = tmp_path / "smoke" / "state"
+    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(injected))
+
+    paths = activate_portable_state(tmp_path / "elsewhere")
+
+    assert paths.state_root == injected.resolve()
+    assert (injected / "logs").is_dir()
+
+
+def test_activate_portable_state_fail_closed_leaves_no_partial_layout(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    portable.mkdir()
+    (portable / STATE_DIR).write_text("blocked", encoding="utf-8")
+
+    with pytest.raises(PortableStateError):
+        activate_portable_state(portable)
+    # 不回退、不在别处创建目录
+    assert not (tmp_path / "VibeOCRClassicData").exists()
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+
+    assert not (_Path(_tempfile.gettempdir()) / "VibeOCRClassicData").exists()
+
+
+def test_app_paths_derived_directories_stay_under_state(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    paths = resolve_app_paths(tmp_path / "portable", profile="production")
+
+    for directory in (
+        paths.logs_root,
+        paths.cache_root,
+        paths.temp_root,
+        paths.clipboard_temp_dir,
+        paths.update_root,
+        paths.locks_root,
+        paths.webengine_cache_dir,
+        paths.webengine_persistent_dir,
+    ):
+        assert (
+            paths.state_root
+            == directory.parents[
+                len(directory.parents) - len(paths.state_root.parents) - 1
+            ]
+            or paths.state_root in directory.parents
+        )

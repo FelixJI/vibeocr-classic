@@ -137,9 +137,7 @@ class ScreenCaptureOverlay(QWidget):
         self._clipboard_jobs = GenerationImageJobs(self)
         self._clipboard_jobs.completed.connect(self._on_clipboard_job_completed)
         self._clipboard_jobs.failed.connect(self._on_background_job_failed)
-        self._save_jobs: dict[
-            GenerationImageJobs, tuple[str, threading.Event]
-        ] = {}
+        self._save_jobs: dict[GenerationImageJobs, tuple[str, threading.Event]] = {}
         self._save_jobs_lock = threading.Lock()
         self._save_shutdown_requested = False
         self._cleanup_jobs = GenerationImageJobs(self)
@@ -826,8 +824,10 @@ class ScreenCaptureOverlay(QWidget):
         if png_bytes is None:
             return None
         try:
+            from vibeocr.classic.app_paths import get_clipboard_temp_dir
+
             fd, name = tempfile.mkstemp(
-                prefix="vibeocr_clip_", suffix=".png", dir=tempfile.gettempdir()
+                prefix="vibeocr_clip_", suffix=".png", dir=get_clipboard_temp_dir()
             )
             path = Path(name)
             with os.fdopen(fd, "wb") as f:

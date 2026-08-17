@@ -438,6 +438,136 @@ def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
         stderr_log.unlink(missing_ok=True)
 
 
+def _verify_portable_state_smoke(root: Path, timeout_seconds: float = 45.0) -> None:
+    """完全便携状态根 smoke：含空格/中文/长段的便携根内运行真实冻结入口。
+
+    断言：
+    - fail closed：``state`` 被同名文件占据（等效不可创建/不可写）时，
+      入口以退出码 2 结束并把明确原因写入结果文件（windowed 进程没有
+      可用 stderr），不弹原生对话框、不在别处落盘。
+    - 默认解析（无注入缝）：可写便携根下创建 ``<portable-root>/state``
+      子树，bootstrap 日志位于 ``state/logs``；
+    - 把 ``LOCALAPPDATA`` 指到监控目录后，不创建旧的
+      ``VibeOCRClassicData`` 用户目录。
+    """
+
+    import tempfile
+
+    # 副本放在短路径临时父目录（测试装置自有 scratch，非产品状态），
+    # 目录名含空格 + 中文 + 较长段，不依赖系统长路径开关。
+    smoke_parent = Path(tempfile.mkdtemp(prefix="vibeocr-portable-smoke-"))
+    portable_root = smoke_parent / "VibeOCR 便携 Smoke 目录 2026 with spaces"
+    blocked_result = smoke_parent / ".blocked-result.json"
+    local_app_data = smoke_parent / ".smoke-localappdata"
+    # 复制时排除前面 smoke 与 installer inspect 的瞬态产物
+    shutil.copytree(
+        root,
+        portable_root,
+        ignore=shutil.ignore_patterns(
+            ".smoke-data",
+            ".smoke-runtime",
+            "data",
+            "state",
+            ".startup-smoke*",
+            ".pdf-smoke*",
+            ".webengine-smoke*",
+        ),
+    )
+    # 必须运行副本内的 exe：便携根解析跟随 sys.executable，而不是 cwd
+    exe = portable_root / "VibeOCR.exe"
+    result_file = portable_root / ".pdf-smoke-result.json"
+    state_root = portable_root / "state"
+    local_app_data.mkdir()
+
+    def _launch(extra_env: dict[str, str]) -> subprocess.CompletedProcess[bytes]:
+        env = os.environ.copy()
+        env.pop("VIBEOCR_CLASSIC_DATA_ROOT", None)
+        env["LOCALAPPDATA"] = str(local_app_data)
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        env.update(extra_env)
+        for variable in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):
+            env.pop(variable, None)
+        return subprocess.run(
+            [str(exe)],
+            cwd=portable_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+
+    try:
+        # 1) fail closed：state 被同名文件占据（不请求管理员权限、不回退）
+        state_root.write_text("blocked", encoding="utf-8")
+        blocked = _launch(
+            {
+                "VIBEOCR_SILENT_PORTABLE_ERROR": "1",
+                "VIBEOCR_SELF_TEST_PDF": "1",
+                "VIBEOCR_SELF_TEST_RESULT": str(blocked_result),
+            }
+        )
+        reason = ""
+        if blocked_result.is_file():
+            reason = str(
+                json.loads(blocked_result.read_text(encoding="utf-8")).get(
+                    "portable_state_error", ""
+                )
+            )
+        if blocked.returncode != 2 or "状态目录不可用" not in reason:
+            raise RuntimeError(
+                "portable state fail-closed smoke did not exit(2) with a clear "
+                f"reason: code={blocked.returncode} reason={reason[:500]}"
+            )
+        if (local_app_data / "VibeOCRClassicData").exists():
+            raise RuntimeError(
+                "portable state fail-closed smoke wrote the legacy LocalAppData root"
+            )
+
+        # 2) 默认便携解析：真实启动并断言 state 子树与 bootstrap 日志
+        state_root.unlink()
+        launched = _launch(
+            {
+                "VIBEOCR_SELF_TEST_PDF": "1",
+                "VIBEOCR_SELF_TEST_RESULT": str(result_file),
+            }
+        )
+        if launched.returncode != 0:
+            stderr_text = launched.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"portable state smoke exited with {launched.returncode}: "
+                f"{stderr_text[:500]}"
+            )
+        if not result_file.is_file():
+            raise RuntimeError("portable state smoke produced no result evidence")
+        for relative in (
+            "config",
+            "logs",
+            "temp/clipboard",
+            "web/qtwebengine/cache",
+            "web/qtwebengine/persistent",
+        ):
+            if not (state_root / relative).is_dir():
+                raise RuntimeError(f"portable state layout missing: state/{relative}")
+        bootstrap_log = state_root / "logs" / "vibeocr-bootstrap.log"
+        if not bootstrap_log.is_file():
+            raise RuntimeError("portable state smoke has no state/logs bootstrap log")
+        legacy_dir = local_app_data / "VibeOCRClassicData"
+        if legacy_dir.exists():
+            raise RuntimeError(
+                f"portable state smoke wrote the legacy user directory: {legacy_dir}"
+            )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"portable state smoke timed out after {timeout_seconds:.0f}s"
+        ) from error
+    finally:
+        shutil.rmtree(smoke_parent, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("product_root", type=Path)
@@ -540,6 +670,7 @@ def main() -> int:
             _verify_frozen_startup(root)
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)
+            _verify_portable_state_smoke(root)
     return 0
 
 

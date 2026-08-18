@@ -14,6 +14,31 @@ import sys
 import zipfile
 from pathlib import Path
 
+try:
+    from scripts.resolve_component_releases import ComponentPolicy
+except ModuleNotFoundError:
+    from resolve_component_releases import ComponentPolicy
+
+
+def verify_component_policy_binding(
+    component_lock_path: Path,
+    policy_path: Path,
+) -> None:
+    """Require the embedded component lock to retain the product policy closure."""
+
+    lock = json.loads(component_lock_path.read_text(encoding="utf-8"))
+    required_capabilities = lock.get("required_capabilities")
+    if not isinstance(required_capabilities, list) or not all(
+        isinstance(capability, str) and capability
+        for capability in required_capabilities
+    ):
+        raise RuntimeError("component lock capabilities are invalid")
+    policy = ComponentPolicy.load(policy_path)
+    if set(required_capabilities) != set(policy.required_capabilities):
+        raise RuntimeError(
+            "Classic component lock capability set differs from component policy"
+        )
+
 
 def _authorize_smoke_data_root(environment: dict[str, str], root: Path) -> Path:
     """Install the test-only cross-process data-root override with a nonce."""
@@ -737,6 +762,7 @@ def _verify_offline_base_smoke(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("product_root", type=Path)
+    parser.add_argument("--policy", type=Path, required=True)
     args = parser.parse_args()
     root = args.product_root.resolve(strict=True)
     if not root.is_dir():
@@ -793,19 +819,7 @@ def main() -> int:
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         _verify_frontend_protocol_lock(root, manifest, lock)
         backend = lock.get("backend", {})
-        required_capabilities = set(lock.get("required_capabilities", []))
-        expected_capabilities = {
-            "export.document.v1",
-            "ocr.engine-selection.v1",
-            "ocr.recognition.v2",
-            "pdf.edit.v2",
-            "qrcode.v2",
-            "runtime.component-selection.v1",
-            "runtime.download-sources.v1",
-            "runtime.settings.v2",
-        }
-        if required_capabilities != expected_capabilities:
-            raise RuntimeError("Classic component lock capability set is incomplete")
+        verify_component_policy_binding(lock_path, args.policy)
 
         runtime_manifest_path = root / "backend" / "runtime-manifest.json"
         runtime_manifest_hash = hashlib.sha256(

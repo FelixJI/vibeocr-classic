@@ -18,6 +18,7 @@ from scripts.verify_pyside_artifact import (
     _verify_product_file_closure,
     _verify_reduced_layout,
     _verify_runtime_layout,
+    verify_component_policy_binding,
 )
 
 
@@ -308,6 +309,50 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "'--collect-data', 'vibeocr.backend'" not in script
     assert "python -m pip install --no-deps" not in script
     assert "vibeocr_backend-$backendVersion" not in script
+
+
+def test_artifact_verifier_uses_product_policy_capability_closure(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    required = policy["required_capabilities"]
+    assert "runtime.maintenance.v2" in required
+
+    component_lock = tmp_path / "component-lock.json"
+    component_lock.write_text(
+        json.dumps({"required_capabilities": required}), encoding="utf-8"
+    )
+    verify_component_policy_binding(component_lock, policy_path)
+
+    component_lock.write_text(
+        json.dumps(
+            {
+                "required_capabilities": [
+                    capability
+                    for capability in required
+                    if capability != "runtime.maintenance.v2"
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="differs from component policy"):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
+def test_release_build_passes_policy_to_artifact_verifier() -> None:
+    build_script = (ROOT / "scripts" / "build-release.ps1").read_text(
+        encoding="utf-8"
+    )
+    verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "verify_pyside_artifact.py') $product --policy $policy" in build_script
+    assert 'parser.add_argument("--policy", type=Path, required=True)' in verifier
+    assert "verify_component_policy_binding(lock_path, args.policy)" in verifier
+    assert "expected_capabilities =" not in verifier
 
 
 def test_release_build_reuses_the_ci_verified_component_input() -> None:

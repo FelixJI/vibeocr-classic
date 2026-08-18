@@ -165,7 +165,7 @@ Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
   --protocol-release-dir $protocol `
   --backend-release-dir $backend
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
-& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product
+& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product --policy $policy
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
 $velopackProduct = Join-Path $build 'velopack-product'
 & $buildPython (Join-Path $root 'scripts/prepare_velopack_input.py') `

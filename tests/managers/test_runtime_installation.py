@@ -187,7 +187,7 @@ def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> 
         json.dumps(
             {
                 "schema_version": 1,
-                "shared_root": "data",
+                "shared_root": "state",
                 "products": {
                     "classic": {
                         "root": ".",
@@ -258,7 +258,7 @@ def test_frozen_installer_is_materialized_from_bound_archive(
 
     executable = Path(client.command[0])
     assert executable.read_bytes() == executable_bytes
-    assert executable.parent == tmp_path / "data" / "cache" / "runtime-installer"
+    assert executable.parent == tmp_path / "cache" / "runtime-installer"
 
     executable.write_bytes(b"stale installer")
     client._verify_installer_executable()
@@ -936,13 +936,28 @@ def test_install_intent_requires_selection_capabilities(tmp_path: Path) -> None:
 def test_negotiated_capabilities_override_manifest_for_intent_gating(
     tmp_path: Path,
 ) -> None:
-    # v0.12.0 的 manifest 尚未声明新能力，但运行时协商结果包含它们；
-    # 协商结果必须优先，否则运行中的合格 Backend 无法接收选择意图。
+    # manifest 可能落后于运行时：信封 capability_descriptors（available 集）
+    # 必须优先于 manifest 声明，否则运行中的合格 Backend 无法接收选择意图。
+    # negotiated_capabilities 只是 required 回显子集，不能作为可用集——
+    # 带八项 required 的 inspect 之后回显不含 maintenance.v2，ensure 仍须
+    # 正常构造 v2 事件流与选择意图。
+    from vibeocr.classic.runtime_installation import RuntimeCapabilityDescriptor
+
     client = _selection_capable_client(
         tmp_path, capabilities=["runtime.maintenance.v2"]
     )
+    client._capability_descriptors = tuple(
+        RuntimeCapabilityDescriptor(
+            name=name, lifecycle="active", introduced_in="2.7.0"
+        )
+        for name in (
+            "runtime.maintenance.v2",
+            "runtime.component-selection.v1",
+            "runtime.download-sources.v1",
+        )
+    )
     client._negotiated_capabilities = (
-        "runtime.maintenance.v2",
+        "ocr.engine-selection.v1",
         "runtime.component-selection.v1",
         "runtime.download-sources.v1",
     )
@@ -953,6 +968,7 @@ def test_negotiated_capabilities_override_manifest_for_intent_gating(
         install_component_ids=("win-x64-cu126-gpu-runtime",),
         download_source_ids=("tuna-pypi",),
     )
+    assert request["accepted_event_streams"] == ["ndjson.v2"]
     assert request["install_component_ids"] == ["win-x64-cu126-gpu-runtime"]
     assert request["download_source_ids"] == ["tuna-pypi"]
 

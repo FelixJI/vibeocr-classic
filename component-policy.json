@@ -11,9 +11,12 @@
   },
   "required_capabilities": [
     "export.document.v1",
+    "ocr.engine-selection.v1",
     "ocr.recognition.v2",
     "pdf.edit.v2",
     "qrcode.v2",
+    "runtime.component-selection.v1",
+    "runtime.download-sources.v1",
     "runtime.settings.v2"
   ],
   "schema_version": 1

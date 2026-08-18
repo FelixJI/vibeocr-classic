@@ -620,7 +620,19 @@ def _verify_offline_base_smoke(
             )
 
     client = client_factory()
-    client.inspect()
+    # Runtime Host 的 negotiated_capabilities 回显请求的 required 集；不带
+    # required 的 inspect 协商结果为空。用产品组件锁的全部必需能力发起
+    # 协商，installer 内部校验 available ⊇ required（v0.12.1 起含三项
+    # 选择能力），任一缺失会 fail closed。
+    try:
+        required = client.required_capabilities()
+    except Exception:  # noqa: BLE001 - 无锁环境退化为仅三项选择能力
+        required = (
+            "ocr.engine-selection.v1",
+            "runtime.component-selection.v1",
+            "runtime.download-sources.v1",
+        )
+    client.inspect(required_capabilities=required)
     if "runtime.component-selection.v1" not in client.negotiated_capabilities:
         reason = (
             "offline base smoke skipped: bound Runtime "
@@ -751,9 +763,12 @@ def main() -> int:
         required_capabilities = set(lock.get("required_capabilities", []))
         expected_capabilities = {
             "export.document.v1",
+            "ocr.engine-selection.v1",
             "ocr.recognition.v2",
             "pdf.edit.v2",
             "qrcode.v2",
+            "runtime.component-selection.v1",
+            "runtime.download-sources.v1",
             "runtime.settings.v2",
         }
         if required_capabilities != expected_capabilities:

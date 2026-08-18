@@ -68,7 +68,9 @@ def _immediate_invalidation_manager() -> MagicMock:
     return manager
 
 
-def _health_payload(*, with_download_sources: bool = True) -> dict:
+def _health_payload(
+    *, with_download_sources: bool = True, with_model_registry: bool = False
+) -> dict:
     descriptors = [
         {
             "name": "ocr.engine-selection.v1",
@@ -127,6 +129,34 @@ def _health_payload(*, with_download_sources: bool = True) -> dict:
         "runtime.component-selection.v1",
     ]
     if with_download_sources:
+        sources = [
+            {
+                "kind": "package_index",
+                "id": "tuna-pypi",
+                "endpoint": "https://mirrors.tuna.tsinghua.edu.cn/pypi",
+            },
+            {
+                "kind": "package_index",
+                "id": "pypi",
+                "endpoint": "https://pypi.org",
+            },
+        ]
+        if with_model_registry:
+            # Backend 0.13 起 catalog 声明 model_registry 源（huggingface/
+            # modelscope）；设置页必须 catalog 驱动地按 kind 渲染，而不是
+            # 预造 UI 选项。
+            sources += [
+                {
+                    "kind": "model_registry",
+                    "id": "huggingface",
+                    "endpoint": "https://huggingface.co",
+                },
+                {
+                    "kind": "model_registry",
+                    "id": "modelscope",
+                    "endpoint": "https://www.modelscope.cn",
+                },
+            ]
         descriptors.append(
             {
                 "name": "runtime.download-sources.v1",
@@ -135,20 +165,7 @@ def _health_payload(*, with_download_sources: bool = True) -> dict:
                 "deprecated_in": None,
                 "sunset_at": None,
                 "replacement": None,
-                "download_source_catalog": {
-                    "sources": [
-                        {
-                            "kind": "package_index",
-                            "id": "tuna-pypi",
-                            "endpoint": "https://mirrors.tuna.tsinghua.edu.cn/pypi",
-                        },
-                        {
-                            "kind": "package_index",
-                            "id": "pypi",
-                            "endpoint": "https://pypi.org",
-                        },
-                    ]
-                },
+                "download_source_catalog": {"sources": sources},
             }
         )
         capabilities.append("runtime.download-sources.v1")
@@ -383,3 +400,49 @@ def test_save_download_sources_waits_for_settings_snapshot(
     # 未读到 Backend 现有设置前不得全量 PUT（避免覆盖 residency 策略）
     assert adapter.update_calls == []
     assert adapter.fetch_settings_calls == 1
+
+
+def test_model_registry_sources_render_per_kind_from_catalog(
+    selection_controller,
+) -> None:
+    """Backend 0.13 的 catalog 声明 model_registry 源：设置页按 kind 渲染
+    Hugging Face / ModelScope 单选，选择经 Backend Settings 持久化。"""
+    controller, host, adapter, _config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload(with_model_registry=True))
+
+    package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
+    registry_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
+    assert package_combo is not None and registry_combo is not None
+    assert [package_combo.itemText(i) for i in range(package_combo.count())] == [
+        "tuna-pypi",
+        "pypi",
+    ]
+    assert [registry_combo.itemText(i) for i in range(registry_combo.count())] == [
+        "huggingface",
+        "modelscope",
+    ]
+    # 每 kind 独立选择：model_registry 选中 modelscope 不影响 package_index
+    registry_combo.setCurrentIndex(1)
+    # Settings 是全量 PUT：先读到现有快照再保存（C6 守卫语义）
+    controller._on_settings_loaded(SettingsSnapshot())
+
+    controller._on_save_download_sources()
+
+    assert adapter.update_calls
+    saved = adapter.update_calls[-1]
+    # 源集合与顺序无关（每 kind 至多一个）
+    assert set(saved.download_source_ids) == {"tuna-pypi", "modelscope"}
+
+
+def test_model_registry_absent_from_catalog_renders_nothing(
+    selection_controller,
+) -> None:
+    """旧版 Backend（未声明 model_registry）不显示伪选项。"""
+    controller, host, _adapter, _config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload())
+
+    assert host.findChild(QComboBox, "comboDownloadSource_model_registry") is None
+    package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
+    assert package_combo is not None and package_combo.count() == 2

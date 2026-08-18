@@ -120,6 +120,51 @@ def test_velopack_root_resolver_rejects_ambiguous_current_layout(
         VelopackRootResolver(executable).resolve()
 
 
+def test_activate_rejects_current_junction_before_following_forged_layout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """词法 current 为 junction 时不得先解析到外部伪造的完整布局。"""
+
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    portable.mkdir()
+    (portable / "Update.exe").write_bytes(b"updater")
+    (portable / ".portable").write_text("", encoding="utf-8")
+
+    outside_root = tmp_path / "outside"
+    outside_current = outside_root / "current"
+    executable = _write_velopack_layout(outside_root)
+    sentinel = outside_root / "sentinel.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    _directory_reparse(portable / "current", outside_current)
+
+    with pytest.raises(PortableStateError, match="reparse"):
+        activate_portable_state(portable / "current" / executable.name)
+
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not (outside_root / STATE_DIR).exists()
+
+
+def test_activate_rejects_root_junction_before_following_forged_layout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """词法 RootAppDir 为 junction 时不得在其外部目标创建状态。"""
+
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    outside_root = tmp_path / "outside"
+    executable = _write_velopack_layout(outside_root)
+    sentinel = outside_root / "sentinel.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    declared_root = tmp_path / "portable"
+    _directory_reparse(declared_root, outside_root)
+
+    with pytest.raises(PortableStateError, match="reparse"):
+        activate_portable_state(declared_root / "current" / executable.name)
+
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    assert not (outside_root / STATE_DIR).exists()
+
+
 def test_portable_root_resolver_never_falls_back_to_user_dirs(tmp_path, monkeypatch):
     """默认解析固定 portable 根；普通环境变量不能重定向正式状态根。"""
     monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)

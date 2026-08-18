@@ -78,27 +78,41 @@ class VelopackRootResolver:
     executable: Path
 
     def resolve(self) -> Path:
-        content_root = _normalize_executable(self.executable)
+        content_root = _lexical_executable_root(self.executable)
         if content_root.name.casefold() != "current":
-            return content_root
+            if _is_reparse_point(content_root):
+                raise PortableStateError(
+                    "Velopack RootAppDir 不允许经过 reparse point"
+                )
+            return content_root.resolve()
         root = content_root.parent
+        for segment in (root, content_root):
+            if _is_reparse_point(segment):
+                raise PortableStateError(
+                    f"Velopack RootAppDir 不允许经过 reparse point: {segment}"
+                )
         required = (
             content_root / "sq.version",
             root / "Update.exe",
             root / ".portable",
         )
+        reparsed = [path.name for path in required if _is_reparse_point(path)]
+        if reparsed:
+            raise PortableStateError(
+                "Velopack RootAppDir 标记不允许是 reparse point: "
+                + ", ".join(reparsed)
+            )
         missing = [path.name for path in required if not path.is_file()]
         if missing:
             raise PortableStateError(
                 "Velopack RootAppDir 布局含糊，缺少标记: " + ", ".join(missing)
             )
-        if _is_reparse_point(content_root) or _is_reparse_point(root):
-            raise PortableStateError("Velopack RootAppDir 不允许经过 reparse point")
         try:
-            content_root.resolve(strict=True).relative_to(root.resolve(strict=True))
+            canonical_root = root.resolve(strict=True)
+            content_root.resolve(strict=True).relative_to(canonical_root)
         except (OSError, ValueError) as exc:
             raise PortableStateError("Velopack current 已逃逸 RootAppDir") from exc
-        return root.resolve(strict=True)
+        return canonical_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -417,23 +431,24 @@ class AppPaths:
         return self.owned_directory("web/qtwebengine/persistent")
 
 
+def _lexical_executable_root(
+    executable: str | os.PathLike[str] | Path,
+) -> Path:
+    """Return an absolute executable directory without following reparse points."""
+
+    path = Path(os.path.abspath(os.fspath(executable)))
+    if path.suffix.lower() in (".exe", ".app", ".bin") or path.is_file():
+        return path.parent
+    return path
+
+
 def _normalize_executable(executable: str | os.PathLike[str] | Path) -> Path:
-    """将 executable（目录或文件路径）归一化为安装根目录。
+    """Canonicalize an executable file or directory to its containing root."""
 
-    - 如果是文件（如 VibeOCR.exe），取其 parent。
-    - 如果是目录，直接使用。
-
-    文件检测基于后缀名（.exe/.app 等），而非 is_file()——路径可能指向
-    尚未存在的文件（测试或预创建场景）。
-    """
-    p = Path(executable).resolve()
-    # 常见可执行文件后缀 → 取 parent（安装根 = exe 所在目录）
-    if p.suffix.lower() in (".exe", ".app", ".bin"):
-        return p.parent
-    # 已存在的文件也取 parent
-    if p.is_file():
-        return p.parent
-    return p
+    path = Path(executable).resolve()
+    if path.suffix.lower() in (".exe", ".app", ".bin") or path.is_file():
+        return path.parent
+    return path
 
 
 def resolve_app_paths(

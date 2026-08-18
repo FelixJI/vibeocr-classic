@@ -167,10 +167,14 @@ Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
 & $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
+$velopackProduct = Join-Path $build 'velopack-product'
+& $buildPython (Join-Path $root 'scripts/prepare_velopack_input.py') `
+  $product $velopackProduct
+if ($LASTEXITCODE -ne 0) { throw 'Velopack immutable input preparation failed' }
 $velopackOutput = Join-Path $build 'velopack'
 New-Item -ItemType Directory -Path $velopackOutput -Force | Out-Null
 dnx --yes vpk@1.2.0 -- pack `
-  --packId VibeOCRClassic --packVersion $Version --packDir $product `
+  --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
   --packAuthors FelixJI --packTitle VibeOCRClassic `
   --icon (Join-Path $root 'resources/app_icon.ico') `
@@ -180,6 +184,20 @@ if ($LASTEXITCODE -ne 0) { throw 'Velopack release build failed' }
   $velopackOutput `
   --version $Version
 if ($LASTEXITCODE -ne 0) { throw 'Velopack release verification failed' }
+$velopackOldOutput = Join-Path $build 'velopack-e2e-old'
+New-Item -ItemType Directory -Path $velopackOldOutput -Force | Out-Null
+dnx --yes vpk@1.2.0 -- pack `
+  --packId VibeOCRClassic --packVersion 0.0.1 --packDir $velopackProduct `
+  --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
+  --packAuthors FelixJI --packTitle VibeOCRClassic `
+  --icon (Join-Path $root 'resources/app_icon.ico') `
+  --outputDir $velopackOldOutput
+if ($LASTEXITCODE -ne 0) { throw 'Velopack old-version E2E build failed' }
+& $buildPython (Join-Path $root 'scripts/verify_velopack_portable_e2e.py') `
+  --old-portable (Join-Path $velopackOldOutput 'VibeOCRClassic-win-Portable.zip') `
+  --new-feed $velopackOutput --target-version $Version `
+  --work-dir (Join-Path $build 'velopack-portable-e2e') --timeout 1200
+if ($LASTEXITCODE -ne 0) { throw 'Velopack Portable two-version E2E failed' }
 # Portable-only：用户可见交付只有 Portable.zip；NUPKG/feed 服务 Velopack
 # 自更新。vpk 生成的 Setup.exe 留在中间目录，不进入发布资产。
 foreach ($name in @(

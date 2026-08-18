@@ -15,7 +15,7 @@ def _portable_paths(state_root: Path) -> AppPaths:
         install_root=state_root.parent,
         state_root=state_root,
         data_root=state_root / "data",
-        runtime_root=state_root / "runtimes",
+        runtime_root=state_root / "runtime",
         model_cache_root=state_root / "models",
         output_root=state_root / "output",
         config_file=state_root / "config" / "app_settings.json",

@@ -17,6 +17,7 @@
     "qrcode.v2",
     "runtime.component-selection.v1",
     "runtime.download-sources.v1",
+    "runtime.maintenance.v2",
     "runtime.settings.v2"
   ],
   "schema_version": 1

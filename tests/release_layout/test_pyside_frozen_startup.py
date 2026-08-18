@@ -89,7 +89,14 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
     assert captured["env"]["PYTHONUTF8"] == "1"
     assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == sys.executable
-    assert captured["env"]["VIBEOCR_CLASSIC_DATA_ROOT"] == str(tmp_path / ".smoke-data")
+    smoke_data = Path(captured["env"]["VIBEOCR_CLASSIC_DATA_ROOT"])
+    assert smoke_data.parent == tmp_path
+    assert smoke_data.name.startswith(".smoke-data-")
+    assert captured["env"]["VIBEOCR_CLASSIC_TEST_MODE"] == "artifact-smoke"
+    assert (
+        captured["env"]["VIBEOCR_CLASSIC_TEST_NONCE"]
+        == smoke_data.name.removeprefix(".smoke-data-")
+    )
     smoke_pythonpath = Path(captured["env"]["PYTHONPATH"])
     assert ".smoke-runtime" in smoke_pythonpath.parts
     assert smoke_pythonpath.parts[-1] == "site-packages"
@@ -343,6 +350,32 @@ def test_offline_base_smoke_enforces_offline_intent_and_reuse(
         for proxies in seen_proxies
         for proxy in proxies.values()
     )
+
+
+def test_offline_base_smoke_runs_supervisor_rapidocr_pdf_probe_twice(
+    tmp_path: Path,
+) -> None:
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=(
+            "runtime.maintenance.v2",
+            "runtime.component-selection.v1",
+        ),
+        root=tmp_path,
+    )
+    probes: list[Path] = []
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path,
+        tmp_path / "installer.exe",
+        client_factory=lambda: client,
+        runtime_probe=lambda _launch, root: probes.append(root),
+    )
+
+    assert result == "enforced"
+    assert probes == [tmp_path, tmp_path]
 
 
 def test_offline_base_smoke_detects_rewrite_on_reensure(

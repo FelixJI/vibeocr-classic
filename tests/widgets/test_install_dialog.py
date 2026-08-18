@@ -256,6 +256,26 @@ class TestBuildMaintenanceDetail:
         assert "win-x64-cpu-pinned-dep" in rendered.detail
         assert "请求：win-x64-cpu-document-parsing" in rendered.detail
 
+    def test_effective_download_source_is_rendered(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=8,
+            operation="ensure",
+            operation_state="running",
+            phase="install_profile",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-18T00:00:00Z",
+            requested_download_source_ids=("tuna-pypi",),
+            effective_download_source_ids=("official-pypi",),
+        )
+
+        rendered = build_maintenance_detail(update)
+
+        assert "请求源：tuna-pypi" in rendered.detail
+        assert "实际源：official-pypi" in rendered.detail
+        assert "设置修改仅影响下一次操作" in rendered.detail
+
 
 class TestOnProgress:
     def test_progress_updates_stage_and_log(self, qapp, tmp_path):

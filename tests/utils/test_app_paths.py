@@ -7,6 +7,8 @@
 - get_install_root 在 frozen / 源码模式下的不同根。
 """
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,8 +23,10 @@ from vibeocr.classic.app_paths import (
     PROFILES_DIR,
     RUNTIME_DIR,
     STATE_DIR,
+    EnvironmentTestDataRootResolver,
     PortableRootResolver,
     PortableStateError,
+    VelopackRootResolver,
     activate_portable_state,
     ensure_portable_state_usable,
     get_bundle_root,
@@ -31,6 +35,18 @@ from vibeocr.classic.app_paths import (
     get_install_root,
     resolve_app_paths,
 )
+
+
+def _directory_reparse(link: Path, target: Path) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 # ---------------------------------------------------------------------------
@@ -72,22 +88,72 @@ def test_resolve_app_paths_production_paths(tmp_path, monkeypatch):
     assert paths.config_file == state_root / CONFIG_DIR / CONFIG_FILENAME
 
 
+def _write_velopack_layout(root: Path) -> Path:
+    current = root / "current"
+    current.mkdir(parents=True)
+    (current / "sq.version").write_text("{}", encoding="utf-8")
+    (current / "VibeOCR.exe").write_bytes(b"app")
+    (root / "Update.exe").write_bytes(b"updater")
+    (root / ".portable").write_text("", encoding="utf-8")
+    return current / "VibeOCR.exe"
+
+
+def test_velopack_root_resolver_uses_stable_root_app_dir(tmp_path: Path) -> None:
+    executable = _write_velopack_layout(tmp_path / "portable")
+
+    assert VelopackRootResolver(executable).resolve() == executable.parents[1]
+
+
+@pytest.mark.parametrize("missing", ["sq.version", "Update.exe", ".portable"])
+def test_velopack_root_resolver_rejects_ambiguous_current_layout(
+    tmp_path: Path, missing: str
+) -> None:
+    executable = _write_velopack_layout(tmp_path / "portable")
+    target = (
+        executable.parent / missing
+        if missing == "sq.version"
+        else executable.parents[1] / missing
+    )
+    target.unlink()
+
+    with pytest.raises(PortableStateError, match="Velopack"):
+        VelopackRootResolver(executable).resolve()
+
+
 def test_portable_root_resolver_never_falls_back_to_user_dirs(tmp_path, monkeypatch):
-    """默认解析固定 portable 根；环境注入缝整体替换状态根。"""
+    """默认解析固定 portable 根；普通环境变量不能重定向正式状态根。"""
     monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
     portable = tmp_path / "portable"
     assert PortableRootResolver(portable).resolve() == (portable / "state").resolve()
 
-    injected = tmp_path / "injected-state"
+    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(tmp_path / "injected-state"))
+    assert PortableRootResolver(portable).resolve() == (portable / "state").resolve()
+
+
+def test_explicit_test_override_requires_mode_and_matching_nonce(
+    tmp_path, monkeypatch
+):
+    nonce = "a" * 32
+    injected = tmp_path / f"smoke-state-{nonce}"
     monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(injected))
-    assert PortableRootResolver(portable).resolve() == injected.resolve()
+    monkeypatch.setenv("VIBEOCR_CLASSIC_TEST_MODE", "artifact-smoke")
+    monkeypatch.setenv("VIBEOCR_CLASSIC_TEST_NONCE", nonce)
+    paths = resolve_app_paths(
+        tmp_path / "install",
+        profile="production",
+        data_root_resolver=EnvironmentTestDataRootResolver.from_environment(),
+    )
+    assert paths.state_root == injected.resolve()
+    assert paths.config_file.parent == (injected / CONFIG_DIR).resolve()
 
 
-def test_resolve_app_paths_env_override_replaces_state_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(tmp_path / "smoke-state"))
-    paths = resolve_app_paths(tmp_path / "install", profile="production")
-    assert paths.state_root == (tmp_path / "smoke-state").resolve()
-    assert paths.config_file.parent == (tmp_path / "smoke-state" / CONFIG_DIR).resolve()
+def test_test_override_rejects_ordinary_environment_variable(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(tmp_path / "outside"))
+    monkeypatch.delenv("VIBEOCR_CLASSIC_TEST_MODE", raising=False)
+    monkeypatch.delenv("VIBEOCR_CLASSIC_TEST_NONCE", raising=False)
+
+    with pytest.raises(PortableStateError, match="test-only"):
+        EnvironmentTestDataRootResolver.from_environment()
 
 
 def test_resolve_app_paths_production_all_absolute(tmp_path):
@@ -359,10 +425,7 @@ def test_ensure_portable_state_rejects_state_declared_as_symlink(tmp_path, monke
     redirected = tmp_path / "redirected"
     redirected.mkdir()
     declared = portable / STATE_DIR
-    try:
-        declared.symlink_to(redirected, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("platform cannot create directory symlinks")
+    _directory_reparse(declared, redirected)
     # 解析后仍在 tmp 内（可写），但声明路径是重定向 → 必须拒绝
     with pytest.raises(PortableStateError, match="junction/symlink"):
         ensure_portable_state_usable(declared, portable_root=portable)
@@ -428,7 +491,7 @@ def test_activate_portable_state_builds_state_tree(tmp_path, monkeypatch):
         "config",
         "cache",
         "logs",
-        "runtimes",
+        "runtime",
         "models",
         "output",
         "update",
@@ -444,15 +507,56 @@ def test_activate_portable_state_builds_state_tree(tmp_path, monkeypatch):
     )
 
 
-def test_activate_portable_state_env_override_skips_containment(tmp_path, monkeypatch):
-    """注入缝仍跑可写探针，但不做 portable 根 containment（任意可写目录）。"""
-    injected = tmp_path / "smoke" / "state"
-    monkeypatch.setenv("VIBEOCR_CLASSIC_DATA_ROOT", str(injected))
+def test_activate_portable_state_migrates_current_state_to_root_app_dir(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    executable = _write_velopack_layout(tmp_path / "portable")
+    legacy = executable.parent / "state"
+    (legacy / "config").mkdir(parents=True)
+    (legacy / "config" / "app_settings.json").write_text(
+        '{"language": "zh-CN"}', encoding="utf-8"
+    )
 
-    paths = activate_portable_state(tmp_path / "elsewhere")
+    paths = activate_portable_state(executable)
 
-    assert paths.state_root == injected.resolve()
-    assert (injected / "logs").is_dir()
+    assert paths.install_root == executable.parents[1]
+    assert paths.state_root == executable.parents[1] / "state"
+    assert paths.config_file.read_text(encoding="utf-8") == '{"language": "zh-CN"}'
+    assert legacy.is_dir()  # 源在 current 被更新替换前保持可恢复。
+
+
+def test_activate_portable_state_migrates_legacy_runtimes_name(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    state = tmp_path / "portable/state"
+    legacy = state / "runtimes"
+    legacy.mkdir(parents=True)
+    (legacy / "runtime-id.txt").write_text("bound-runtime", encoding="utf-8")
+
+    paths = activate_portable_state(tmp_path / "portable")
+
+    assert paths.runtime_root == state / "runtime"
+    assert (paths.runtime_root / "runtime-id.txt").read_text(encoding="utf-8") == (
+        "bound-runtime"
+    )
+    assert legacy.is_dir()
+
+
+@pytest.mark.parametrize("relative", ["config", "logs", "cache", "models", "runtime"])
+def test_activate_portable_state_rejects_reparse_in_each_writable_root(
+    tmp_path, monkeypatch, relative: str
+):
+    monkeypatch.delenv("VIBEOCR_CLASSIC_DATA_ROOT", raising=False)
+    portable = tmp_path / "portable"
+    state = portable / "state"
+    state.mkdir(parents=True)
+    outside = tmp_path / f"outside-{relative}"
+    outside.mkdir()
+    redirected = state / relative
+    _directory_reparse(redirected, outside)
+
+    with pytest.raises(PortableStateError, match="junction/symlink|reparse"):
+        activate_portable_state(portable)
 
 
 def test_activate_portable_state_fail_closed_leaves_no_partial_layout(

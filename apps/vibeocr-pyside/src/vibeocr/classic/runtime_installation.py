@@ -17,35 +17,19 @@ import threading
 import time
 import zipfile
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
-
-class RuntimeInstallerClientError(RuntimeError):
-    """The installer could not complete or returned an invalid envelope."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        canonical_code: str | None = None,
-        category: str | None = None,
-        retryable: bool = False,
-        retry_after: int | None = None,
-        detail: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.canonical_code = canonical_code
-        self.category = category
-        self.retryable = retryable
-        self.retry_after = retry_after
-        self.detail = dict(detail or {})
-
-
-class RuntimeInstallerCancelled(RuntimeInstallerClientError):
-    """The caller cancelled an in-progress installer operation."""
+from vibeocr.classic.runtime_maintenance import (
+    ProductMaintenanceBusy,
+    RuntimeInstallerCancelled,
+    RuntimeInstallerClientError,
+    RuntimeMaintenanceRequestBuilder,
+    get_product_maintenance_coordinator,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,6 +541,13 @@ class RuntimeInstallerClient:
             "operation": operation,
             "accelerator": self.accelerator,
         }
+        selection = RuntimeMaintenanceRequestBuilder(
+            self._available_capabilities()
+        ).selection_fields(
+            operation=operation,
+            install_component_ids=install_component_ids,
+            download_source_ids=download_source_ids,
+        )
         if self._supports_capability("runtime.maintenance.v2"):
             request["accepted_event_streams"] = ["ndjson.v2"]
             if operation_id is not None:
@@ -565,27 +556,7 @@ class RuntimeInstallerClient:
                 if not self._supports_capability("runtime.component-repair.v1"):
                     raise RuntimeInstallerClientError("Runtime 不支持按组件 repair")
                 request["component_ids"] = list(component_ids)
-            if install_component_ids is not None or download_source_ids is not None:
-                if operation != "ensure":
-                    raise RuntimeInstallerClientError(
-                        "install_component_ids/download_source_ids 仅用于 ensure"
-                    )
-                if download_source_ids is not None and not download_source_ids:
-                    raise RuntimeInstallerClientError(
-                        "download_source_ids 不能发送空列表；空选择应省略字段"
-                    )
-                if install_component_ids is not None and not self._supports_capability(
-                    "runtime.component-selection.v1"
-                ):
-                    raise RuntimeInstallerClientError("Runtime 不支持组件手动选择")
-                if download_source_ids is not None and not self._supports_capability(
-                    "runtime.download-sources.v1"
-                ):
-                    raise RuntimeInstallerClientError("Runtime 不支持下载源选择")
-                if install_component_ids is not None:
-                    request["install_component_ids"] = list(install_component_ids)
-                if download_source_ids is not None:
-                    request["download_source_ids"] = list(download_source_ids)
+            request.update(selection)
             if required_capabilities:
                 if not self._supports_capability("runtime.capability-metadata.v1"):
                     raise RuntimeInstallerClientError(
@@ -624,6 +595,19 @@ class RuntimeInstallerClient:
             return False
         return isinstance(capabilities, list) and capability in capabilities
 
+    def _available_capabilities(self) -> tuple[str, ...]:
+        if self._capability_descriptors:
+            return tuple(item.name for item in self._capability_descriptors)
+        try:
+            capabilities = self._manifest().get("capabilities", [])
+        except RuntimeInstallerClientError:
+            return ()
+        if not isinstance(capabilities, list) or any(
+            not isinstance(item, str) for item in capabilities
+        ):
+            return ()
+        return tuple(capabilities)
+
     def _invoke_control(
         self, request: dict[str, Any], *, timeout: float = 30
     ) -> dict[str, Any]:
@@ -657,6 +641,27 @@ class RuntimeInstallerClient:
                 fallback=result.stderr.strip() or "Runtime 控制命令失败",
             )
         return envelope
+
+    @contextmanager
+    def _maintenance_operation(
+        self, cancel_event: threading.Event | None = None
+    ):
+        effective_cancel = cancel_event or threading.Event()
+        terminal = threading.Event()
+        try:
+            lease = get_product_maintenance_coordinator(
+                self.product_root / "locks" / "product-maintenance.lock"
+            ).begin_runtime_maintenance(
+                cancel=effective_cancel.set,
+                wait_terminal=terminal.wait,
+            )
+        except ProductMaintenanceBusy as exc:
+            raise RuntimeInstallerClientError(str(exc)) from exc
+        try:
+            yield effective_cancel
+        finally:
+            lease.release()
+            terminal.set()
 
     @staticmethod
     def _error_from_wire(
@@ -799,19 +804,13 @@ class RuntimeInstallerClient:
         install_component_ids: tuple[str, ...] | None = None,
         download_source_ids: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
-        if install_component_ids is not None or download_source_ids is not None:
-            if download_source_ids is not None and not download_source_ids:
-                raise RuntimeInstallerClientError(
-                    "download_source_ids 不能发送空列表；空选择应省略字段"
-                )
-            if install_component_ids is not None and not self._supports_capability(
-                "runtime.component-selection.v1"
-            ):
-                raise RuntimeInstallerClientError("Runtime 不支持组件手动选择")
-            if download_source_ids is not None and not self._supports_capability(
-                "runtime.download-sources.v1"
-            ):
-                raise RuntimeInstallerClientError("Runtime 不支持下载源选择")
+        selection = RuntimeMaintenanceRequestBuilder(
+            self._available_capabilities()
+        ).selection_fields(
+            operation="retry",
+            install_component_ids=install_component_ids,
+            download_source_ids=download_source_ids,
+        )
         request: dict[str, Any] = {
             "request_kind": "command",
             "command_id": command_id or str(uuid4()),
@@ -819,11 +818,9 @@ class RuntimeInstallerClient:
             "target_operation_id": operation_id,
             "new_operation_id": new_operation_id or str(uuid4()),
         }
-        if install_component_ids is not None:
-            request["install_component_ids"] = list(install_component_ids)
-        if download_source_ids is not None:
-            request["download_source_ids"] = list(download_source_ids)
-        return self._invoke_control(request, timeout=3600)
+        request.update(selection)
+        with self._maintenance_operation():
+            return self._invoke_control(request, timeout=3600)
 
     def profile_descriptor(self) -> RuntimeProfileDescriptor:
         manifest = self._manifest()
@@ -1228,17 +1225,18 @@ class RuntimeInstallerClient:
             "runtime.maintenance.v2"
         ):
             required_capabilities = ("runtime.maintenance.v2",)
-        return self._launch_from(
-            self._invoke(
-                "ensure",
-                progress=progress,
-                cancel_event=cancel_event,
-                operation_id=operation_id,
-                install_component_ids=install_component_ids,
-                download_source_ids=download_source_ids,
-                required_capabilities=required_capabilities,
+        with self._maintenance_operation(cancel_event) as effective_cancel:
+            return self._launch_from(
+                self._invoke(
+                    "ensure",
+                    progress=progress,
+                    cancel_event=effective_cancel,
+                    operation_id=operation_id,
+                    install_component_ids=install_component_ids,
+                    download_source_ids=download_source_ids,
+                    required_capabilities=required_capabilities,
+                )
             )
-        )
 
     def repair(
         self,
@@ -1256,16 +1254,17 @@ class RuntimeInstallerClient:
                 "runtime.maintenance.v2",
                 *(("runtime.component-repair.v1",) if component_ids else ()),
             )
-        return self._launch_from(
-            self._invoke(
-                "repair",
-                progress=progress,
-                cancel_event=cancel_event,
-                operation_id=operation_id,
-                component_ids=component_ids,
-                required_capabilities=required_capabilities,
+        with self._maintenance_operation(cancel_event) as effective_cancel:
+            return self._launch_from(
+                self._invoke(
+                    "repair",
+                    progress=progress,
+                    cancel_event=effective_cancel,
+                    operation_id=operation_id,
+                    component_ids=component_ids,
+                    required_capabilities=required_capabilities,
+                )
             )
-        )
 
     @staticmethod
     def _launch_from(value: dict[str, Any]) -> RuntimeLaunch:

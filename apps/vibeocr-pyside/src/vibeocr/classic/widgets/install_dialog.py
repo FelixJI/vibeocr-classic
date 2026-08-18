@@ -26,6 +26,7 @@ from vibeocr.classic.runtime_installation import (
     RuntimeMaintenanceUpdate,
     RuntimeProfileDescriptor,
 )
+from vibeocr.classic.runtime_maintenance import RuntimeMaintenanceViewModel
 from vibeocr.classic.utils.dialog_workers import track_dialog_worker
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,10 @@ def build_maintenance_detail(
     phase = _PHASE_LABELS.get(update.phase, update.phase)
     state = _STATE_LABELS.get(update.operation_state, update.operation_state)
     scope_note = _component_scope_note(update)
+    view = RuntimeMaintenanceViewModel.from_update(update)
+    source_note = view.source_summary
+    if source_note:
+        source_note += f"；{view.next_operation_note}"
     if update.has_determinate_progress:
         assert update.progress_total is not None
         assert update.progress_current is not None
@@ -129,6 +134,8 @@ def build_maintenance_detail(
             detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
         if scope_note:
             detail += f" · {scope_note}"
+        if source_note:
+            detail += f" · {source_note}"
         return MaintenanceProgressDetail(
             detail=detail,
             phase_label=phase,
@@ -148,6 +155,8 @@ def build_maintenance_detail(
         detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
     if scope_note:
         detail += f" · {scope_note}"
+    if source_note:
+        detail += f" · {source_note}"
     return MaintenanceProgressDetail(
         detail=detail, phase_label=phase, state_label=state
     )

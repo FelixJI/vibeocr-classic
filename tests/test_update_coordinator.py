@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass
 
 from vibeocr.classic.services.update_coordinator import (
@@ -12,6 +13,7 @@ from vibeocr.classic.services.update_transport import (
     build_update_source_candidates,
     resolve_update_source_candidates,
 )
+from vibeocr.classic.runtime_maintenance import ProductMaintenanceCoordinator
 
 
 @dataclass
@@ -53,6 +55,18 @@ class _Manager:
         assert restart is True
         assert restart_args is None
         self.apply_started = True
+
+
+def test_installed_version_reads_local_velopack_state_without_checking_feed():
+    manager = _Manager(portable=True)
+    coordinator = VelopackUpdateCoordinator(
+        source_candidates=("http://127.0.0.1:9/",),
+        manager_factory=lambda _source: manager,
+    )
+
+    assert asyncio.run(coordinator.installed_version()) == "0.10.4"
+    assert manager.downloaded is False
+    assert manager.apply_started is False
 
 
 def test_coordinator_exposes_available_update_and_starts_apply():
@@ -204,6 +218,97 @@ def test_coordinator_cancellation_does_not_start_apply():
     assert result.status is UpdateApplyStatus.CANCELLED
     assert manager.downloaded is False
     assert manager.apply_started is False
+
+
+def test_velopack_apply_cancels_runtime_and_waits_for_terminal(tmp_path):
+    manager = _Manager()
+    maintenance = ProductMaintenanceCoordinator(
+        tmp_path / "state/locks/product-maintenance.lock"
+    )
+    cancelled = threading.Event()
+    terminal = threading.Event()
+    runtime = maintenance.begin_runtime_maintenance(
+        cancel=cancelled.set,
+        wait_terminal=terminal.wait,
+    )
+
+    def finish_runtime():
+        assert cancelled.wait(2)
+        runtime.release()
+        terminal.set()
+
+    thread = threading.Thread(target=finish_runtime)
+    thread.start()
+    coordinator = VelopackUpdateCoordinator(
+        source_candidates=("https://updates.invalid/",),
+        manager_factory=lambda _source: manager,
+        maintenance_coordinator=maintenance,
+    )
+    asyncio.run(coordinator.check())
+
+    result = asyncio.run(coordinator.download_and_apply())
+    thread.join(timeout=2)
+
+    assert result.status is UpdateApplyStatus.APPLY_STARTED
+    assert cancelled.is_set()
+    assert manager.apply_started is True
+    assert maintenance.owner.value == "Idle"
+
+
+def test_velopack_apply_fails_before_download_when_installer_never_terminates(
+    tmp_path,
+):
+    manager = _Manager()
+    maintenance = ProductMaintenanceCoordinator(
+        tmp_path / "state/locks/product-maintenance.lock"
+    )
+    runtime = maintenance.begin_runtime_maintenance(
+        cancel=lambda: None,
+        wait_terminal=lambda _timeout: False,
+    )
+    coordinator = VelopackUpdateCoordinator(
+        source_candidates=("https://updates.invalid/",),
+        manager_factory=lambda _source: manager,
+        maintenance_coordinator=maintenance,
+    )
+    asyncio.run(coordinator.check())
+    try:
+        result = asyncio.run(coordinator.download_and_apply())
+    finally:
+        runtime.release()
+
+    assert result.status is UpdateApplyStatus.FAILED
+    assert "terminal" in result.detail
+    assert manager.downloaded is False
+    assert manager.apply_started is False
+
+
+def test_velopack_apply_releases_update_owner_when_download_raises(tmp_path):
+    class FailingManager(_Manager):
+        def download_updates(self, _info, progress_callback=None) -> None:
+            raise RuntimeError("download failed")
+
+    manager = FailingManager()
+    maintenance = ProductMaintenanceCoordinator(
+        tmp_path / "state/locks/product-maintenance.lock"
+    )
+    coordinator = VelopackUpdateCoordinator(
+        source_candidates=("https://updates.invalid/",),
+        manager_factory=lambda _source: manager,
+        maintenance_coordinator=maintenance,
+    )
+    asyncio.run(coordinator.check())
+
+    result = asyncio.run(coordinator.download_and_apply())
+
+    assert result.status is UpdateApplyStatus.FAILED
+    assert "download failed" in result.detail
+    assert maintenance.owner.value == "Idle"
+    retry = maintenance.begin_runtime_maintenance(
+        cancel=lambda: None,
+        wait_terminal=lambda _timeout: True,
+    )
+    retry.release()
 
 
 def test_feed_candidate_order_preserves_network_semantics():

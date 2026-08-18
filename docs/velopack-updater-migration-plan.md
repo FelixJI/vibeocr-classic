@@ -1,49 +1,48 @@
-# VibeOCR Classic Velopack 更新方案
+# VibeOCR Classic Velopack Portable 更新方案
 
 ## 当前状态
 
-VibeOCR Classic 已完全切换到 Velopack。安装版通过 `UpdateManager` 检查、下载并应用 full nupkg；
-免安装版不自动下载或启动 Setup，而是在界面中提示用户从 Release 获取 Setup 或 Portable。
+Classic 只发布 Velopack Portable。用户解压 `VibeOCRClassic-win-Portable.zip` 后从稳定
+`RootAppDir` 启动；`current` 是 Velopack 可替换的只读内容目录，产品拥有的配置、日志、缓存、
+模型与 Runtime 均位于 `RootAppDir/state`。不得把 `current` 当成稳定产品根，也不得回退
+LocalAppData 或系统 Temp 保存产品状态。
 
-旧 ZIP 更新器、独立 `updater.exe`、replacer、启动健康文件和 Setup 下载桥接均已删除。由于项目仍处于
-开发阶段，不再保留旧版本自动升级到 Velopack 安装版的兼容窗口。
+旧 ZIP updater、独立 `updater.exe`、replacer、Setup 下载桥接与公开 Setup 资产均已删除。
 
-## 保留的稳定接口
+## 稳定接口与迁移
 
-- UI 只依赖 `UpdateCoordinator`，不直接操作网络或 Velopack SDK。
-- `UpdateTransport` 负责 direct、GitHub URL-prefix 代理与 HTTP(S) forward proxy 路由。
-- forward proxy 无法由 SDK 直接使用时，先流式下载并校验 feed/full nupkg，再交给 Velopack 的
-  `HttpSource` 应用。
-- 稳定数据根迁移独立于应用更新：旧数据 copy/verify/promote，源目录不自动删除，marker 保证幂等。
+- `VelopackRootResolver` 只在 `current/sq.version`、根级 `Update.exe` 与 `.portable` marker
+  一致时把 frozen executable 映射到稳定 `RootAppDir`；含糊布局 fail closed。
+- `AppPaths` 是所有产品可变目录的唯一接口，逐段拒绝 junction/symlink/reparse point。
+- 旧 `current/state` 与预发布 `state/runtimes` 采用 copy/逐文件验证/atomic promote；源目录
+  保留，目标存在时幂等复用。唯一正式 Runtime 路径是 `state/runtime`。
+- 环境状态根 override 仅供 artifact smoke，必须同时满足显式 test mode、随机 nonce 与
+  目标目录名绑定；普通启动环境不能重定向状态根。
+- UI 只依赖 `UpdateCoordinator`。Runtime Installer 与 App Update 共享
+  `ProductMaintenanceCoordinator`：更新开始前取消并等待 installer 子进程终态，持有更新
+  owner 时 ensure/retry/repair fail closed，所有成功、失败和取消出口释放 owner/文件锁。
 
 ## 运行态
 
-1. installed：检查 feed；有更新时由 Velopack 下载并 apply，重启后生效。
-2. portable/not-installed：返回可诊断提示，不自动下载 Setup，不退出当前应用。
-3. 网络失败、校验失败、取消或空间不足：保留当前版本与已完成的数据迁移状态。
+1. Portable 使用同一 Velopack `check/download/apply/restart` 流程；full nupkg 和 feed 是机器
+   更新资产，不是用户安装入口。
+2. 更新只替换 `current`，`RootAppDir/state` 原样保留；移动整个 Portable 根后重新解析新位置。
+3. 网络、校验、取消、空间或 installer 终态等待失败时保留当前版本并 fail closed。
 
-启动健康回退不是强制能力，本方案不额外实现应用级 backup/rollback；Velopack 自身负责安装事务。
-
-## 发布契约
+## 发布与验收契约
 
 正式候选精确包含：
 
 - `VibeOCRClassic-{version}-full.nupkg`
-- `VibeOCRClassic-win-Setup.exe`
-- `VibeOCRClassic-win-Setup.exe.sha256`
 - `VibeOCRClassic-win-Portable.zip`
 - `releases.win.json`
 - `component-lock.json`
 - `frontend-protocol-lock.json`
 - `SBOM.spdx.json`
 
-额外资产 fail closed。构建先生成并验证 PyInstaller onedir 闭包，再由固定的 Velopack CLI 打包；
-release smoke 同时验证精确资产集合和 feed 对 full nupkg 的版本、大小与摘要绑定。
+构建先验证 PyInstaller onedir 和 offline base Runtime，再以固定 Velopack CLI 生成真实旧、新
+两个版本。Portable E2E 从旧 ZIP 启动，通过 loopback HTTP feed 完成 check/download/apply，
+等待重启后的新版本写出证据，并验证 `current` 被替换、`state/{config,logs,cache,models,runtime}`
+保留；随后停止 feed、移动整个根并离线重启。静态 feed 或 mock 只用于单元契约，不能替代该 E2E。
 
-## 验收
-
-- installed 的 check/apply/progress/cancel/error 路径通过聚焦测试。
-- direct、URL-prefix、HTTP forward proxy 和 HTTPS CONNECT 路径通过真实 loopback 测试。
-- portable 路径不触发 Setup 下载或进程启动。
-- 发布候选不含 legacy ZIP、独立 updater 或健康回退文件。
-- PR 的完整 quality、release build、frozen smoke 与 release smoke 通过。
+完整门禁以 `.ci/project.json` 的 quality、e2e、release build 与 release smoke 为准。

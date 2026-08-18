@@ -121,7 +121,8 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert velopack_index > binding_index
     assert "--packId VibeOCRClassic" in script
     assert "--packVersion $Version" in script
-    assert "--packDir $product" in script
+    assert "prepare_velopack_input.py" in script
+    assert "--packDir $velopackProduct" in script
     assert "--mainExe VibeOCR.exe" in script
     assert "--channel win" in script
     assert "--runtime win-x64" in script
@@ -133,6 +134,25 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "requirements-build.lock" in script
     assert script.index("uv venv --python") < script.index("& $buildPython")
     assert "updater.exe" not in script
+    assert script.count("dnx --yes vpk@1.2.0 -- pack") == 2
+    assert "--packVersion 0.0.1" in script
+    assert "verify_velopack_portable_e2e.py" in script
+    assert "--old-portable" in script
+    assert "--new-feed $velopackOutput" in script
+
+    e2e = (ROOT / "scripts" / "verify_velopack_portable_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    entry_script = (ROOT / "scripts" / "classic_release_entry.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ThreadingHTTPServer" in e2e
+    assert "subprocess.Popen" in e2e
+    assert "old-content-" in e2e
+    assert "shutil.move" in e2e
+    assert "VIBEOCR_SELF_TEST_VELOPACK_UPDATE" in e2e
+    assert "probe_runtime_launch" in entry_script
+    assert "client.ensure(install_component_ids=())" in entry_script
 
 
 def test_release_contract_publishes_only_exact_velopack_assets() -> None:

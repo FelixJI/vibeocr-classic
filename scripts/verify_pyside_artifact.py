@@ -6,12 +6,24 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import struct
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+
+def _authorize_smoke_data_root(environment: dict[str, str], root: Path) -> Path:
+    """Install the test-only cross-process data-root override with a nonce."""
+
+    nonce = secrets.token_hex(16)
+    data_root = root / f".smoke-data-{nonce}"
+    environment["VIBEOCR_CLASSIC_DATA_ROOT"] = str(data_root)
+    environment["VIBEOCR_CLASSIC_TEST_MODE"] = "artifact-smoke"
+    environment["VIBEOCR_CLASSIC_TEST_NONCE"] = nonce
+    return data_root
 
 
 def _verify_embedded_app_icon(executable: Path, icon: Path) -> None:
@@ -250,7 +262,7 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
     env["VIBEOCR_STARTUP_TRACE"] = str(trace)
     env["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
     env["VIBEOCR_SELF_TEST_PYTHON"] = str(smoke_python)
-    env["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
+    smoke_data = _authorize_smoke_data_root(env, root)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
@@ -330,6 +342,7 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
         stdout_log.unlink(missing_ok=True)
         stderr_log.unlink(missing_ok=True)
         shutil.rmtree(smoke_root, ignore_errors=True)
+        shutil.rmtree(smoke_data, ignore_errors=True)
 
 
 def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
@@ -344,7 +357,7 @@ def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
     env = os.environ.copy()
     env["VIBEOCR_SELF_TEST_WEBENGINE"] = "1"
     env["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
-    env["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
+    smoke_data = _authorize_smoke_data_root(env, root)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QT_OPENGL"] = "software"
     env["QT_QUICK_BACKEND"] = "software"
@@ -392,6 +405,7 @@ def _verify_frozen_webengine(root: Path, timeout_seconds: float = 30.0) -> None:
         result_file.unlink(missing_ok=True)
         stdout_log.unlink(missing_ok=True)
         stderr_log.unlink(missing_ok=True)
+        shutil.rmtree(smoke_data, ignore_errors=True)
 
 
 def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
@@ -405,7 +419,7 @@ def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
     environment = os.environ.copy()
     environment["VIBEOCR_SELF_TEST_PDF"] = "1"
     environment["VIBEOCR_SELF_TEST_RESULT"] = str(result_file)
-    environment["VIBEOCR_CLASSIC_DATA_ROOT"] = str(root / ".smoke-data")
+    smoke_data = _authorize_smoke_data_root(environment, root)
     environment.setdefault("QT_QPA_PLATFORM", "offscreen")
     try:
         with (
@@ -440,6 +454,7 @@ def _verify_frozen_pdf(root: Path, timeout_seconds: float = 30.0) -> None:
         result_file.unlink(missing_ok=True)
         stdout_log.unlink(missing_ok=True)
         stderr_log.unlink(missing_ok=True)
+        shutil.rmtree(smoke_data, ignore_errors=True)
 
 
 def _verify_portable_state_smoke(root: Path, timeout_seconds: float = 45.0) -> None:
@@ -468,7 +483,7 @@ def _verify_portable_state_smoke(root: Path, timeout_seconds: float = 45.0) -> N
         root,
         portable_root,
         ignore=shutil.ignore_patterns(
-            ".smoke-data",
+            ".smoke-data*",
             ".smoke-runtime",
             "data",
             "state",
@@ -576,11 +591,19 @@ _PROXY_BLACKHOLE = "http://127.0.0.1:9"
 _PROXY_VARIABLES = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
 
 
+def _probe_offline_base_runtime(launch, root: Path) -> None:
+    """Launch the ensured Supervisor and execute RapidOCR plus basic PDF work."""
+    from vibeocr.classic.runtime_smoke import probe_runtime_launch
+
+    probe_runtime_launch(launch, root / "state")
+
+
 def _verify_offline_base_smoke(
     root: Path,
     installer_executable: Path,
     *,
     client_factory=None,
+    runtime_probe=None,
     timeout_seconds: float = 1200.0,
 ) -> str:
     """C6：base 禁网安装 + 幂等复用 + 模拟 apply 后 state 保留。
@@ -608,6 +631,7 @@ def _verify_offline_base_smoke(
             if path.is_file()
         )
 
+    production_client = client_factory is None
     if client_factory is None:
 
         def client_factory():  # noqa: F811 - lazy import keeps tests stdlib-only
@@ -618,6 +642,9 @@ def _verify_offline_base_smoke(
                 content_root=root,
                 command=(str(installer_executable),),
             )
+
+    if runtime_probe is None and production_client:
+        runtime_probe = _probe_offline_base_runtime
 
     client = client_factory()
     # Runtime Host 的 negotiated_capabilities 回显请求的 required 集；不带
@@ -656,8 +683,10 @@ def _verify_offline_base_smoke(
     try:
         for name in _PROXY_VARIABLES:
             os.environ[name] = _PROXY_BLACKHOLE
-        os.environ["no_proxy"] = ""
-        os.environ["NO_PROXY"] = ""
+        # External acquisition stays black-holed while the verified Protocol
+        # client can still reach the locally launched Supervisor.
+        os.environ["no_proxy"] = "127.0.0.1,localhost"
+        os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 
         launch = client.ensure(install_component_ids=())
         runtime_dir = root / "state" / "runtime"
@@ -666,8 +695,10 @@ def _verify_offline_base_smoke(
         if not Path(launch.python_executable).is_file():
             raise RuntimeError("offline base ensure python executable missing")
         first_tree = snapshot_runtime_tree()
+        if runtime_probe is not None:
+            runtime_probe(launch, root)
 
-        client.ensure(install_component_ids=())
+        launch = client.ensure(install_component_ids=())
         if snapshot_runtime_tree() != first_tree:
             raise RuntimeError(
                 "idempotent re-ensure rewrote the runtime tree (re-download)"
@@ -681,12 +712,14 @@ def _verify_offline_base_smoke(
         ):
             bound.write_bytes(bound.read_bytes())
 
-        client.ensure(install_component_ids=())
+        launch = client.ensure(install_component_ids=())
         if snapshot_runtime_tree() != first_tree:
             raise RuntimeError(
                 "post-apply ensure rewrote the runtime tree (update did not "
                 "reuse installed components)"
             )
+        if runtime_probe is not None:
+            runtime_probe(launch, root)
     finally:
         for name, value in saved_env.items():
             if value is None:

@@ -8,6 +8,11 @@ import os
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Protocol
 
+from vibeocr.classic.runtime_maintenance import (
+    ProductMaintenanceBusy,
+    ProductMaintenanceCoordinator,
+    get_product_maintenance_coordinator,
+)
 from vibeocr.classic.services.update_coordinator import (
     UpdateApplyResult,
     UpdateApplyStatus,
@@ -84,6 +89,7 @@ class VelopackUpdateCoordinator:
         manager_factory: ManagerFactory = _default_manager_factory,
         source_resolver: SourceResolver | None = None,
         materializer: _FeedMaterializer | None = None,
+        maintenance_coordinator: ProductMaintenanceCoordinator | None = None,
     ) -> None:
         self._source_candidates = tuple(
             candidate
@@ -94,9 +100,17 @@ class VelopackUpdateCoordinator:
         self._manager_factory = manager_factory
         self._source_resolver = source_resolver
         self._materializer = materializer
+        self._maintenance_coordinator = maintenance_coordinator
         self._materialized_source: MaterializedUpdateSource | None = None
         self._manager: _VelopackManager | None = None
         self._update: _VelopackUpdateInfo | None = None
+
+    async def installed_version(self) -> str:
+        """Return Velopack's local version without contacting an update feed."""
+        if not self._source_candidates:
+            raise RuntimeError("没有可用于初始化 Velopack 的更新源")
+        manager = self._manager_factory(self._source_candidates[0].base_url)
+        return await asyncio.to_thread(manager.get_current_version)
 
     async def check(self) -> UpdateCheckResult:
         if self._materialized_source is not None:
@@ -195,6 +209,18 @@ class VelopackUpdateCoordinator:
         if cancel_event is not None and cancel_event.is_set():
             return UpdateApplyResult(UpdateApplyStatus.CANCELLED)
 
+        coordinator = (
+            self._maintenance_coordinator or get_product_maintenance_coordinator()
+        )
+        try:
+            lease = await asyncio.to_thread(
+                coordinator.begin_app_update,
+                cancel_runtime=True,
+                timeout=30.0,
+            )
+        except ProductMaintenanceBusy as exc:
+            return UpdateApplyResult(UpdateApplyStatus.FAILED, str(exc))
+
         def report(value: int) -> None:
             if cancel_event is not None and cancel_event.is_set():
                 raise _DownloadCancelled("用户取消了更新下载")
@@ -218,6 +244,8 @@ class VelopackUpdateCoordinator:
             return UpdateApplyResult(UpdateApplyStatus.CANCELLED)
         except Exception as exc:
             return UpdateApplyResult(UpdateApplyStatus.FAILED, str(exc))
+        finally:
+            lease.release()
         return UpdateApplyResult(UpdateApplyStatus.APPLY_STARTED)
 
 

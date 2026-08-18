@@ -255,6 +255,7 @@ class PdfSessionManager(QObject):
         import time
         from uuid import uuid4
 
+        from vibeocr.classic.pyside.settings_runtime import get_default_ocr_engine
         from vibeocr.classic.recognition_result import ocr_result_from_payload
         from vibeocr.runtime_contracts import (
             TERMINAL_JOB_STATES,
@@ -267,7 +268,9 @@ class PdfSessionManager(QObject):
             SubmitRequest,
         )
 
-        pipeline_selection = ocr_options.to_pipeline_selection()
+        pipeline_selection = ocr_options.to_pipeline_selection(
+            default_engine=get_default_ocr_engine()
+        )
         request_id = str(uuid4())
         submit_items = tuple(
             SubmitItem(

@@ -77,7 +77,10 @@ class SupervisorClientAdapter(QObject):
     residency_status = Signal(object)  # ResidencyStatus
     residency_error = Signal(str)
     settings_updated = Signal(object)  # SettingsSnapshot
+    settings_loaded = Signal(object)  # SettingsSnapshot
     settings_error = Signal(str)
+    health_loaded = Signal(object)  # Health payload (dict)
+    health_error = Signal(str)
     preload_completed = Signal(object)  # ResidencyStatus
     preload_error = Signal(str)
 
@@ -613,6 +616,52 @@ class SupervisorClientAdapter(QObject):
                 self.settings_error.emit(str(exc))
 
         self._schedule(_update())
+
+    def fetch_settings(self) -> None:
+        """读取 Backend Settings 快照（含持久化的 download_source_ids）。"""
+
+        async def _fetch() -> None:
+            try:
+
+                async def _request() -> Any:
+                    client = await self._acquire_client()
+                    return await client.get_settings()
+
+                snapshot = await asyncio.wait_for(
+                    _request(), timeout=self._runtime_request_timeout_seconds
+                )
+                self.settings_loaded.emit(snapshot)
+            except TimeoutError:
+                self.settings_error.emit("读取设置超时")
+            except InferenceClientError as exc:
+                self.settings_error.emit(exc.message)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.settings_error.emit(str(exc))
+
+        self._schedule(_fetch())
+
+    def fetch_health(self) -> None:
+        """读取 Supervisor health（capability descriptors 携带选择 catalog）。"""
+
+        async def _fetch() -> None:
+            try:
+
+                async def _request() -> Any:
+                    client = await self._acquire_client()
+                    return await client.health()
+
+                health = await asyncio.wait_for(
+                    _request(), timeout=self._runtime_request_timeout_seconds
+                )
+                self.health_loaded.emit(health)
+            except TimeoutError:
+                self.health_error.emit("读取运行状态超时")
+            except InferenceClientError as exc:
+                self.health_error.emit(exc.message)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.health_error.emit(str(exc))
+
+        self._schedule(_fetch())
 
     # ------------------------------------------------------------------
     # Export / QR / PDF session (v2 surface extensions for PySide tabs)

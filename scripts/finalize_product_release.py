@@ -23,6 +23,25 @@ EXPECTED_PRODUCT_ROOTS = {
 }
 
 
+def _runtime_pack_names(record: dict[str, object]) -> set[str]:
+    """Backend 0.12 起 runtime_pack 是分片列表；兼容旧版的单字符串/缺省。"""
+
+    names: set[str] = set()
+    runtime_pack = record.get("runtime_pack")
+    if runtime_pack is None:
+        return names
+    if isinstance(runtime_pack, str):
+        parts: list[str] = [runtime_pack]
+    elif isinstance(runtime_pack, list) and all(
+        isinstance(part, str) and part for part in runtime_pack
+    ):
+        parts = list(runtime_pack)
+    else:
+        raise ValueError("Backend runtime_pack must be a file name or name list")
+    names.update(parts)
+    return names
+
+
 def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
     names = {
         "runtime-manifest.json",
@@ -42,9 +61,20 @@ def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
         if not isinstance(record, dict):
             raise ValueError("Backend runtime profile must be an object")
         names.add(str(record["lock"]))
-        runtime_pack = record.get("runtime_pack")
-        if runtime_pack:
-            names.add(str(runtime_pack))
+        names.update(_runtime_pack_names(record))
+        # Backend 0.12 起 profile 可声明 install_scopes；每个 scope 自带
+        # 精确 lock（如 cu126 的 gpu-runtime 闭包），缺文件会让绑定
+        # Installer 的 inspect 失败。
+        scopes = record.get("install_scopes")
+        if scopes is None:
+            continue
+        if not isinstance(scopes, list):
+            raise ValueError("Backend runtime install_scopes must be a list")
+        for scope in scopes:
+            if not isinstance(scope, dict):
+                raise ValueError("Backend runtime install scope must be an object")
+            names.add(str(scope["lock"]))
+            names.update(_runtime_pack_names(scope))
     return names
 
 

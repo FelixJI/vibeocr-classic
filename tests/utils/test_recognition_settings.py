@@ -124,3 +124,59 @@ def test_export_settings_remain_mutable_with_stable_labels_and_extensions() -> N
     assert settings.get_label() == "Excel 表格 (.xlsx)"
     assert settings.location_mode == "custom"
     assert settings.custom_directory == "C:/exports"
+
+
+def test_ocr_pipeline_selection_sends_task_engine_override() -> None:
+    selection = OCROptions(
+        pipeline=OCRPipeline.OCR, engine="windows"
+    ).to_pipeline_selection()
+
+    assert selection.engine is not None
+    assert selection.engine.value == "windows"
+    assert selection.to_payload()["engine"] == "windows"
+
+
+def test_ocr_pipeline_selection_uses_global_default_without_override() -> None:
+    selection = OCROptions(pipeline=OCRPipeline.OCR).to_pipeline_selection(
+        default_engine="paddleocr"
+    )
+
+    assert selection.engine is not None
+    assert selection.engine.value == "paddleocr"
+
+
+def test_ocr_pipeline_selection_omits_engine_when_unresolved() -> None:
+    selection = OCROptions(pipeline=OCRPipeline.OCR).to_pipeline_selection()
+
+    assert selection.engine is None
+    assert "engine" not in selection.to_payload()
+
+    unresolved_legacy = OCROptions(
+        pipeline=OCRPipeline.OCR, engine="legacy-unknown"
+    ).to_pipeline_selection(default_engine="legacy-unknown")
+
+    assert unresolved_legacy.engine is None
+    assert "engine" not in unresolved_legacy.to_payload()
+
+
+def test_non_ocr_pipelines_never_send_engine() -> None:
+    for pipeline in (
+        OCRPipeline.PP_STRUCTURE_V3,
+        OCRPipeline.PADDLEOCR_VL,
+        OCRPipeline.DOCUMENT_PARSING,
+    ):
+        selection = OCROptions(
+            pipeline=pipeline, engine="windows"
+        ).to_pipeline_selection(default_engine="paddleocr")
+
+        assert selection.engine is None
+        assert "engine" not in selection.to_payload()
+
+
+def test_engine_override_round_trips_through_preferences() -> None:
+    options = OCROptions(pipeline=OCRPipeline.OCR, engine="windows")
+
+    restored = OCROptions.from_dict(options.to_dict())
+
+    assert restored.engine == "windows"
+    assert restored.to_pipeline_selection().engine is not None

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from vibeocr.runtime_contracts import PipelineSelection
+from vibeocr.runtime_contracts.dtos import OcrEngine
 from vibeocr.runtime_contracts.contracts.mineru import (
     MINERU_BACKEND_DEFAULT,
     MINERU_EFFORT_DEFAULT,
@@ -56,6 +57,8 @@ class OCROptions:
     formula_recognition_batch_size: int = 1
     formula_recognition_model_name: str | None = None
     formula_recognition_model_dir: str | None = None
+    # 任务级引擎覆盖：None 表示沿用全局默认；仅纯文本 OCR pipeline 有效。
+    engine: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -84,6 +87,7 @@ class OCROptions:
             "formula_recognition_batch_size": self.formula_recognition_batch_size,
             "formula_recognition_model_name": self.formula_recognition_model_name,
             "formula_recognition_model_dir": self.formula_recognition_model_dir,
+            "engine": self.engine,
         }
 
     @classmethod
@@ -118,14 +122,30 @@ class OCROptions:
         data.update(updates)
         return OCROptions.from_dict(data)
 
-    def to_pipeline_selection(self) -> PipelineSelection:
+    def to_pipeline_selection(
+        self, default_engine: str | None = None
+    ) -> PipelineSelection:
+        """投影到 Protocol PipelineSelection。
+
+        ``engine`` 只对纯文本 OCR pipeline 发送：任务 override 优先，其次
+        是全局默认 ``default_engine``；两者都不是稳定 engine id 时省略
+        字段，交给 Backend 默认。其他 pipeline 不携带 engine。
+        """
+
         allowed = set(get_pipeline_supported_options(self.pipeline))
         options = {
             key: value
             for key, value in self.to_dict().items()
             if key in allowed and value is not None
         }
-        return PipelineSelection(self.pipeline.value, options=options)
+        engine: OcrEngine | None = None
+        if self.pipeline is OCRPipeline.OCR:
+            from vibeocr.classic.runtime_selection import resolve_engine_id
+
+            resolved = resolve_engine_id(self.engine, default_engine)
+            if resolved is not None:
+                engine = OcrEngine(resolved)
+        return PipelineSelection(self.pipeline.value, options=options, engine=engine)
 
 
 @dataclass

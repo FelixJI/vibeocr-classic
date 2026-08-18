@@ -50,6 +50,8 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
     python.write_bytes(b"python")
     lock = backend / "cpu.lock"
     lock.write_bytes(b"cpu")
+    runtime_pack = backend / "vibeocr-runtime-pack-win-x64-base-0.7.0.part01.zip"
+    runtime_pack.write_bytes(b"pack")
     installer = backend / "installer.zip"
     with zipfile.ZipFile(installer, "w") as archive:
         archive.writestr("runtime-installer/installer.exe", b"installer")
@@ -72,7 +74,12 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
                     "executable_sha256": _sha(b"installer"),
                 },
                 "profiles": {
-                    "win-x64-cpu": {"lock": lock.name, "sha256": _sha(b"cpu")}
+                    "win-x64-cpu": {
+                        "lock": lock.name,
+                        "sha256": _sha(b"cpu"),
+                        # Backend 0.12 起 base pack 以分片列表声明
+                        "runtime_pack": [runtime_pack.name],
+                    }
                 },
                 "capabilities": ["ocr.recognition.v2"],
             }
@@ -165,6 +172,7 @@ def test_product_finalizer_is_deterministic_and_binds_runtime(tmp_path: Path) ->
     assert "backend/installer.zip" in members
     assert "backend/python.tar.gz" in members
     assert "backend/runtime-manifest.json" in members
+    assert "backend/vibeocr-runtime-pack-win-x64-base-0.7.0.part01.zip" in members
     assert "backend/SHA256SUMS" not in members
     assert "backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
@@ -283,3 +291,83 @@ def test_product_finalizer_rejects_interchanged_frontend_lock(tmp_path: Path) ->
             protocol_release_dir=protocol,
             backend_release_dir=backend,
         )
+
+
+def test_runtime_asset_names_accepts_pack_string_and_part_list() -> None:
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    def _manifest(runtime_pack: object) -> dict[str, object]:
+        return {
+            "backend_wheel": "backend.whl",
+            "protocol_manifest": "release-manifest.json",
+            "protocol_wheel": "protocol.whl",
+            "python": {"archive": "python.tar.gz"},
+            "installer": {"archive": "installer.zip"},
+            "profiles": {
+                "win-x64-base": {"lock": "base.lock", "runtime_pack": runtime_pack}
+            },
+        }
+
+    assert "pack.zip" in _runtime_asset_names(_manifest("pack.zip"))
+    assert _runtime_asset_names(_manifest(["pack.part01.zip", "pack.part02.zip"])) >= {
+        "pack.part01.zip",
+        "pack.part02.zip",
+    }
+    assert _runtime_asset_names(_manifest(None)) == {
+        "runtime-manifest.json",
+        "backend.whl",
+        "release-manifest.json",
+        "protocol.whl",
+        "python.tar.gz",
+        "installer.zip",
+        "base.lock",
+    }
+
+    with pytest.raises(ValueError, match="runtime_pack"):
+        _runtime_asset_names(_manifest(["pack.zip", 42]))
+    with pytest.raises(ValueError, match="runtime_pack"):
+        _runtime_asset_names(_manifest({"name": "pack.zip"}))
+
+
+def test_runtime_asset_names_includes_install_scope_locks() -> None:
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    manifest = {
+        "backend_wheel": "backend.whl",
+        "protocol_manifest": "release-manifest.json",
+        "protocol_wheel": "protocol.whl",
+        "python": {"archive": "python.tar.gz"},
+        "installer": {"archive": "installer.zip"},
+        "profiles": {
+            "win-x64-cu126": {
+                "lock": "requirements-win-x64-cu126.lock",
+                "runtime_pack": None,
+                "install_scopes": [
+                    {
+                        "scope_id": "gpu-runtime",
+                        "component_ids": ["gpu_runtime"],
+                        "lock": "requirements-win-x64-cu126-gpu.lock",
+                        "runtime_pack": ["gpu-pack.part01.zip"],
+                    }
+                ],
+            }
+        },
+    }
+
+    names = _runtime_asset_names(manifest)
+
+    assert "requirements-win-x64-cu126.lock" in names
+    assert "requirements-win-x64-cu126-gpu.lock" in names
+    assert "gpu-pack.part01.zip" in names
+
+    broken = {
+        **manifest,
+        "profiles": {
+            "win-x64-cu126": {
+                "lock": "requirements-win-x64-cu126.lock",
+                "install_scopes": {"lock": "not-a-list"},
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="install_scopes"):
+        _runtime_asset_names(broken)

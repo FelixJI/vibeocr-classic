@@ -4,8 +4,8 @@ version = "0.10.5"
 description = "VibeOCR PySide6 Classic desktop shell"
 requires-python = ">=3.13,<3.14"
 dependencies = [
-    "vibeocr-runtime-contracts>=2.5.0,<3.0.0",
-    "vibeocr-runtime-client>=2.5.0,<3.0.0",
+    "vibeocr-runtime-contracts>=2.7.1,<3.0.0",
+    "vibeocr-runtime-client>=2.7.1,<3.0.0",
     "pyside6>=6.11.1",
     "qasync>=0.28.0",
     "numpy>=2.3.5",

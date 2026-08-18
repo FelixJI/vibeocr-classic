@@ -108,6 +108,7 @@ def build_maintenance_detail(
     """
     phase = _PHASE_LABELS.get(update.phase, update.phase)
     state = _STATE_LABELS.get(update.operation_state, update.operation_state)
+    scope_note = _component_scope_note(update)
     if update.has_determinate_progress:
         assert update.progress_total is not None
         assert update.progress_current is not None
@@ -126,6 +127,8 @@ def build_maintenance_detail(
             )
         if update.estimated_remaining_seconds is not None:
             detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        if scope_note:
+            detail += f" · {scope_note}"
         return MaintenanceProgressDetail(
             detail=detail,
             phase_label=phase,
@@ -143,8 +146,28 @@ def build_maintenance_detail(
         detail = f"{phase} · {update.progress_current}/{update.progress_total} 步"
     if update.operation_state == "running" and clock is not None:
         detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
+    if scope_note:
+        detail += f" · {scope_note}"
     return MaintenanceProgressDetail(
         detail=detail, phase_label=phase, state_label=state
+    )
+
+
+def _component_scope_note(update: RuntimeMaintenanceUpdate) -> str:
+    """requested/effective 组件回显差异说明；闭包扩大时不伪称只装勾选项。"""
+
+    effective = tuple(update.effective_component_ids)
+    requested = tuple(update.requested_component_ids)
+    if not effective and not requested:
+        return ""
+    if effective == requested:
+        return ""
+    if not requested:
+        return f"Backend 实际安装：{'、'.join(effective)}"
+    return (
+        f"实际安装 {'、'.join(effective)}（请求：{'、'.join(requested)}）"
+        if effective
+        else f"请求：{'、'.join(requested)}"
     )
 
 
@@ -164,6 +187,8 @@ class InstallWorker(QThread):
         missing_only: bool = False,
         single_pkg: str | None = None,
         packages: list[str] | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
         self._project_root = project_root
@@ -172,6 +197,8 @@ class InstallWorker(QThread):
         self._missing_only = missing_only
         self._single_pkg = single_pkg
         self._packages = packages
+        self._install_component_ids = install_component_ids
+        self._download_source_ids = download_source_ids
         self._cancel_event = threading.Event()
         self._maintenance_signature: tuple[str, str, str, str, str] | None = None
         self._maintenance_logged_signature: tuple[str, str, str, str, str] | None = None
@@ -234,6 +261,8 @@ class InstallWorker(QThread):
                 client.ensure(
                     progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
+                    install_component_ids=self._install_component_ids,
+                    download_source_ids=self._download_source_ids,
                 )
             self.completed.emit(
                 True,
@@ -320,6 +349,8 @@ class InstallDialog(QDialog):
         single_pkg: str | None = None,
         packages: list[str] | None = None,
         maintenance_callback: Callable[[str], None] | None = None,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
@@ -328,6 +359,8 @@ class InstallDialog(QDialog):
         self._single_pkg = single_pkg
         self._packages = packages
         self._maintenance_callback = maintenance_callback
+        self._install_component_ids = install_component_ids
+        self._download_source_ids = download_source_ids
         self._component_items: dict[str, QTreeWidgetItem] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
@@ -414,6 +447,8 @@ class InstallDialog(QDialog):
             force_backend=self._force_backend,
             single_pkg=self._single_pkg,
             packages=self._packages,
+            install_component_ids=self._install_component_ids,
+            download_source_ids=self._download_source_ids,
         )
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)

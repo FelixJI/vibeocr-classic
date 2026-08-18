@@ -262,12 +262,23 @@ class _FakeOfflineClient:
         self.negotiated_capabilities = capabilities
         self._root = root
         self.ensure_calls: list[dict] = []
+        self.inspect_required: tuple[str, ...] | None = None
 
-    def inspect(self) -> None:
+    def required_capabilities(self) -> tuple[str, ...]:
+        return ("ocr.engine-selection.v1", "runtime.component-selection.v1")
+
+    def inspect(self, **kwargs) -> None:
+        # 复刻 Runtime Host 语义：negotiated 回显请求的 required 集
+        required = tuple(kwargs.get("required_capabilities") or ())
+        self.inspect_required = required
+        if required:
+            self.negotiated_capabilities = tuple(
+                name for name in required if name in self.negotiated_capabilities
+            )
         backend = self._root / "backend"
         backend.mkdir(parents=True, exist_ok=True)
         (backend / "runtime-manifest.json").write_text(
-            json.dumps({"backend_version": "0.12.0"}), encoding="utf-8"
+            json.dumps({"backend_version": "0.12.1"}), encoding="utf-8"
         )
 
     def ensure(self, **kwargs):

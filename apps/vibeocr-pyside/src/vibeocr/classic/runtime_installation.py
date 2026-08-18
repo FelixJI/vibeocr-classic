@@ -406,7 +406,7 @@ class RuntimeInstallerClient:
                 product_layout = None
             if (
                 isinstance(product_layout, dict)
-                and product_layout.get("shared_root") == "data"
+                and product_layout.get("shared_root") == "state"
                 and isinstance(product_layout.get("products"), dict)
                 and product_id in product_layout["products"]
             ):
@@ -424,10 +424,11 @@ class RuntimeInstallerClient:
             self.command = (configured,)
         elif getattr(sys, "frozen", False):
             self._materialize_bound_installer = True
+            # product_root 是 Classic 状态根：installer 可执行缓存收口在
+            # state/cache 下，不落在会被 Velopack apply 替换的应用目录。
             self.command = (
                 str(
                     self.product_root
-                    / "data"
                     / "cache"
                     / "runtime-installer"
                     / "vibeocr-runtime-installer.exe"
@@ -608,10 +609,15 @@ class RuntimeInstallerClient:
         return self._supports_capability("runtime.maintenance.v1")
 
     def _supports_capability(self, capability: str) -> bool:
-        # 协商结果来自实际 installer 信封，优先于 manifest 声明；首轮操作前
-        # manifest 是唯一可用近似（两者只会出现代码新于 manifest 的偏差）。
-        if self._negotiated_capabilities:
-            return capability in self._negotiated_capabilities
+        # 信封的 capability_descriptors 是运行时 available 集，优先于 manifest
+        # 声明；negotiated_capabilities 只是“上次请求要求的子集”的回显，
+        # 不能当可用集用（例如带八项 required 的 inspect 之后，回显不含
+        # runtime.maintenance.v2，却仍应允许 ensure 走 v2 事件流）。
+        if self._capability_descriptors:
+            return any(
+                descriptor.name == capability
+                for descriptor in self._capability_descriptors
+            )
         try:
             capabilities = self._manifest().get("capabilities", [])
         except RuntimeInstallerClientError:
@@ -1147,8 +1153,22 @@ class RuntimeInstallerClient:
                 "Runtime Installer 可执行文件 SHA-256 不匹配"
             )
 
-    def inspect(self) -> RuntimeInspection:
-        envelope = self._invoke("inspect", timeout=RUNTIME_INSPECT_TIMEOUT_SECONDS)
+    def inspect(
+        self, *, required_capabilities: tuple[str, ...] = ()
+    ) -> RuntimeInspection:
+        """Inspect the bound runtime.
+
+        ``required_capabilities`` 随请求发送时，Runtime Host 信封的
+        ``negotiated_capabilities`` 会回显该集合并校验 available ⊇
+        required；不发送则协商回显为空。设置页与 artifact smoke 用它
+        探测三项选择能力是否可用。
+        """
+
+        envelope = self._invoke(
+            "inspect",
+            timeout=RUNTIME_INSPECT_TIMEOUT_SECONDS,
+            required_capabilities=required_capabilities,
+        )
         try:
             value = envelope["state"]
             accelerator = str(value["accelerator"])

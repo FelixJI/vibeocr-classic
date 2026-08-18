@@ -52,7 +52,12 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
         encoding="utf-8"
     )
     assert "VIBEOCR_SELF_TEST_WEBENGINE" in entry_script
-    assert "os._exit(_run_webengine_smoke())" in entry_script
+    # smoke 输出必须经 bootstrap 边界（日志落 state/logs），并以 os._exit
+    # 绕过 Qt finalizer。
+    assert "os._exit(_run_with_bootstrap(_run_webengine_smoke))" in entry_script
+    assert "os._exit(_run_with_bootstrap(_run_pdf_smoke))" in entry_script
+    assert "_activate_portable_state" in entry_script
+    assert "activate_portable_state" in entry_script
     assert 'channel.registerObject("smoke", bridge)' in entry_script
     assert 'src="qrc:///qtwebchannel/qwebchannel.js"' in entry_script
     assert "webchannel_round_trip" in entry_script

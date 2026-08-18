@@ -168,11 +168,12 @@ def setup_logging(level: int | str = logging.INFO) -> QtLogHandler:
     root_logger.addHandler(console_handler)
 
     # 文件 handler：DEBUG 及以上（全量记录，便于排查）
-    # 主程序和 updater 统一写入 data/logs，避免在便携包根目录散落运行期文件。
+    # 主程序和 updater 统一写入 <portable-root>/state/logs，产品拥有的
+    # 可变文件不落在便携根或用户目录。
     # 落盘为人可读文本（HumanReadableFormatter）——历史排查时直接打开阅读，
     # 不再有 JSON 解析开销与可读性损失。worker 转发链路仍用 stderr JSONL，
     # 由 forward_worker_output_line 解析后转成普通 LogRecord，经此 formatter 输出。
-    log_dir = get_active_app_paths().data_root / "logs"
+    log_dir = get_active_app_paths().logs_root
     log_dir.mkdir(parents=True, exist_ok=True)
     _cleanup_old_logs(log_dir)
 

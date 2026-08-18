@@ -1296,6 +1296,11 @@ class ResultViewWidget(QWidget):
             logger.warning(f"WebEngine 不可用，结果页无法渲染: {e}")
             return None
 
+        # 首个 page 创建前把 cache/persistent storage 收口到 state 内
+        from vibeocr.classic.utils.webengine_paths import configure_webengine_storage
+
+        configure_webengine_storage()
+
         self._web_view = QWebEngineView(self)
         self._channel = QWebChannel(self._web_view)
         self._bridge = _Bridge(self)

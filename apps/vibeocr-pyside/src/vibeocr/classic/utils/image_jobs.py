@@ -100,9 +100,7 @@ class GenerationImageJobs(QObject):
         super().__init__(parent)
         self._generation = 0
         self._closing = False
-        self._jobs: dict[
-            int, tuple[_Job, threading.Event, threading.Event]
-        ] = {}
+        self._jobs: dict[int, tuple[_Job, threading.Event, threading.Event]] = {}
         self._jobs_lock = threading.Lock()
 
     @property
@@ -262,8 +260,10 @@ def write_clipboard_png(
     if not ok or cancel_event.is_set():
         return None
 
+    from vibeocr.classic.app_paths import get_clipboard_temp_dir
+
     fd, name = tempfile.mkstemp(
-        prefix="vibeocr_clip_", suffix=".png", dir=tempfile.gettempdir()
+        prefix="vibeocr_clip_", suffix=".png", dir=get_clipboard_temp_dir()
     )
     path = Path(name)
     try:
@@ -288,9 +288,7 @@ def write_clipboard_png(
     return ClipboardPngResult(path=path, kept_paths=kept, image=image)
 
 
-def save_image_file(
-    image: QImage, path: str, cancel_event: threading.Event
-) -> str:
+def save_image_file(image: QImage, path: str, cancel_event: threading.Event) -> str:
     """在线程中编码并写入用户选择的图片文件。"""
     if cancel_event.is_set():
         return ""

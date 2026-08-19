@@ -311,40 +311,82 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "vibeocr_backend-$backendVersion" not in script
 
 
+def _policy_bound_component_lock(policy: dict[str, object]) -> dict[str, object]:
+    backend = policy["backend"]
+    assert isinstance(backend, dict)
+    return {
+        "schema_version": 1,
+        "backend": {
+            "repository": backend["repository"],
+            "accelerator": backend["accelerator"],
+            "version": "0.13.0",
+        },
+        "protocol": {
+            "repository": "FelixJI/vibeocr-protocol",
+            "version": "2.7.0",
+        },
+        "required_capabilities": policy["required_capabilities"],
+    }
+
+
 def test_artifact_verifier_uses_product_policy_capability_closure(
     tmp_path: Path,
 ) -> None:
     policy_path = ROOT / "component-policy.json"
     policy = json.loads(policy_path.read_text(encoding="utf-8"))
     required = policy["required_capabilities"]
+    assert isinstance(required, list)
     assert "runtime.maintenance.v2" in required
 
     component_lock = tmp_path / "component-lock.json"
-    component_lock.write_text(
-        json.dumps({"required_capabilities": required}), encoding="utf-8"
-    )
+    lock = _policy_bound_component_lock(policy)
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
     verify_component_policy_binding(component_lock, policy_path)
 
-    component_lock.write_text(
-        json.dumps(
-            {
-                "required_capabilities": [
-                    capability
-                    for capability in required
-                    if capability != "runtime.maintenance.v2"
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    lock["required_capabilities"] = [
+        capability for capability in required if capability != "runtime.maintenance.v2"
+    ]
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
     with pytest.raises(RuntimeError, match="differs from component policy"):
         verify_component_policy_binding(component_lock, policy_path)
 
 
+def test_artifact_verifier_rejects_accelerator_outside_product_policy(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    lock = _policy_bound_component_lock(policy)
+    backend = lock["backend"]
+    assert isinstance(backend, dict)
+    backend["accelerator"] = "nvidia_cuda"
+    component_lock = tmp_path / "component-lock.json"
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="accelerator differs from component policy"):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
+def test_artifact_verifier_rejects_protocol_major_outside_product_policy(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    lock = _policy_bound_component_lock(policy)
+    protocol = lock["protocol"]
+    assert isinstance(protocol, dict)
+    protocol["version"] = "3.0.0"
+    component_lock = tmp_path / "component-lock.json"
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError, match="Protocol major differs from component policy"
+    ):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
 def test_release_build_passes_policy_to_artifact_verifier() -> None:
-    build_script = (ROOT / "scripts" / "build-release.ps1").read_text(
-        encoding="utf-8"
-    )
+    build_script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
         encoding="utf-8"
     )

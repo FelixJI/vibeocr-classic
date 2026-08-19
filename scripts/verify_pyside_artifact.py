@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import struct
@@ -33,10 +34,34 @@ def verify_component_policy_binding(
         for capability in required_capabilities
     ):
         raise RuntimeError("component lock capabilities are invalid")
+    backend = lock.get("backend")
+    if (
+        not isinstance(backend, dict)
+        or not isinstance(backend.get("accelerator"), str)
+        or not backend["accelerator"]
+    ):
+        raise RuntimeError("component lock backend accelerator is invalid")
+    protocol = lock.get("protocol")
+    protocol_version = protocol.get("version") if isinstance(protocol, dict) else None
+    protocol_match = (
+        re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", protocol_version)
+        if isinstance(protocol_version, str)
+        else None
+    )
+    if protocol_match is None:
+        raise RuntimeError("component lock Protocol version is invalid")
     policy = ComponentPolicy.load(policy_path)
     if set(required_capabilities) != set(policy.required_capabilities):
         raise RuntimeError(
             "Classic component lock capability set differs from component policy"
+        )
+    if backend["accelerator"] != policy.accelerator:
+        raise RuntimeError(
+            "Classic component lock accelerator differs from component policy"
+        )
+    if int(protocol_match.group(1)) != int(policy.protocol_version.split(".", 1)[0]):
+        raise RuntimeError(
+            "Classic component lock Protocol major differs from component policy"
         )
 
 

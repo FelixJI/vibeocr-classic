@@ -46,7 +46,9 @@ def _portable_launcher(root: Path) -> Path:
         root / "current" / "VibeOCR.exe",
         root / "current" / "sq.version",
     )
-    missing = [path.relative_to(root).as_posix() for path in required if not path.is_file()]
+    missing = [
+        path.relative_to(root).as_posix() for path in required if not path.is_file()
+    ]
     root_executables = sorted(
         path
         for path in root.iterdir()
@@ -352,21 +354,17 @@ def _stop_process(process: subprocess.Popen, *, timeout: float = 15.0) -> None:
 def _outside_product_writes(*directories: Path) -> dict[str, list[str]]:
     writes: dict[str, list[str]] = {}
     for directory in directories:
-        product_files = []
+        product_entries = []
         for path in directory.rglob("*"):
             relative = path.relative_to(directory)
-            if not path.is_file():
+            parts = tuple(part.casefold() for part in relative.parts)
+            if directory.name == "Profile" and parts[:1] == (".rustup",):
                 continue
-            if (
-                directory.name == "Temp"
-                and relative.as_posix().casefold()
-                == "velopack_vibeocrclassic.log".casefold()
-            ):
+            if directory.name == "Temp" and parts == ("velopack_vibeocrclassic.log",):
                 continue
-            if any("vibeocr" in part.casefold() for part in relative.parts):
-                product_files.append(relative.as_posix())
-        if product_files:
-            writes[directory.name] = sorted(product_files)
+            product_entries.append(relative.as_posix())
+        if product_entries:
+            writes[directory.name] = sorted(product_entries)
     return writes
 
 
@@ -423,7 +421,14 @@ def verify_portable_e2e(
             "no_proxy": "127.0.0.1,localhost",
         }
     )
-    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+    for name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
         env.pop(name, None)
 
     handler = partial(_QuietHandler, directory=str(new_feed))

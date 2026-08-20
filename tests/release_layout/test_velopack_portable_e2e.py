@@ -91,9 +91,7 @@ def test_portable_root_requires_canonical_velopack_markers(
 
 
 @pytest.mark.parametrize("extra", ["VibeOCRClassic.exe", "Surprise.exe"])
-def test_portable_root_rejects_extra_execution_stub(
-    tmp_path: Path, extra: str
-) -> None:
+def test_portable_root_rejects_extra_execution_stub(tmp_path: Path, extra: str) -> None:
     extracted = tmp_path / "extracted"
     root = extracted / "portable"
     _write_portable_layout(root)
@@ -194,7 +192,9 @@ def test_moved_start_diagnostic_keeps_bounded_owned_log_tail(
     log = state / "velopack-start-diagnostic.log"
     log.write_text("discarded-prefix\n" + "useful-tail", encoding="utf-8")
     process = _Process(running=False)
-    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process
+    )
     monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
 
     evidence = _diagnose_moved_start(
@@ -220,7 +220,9 @@ def test_moved_start_diagnostic_includes_owned_early_bootstrap_events(
     bootstrap_log.parent.mkdir()
     bootstrap_log.write_text("runtime probe failed", encoding="utf-8")
     process = _Process(running=False)
-    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process
+    )
     monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
 
     evidence = _diagnose_moved_start(
@@ -274,7 +276,9 @@ def test_moved_start_diagnostic_stops_its_own_timed_out_updater(
 ) -> None:
     _write_portable_layout(tmp_path)
     process = _Process(running=True, initial_wait_times_out=True)
-    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process
+    )
     monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
 
     evidence = _diagnose_moved_start(
@@ -292,7 +296,9 @@ def test_moved_start_diagnostic_never_swallows_original_timeout(
     tmp_path: Path, monkeypatch
 ) -> None:
     original = RuntimeError("original launcher timeout")
-    monkeypatch.setattr(portable_e2e, "_wait_for_result", lambda *args: (_ for _ in ()).throw(original))
+    monkeypatch.setattr(
+        portable_e2e, "_wait_for_result", lambda *args: (_ for _ in ()).throw(original)
+    )
     monkeypatch.setattr(
         portable_e2e,
         "_diagnose_moved_start",
@@ -406,8 +412,14 @@ def test_outside_write_audit_ignores_tools_but_detects_product_state(
     (temp / "velopack_VibeOCRClassic.log").write_text("updater log", encoding="utf-8")
     (local / "VibeOCRClassic/config").mkdir(parents=True)
     (local / "VibeOCRClassic/config/settings.json").write_text("{}", encoding="utf-8")
+    (temp / "screenshot.png").write_bytes(b"product-temp-state")
     roaming.mkdir()
 
     assert portable_e2e._outside_product_writes(local, roaming, profile, temp) == {
-        "LocalAppData": ["VibeOCRClassic/config/settings.json"]
+        "LocalAppData": [
+            "VibeOCRClassic",
+            "VibeOCRClassic/config",
+            "VibeOCRClassic/config/settings.json",
+        ],
+        "Temp": ["screenshot.png"],
     }

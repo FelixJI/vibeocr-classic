@@ -33,6 +33,13 @@ from vibeocr.classic.runtime_maintenance import (
 )
 
 
+def _runtime_installer_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PYTHONIOENCODING"] = "utf-8"
+    environment["PYTHONUTF8"] = "1"
+    return environment
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeComponentDescriptor:
     component_id: str
@@ -625,6 +632,7 @@ class RuntimeInstallerClient:
                 errors="replace",
                 timeout=timeout,
                 check=False,
+                env=_runtime_installer_environment(),
                 creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -920,6 +928,7 @@ class RuntimeInstallerClient:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=_runtime_installer_environment(),
                 creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
         except OSError as exc:

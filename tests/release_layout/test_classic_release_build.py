@@ -154,6 +154,11 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "VIBEOCR_SELF_TEST_VELOPACK_UPDATE" in e2e
     assert "probe_runtime_launch" in entry_script
     assert "client.ensure(install_component_ids=())" in entry_script
+    assert '"process_id": os.getpid()' in entry_script
+    assert "_wait_for_evidence_writer_exit(evidence" in e2e
+    assert e2e.index("_wait_for_evidence_writer_exit(evidence") < e2e.index(
+        "shutil.move"
+    )
 
 
 def test_release_contract_publishes_only_exact_velopack_assets() -> None:

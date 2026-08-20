@@ -266,6 +266,7 @@ def _run_velopack_update_smoke() -> int:
                     "installed_version": current,
                     "install_root": str(paths.install_root),
                     "state_root": str(paths.state_root),
+                    "process_id": os.getpid(),
                 }
             ),
             encoding="utf-8",

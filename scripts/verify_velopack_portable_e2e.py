@@ -107,6 +107,79 @@ def _wait_for_result(result: Path, timeout: float, process: subprocess.Popen) ->
     )
 
 
+def _wait_for_evidence_writer_exit(evidence: dict, *, timeout: float) -> None:
+    """Wait for the restarted app which durably wrote the E2E evidence."""
+    process_id = evidence.get("process_id")
+    if (
+        isinstance(process_id, bool)
+        or not isinstance(process_id, int)
+        or process_id <= 0
+    ):
+        raise RuntimeError(
+            f"Portable E2E evidence has invalid process_id: {process_id!r}"
+        )
+    _wait_for_pid_exit(process_id, timeout=timeout)
+
+
+def _wait_for_pid_exit(process_id: int, *, timeout: float) -> None:
+    """Wait on a PID with SYNCHRONIZE rights only; never terminate that process."""
+    if os.name != "nt":
+        raise RuntimeError("Portable E2E writer wait is Windows-only")
+    if timeout <= 0:
+        raise ValueError("Portable E2E writer timeout must be positive")
+
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    wait_object_0 = 0x00000000
+    wait_timeout = 0x00000102
+    wait_failed = 0xFFFFFFFF
+    error_invalid_parameter = 87
+    maximum_finite_wait = 0xFFFFFFFE
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    wait_for_single_object = kernel32.WaitForSingleObject
+    wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    wait_for_single_object.restype = wintypes.DWORD
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    handle = open_process(synchronize, False, process_id)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == error_invalid_parameter:
+            return
+        raise OSError(error, f"OpenProcess failed for evidence writer {process_id}")
+
+    milliseconds = min(maximum_finite_wait, max(1, int(timeout * 1000)))
+    try:
+        wait_result = wait_for_single_object(handle, milliseconds)
+        if wait_result == wait_object_0:
+            return
+        if wait_result == wait_timeout:
+            raise RuntimeError(
+                "Portable E2E evidence writer did not exit naturally within "
+                f"{timeout:.0f}s: process_id={process_id}"
+            )
+        if wait_result == wait_failed:
+            error = ctypes.get_last_error()
+            raise OSError(
+                error,
+                f"WaitForSingleObject failed for evidence writer {process_id}",
+            )
+        raise RuntimeError(
+            "Portable E2E evidence writer returned unexpected wait status: "
+            f"process_id={process_id}; status={wait_result}"
+        )
+    finally:
+        close_handle(handle)
+
+
 def _state_evidence(state_root: Path, *, limit: int = 24) -> list[str]:
     """List bounded, shallow state names for CI diagnosis without reading contents."""
     evidence: list[str] = []
@@ -236,6 +309,7 @@ def verify_portable_e2e(
     try:
         process = _launch(root, env)
         evidence = _wait_for_result(result, timeout, process)
+        _wait_for_evidence_writer_exit(evidence, timeout=15.0)
     finally:
         try:
             if process is not None:
@@ -266,6 +340,7 @@ def verify_portable_e2e(
     moved_process = _launch(moved, env)
     try:
         moved_evidence = _wait_for_result(moved_result, 45.0, moved_process)
+        _wait_for_evidence_writer_exit(moved_evidence, timeout=15.0)
     finally:
         _stop_process(moved_process)
     if moved_evidence.get("installed_version") != target_version:

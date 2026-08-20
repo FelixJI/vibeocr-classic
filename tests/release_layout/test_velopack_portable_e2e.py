@@ -150,6 +150,31 @@ def test_wait_timeout_reports_expected_result_process_and_state_evidence(
     assert "config/runtime-e2e.json" in message
 
 
+def test_wait_for_evidence_writer_exit_uses_reported_pid(monkeypatch) -> None:
+    waited: dict[str, object] = {}
+
+    def fake_wait(pid: int, *, timeout: float) -> None:
+        waited.update(pid=pid, timeout=timeout)
+
+    monkeypatch.setattr(portable_e2e, "_wait_for_pid_exit", fake_wait, raising=False)
+
+    portable_e2e._wait_for_evidence_writer_exit(
+        {"process_id": 4312},
+        timeout=15.0,
+    )
+
+    assert waited == {"pid": 4312, "timeout": 15.0}
+
+
+@pytest.mark.parametrize("process_id", [None, True, 0, -1, "4312"])
+def test_wait_for_evidence_writer_exit_rejects_invalid_pid(process_id: object) -> None:
+    with pytest.raises(RuntimeError, match="process_id"):
+        portable_e2e._wait_for_evidence_writer_exit(
+            {"process_id": process_id},
+            timeout=15.0,
+        )
+
+
 def test_state_evidence_does_not_enter_reparse_directory(
     tmp_path: Path, monkeypatch
 ) -> None:

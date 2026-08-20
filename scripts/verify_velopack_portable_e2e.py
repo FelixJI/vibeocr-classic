@@ -242,6 +242,27 @@ def _bounded_file_tail(path: Path, *, limit: int) -> str | None:
         return stream.read(limit).decode("utf-8", errors="replace")
 
 
+def _owned_bootstrap_log_tail(root: Path, *, limit: int = 8192) -> str | None:
+    """Read only the bounded Portable-owned bootstrap log, never a reparse path."""
+    state = root / "state"
+    logs = state / "logs"
+    log = logs / "vibeocr-bootstrap.log"
+    for label, path in (
+        ("state", state),
+        ("logs", logs),
+        ("vibeocr-bootstrap.log", log),
+    ):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            return f"<unavailable: {label}: {type(exc).__name__}>"
+        if _is_reparse_point(path):
+            return f"<reparse: {label}>"
+    return _bounded_file_tail(log, limit=limit)
+
+
 def _diagnose_moved_start(
     root: Path,
     env: dict[str, str],
@@ -298,6 +319,7 @@ def _diagnose_moved_start(
             bootstrap_events,
             limit=8192,
         ),
+        "bootstrap_log_tail": _owned_bootstrap_log_tail(root),
     }
 
 

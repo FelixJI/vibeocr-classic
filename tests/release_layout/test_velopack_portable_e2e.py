@@ -9,6 +9,7 @@ import scripts.verify_velopack_portable_e2e as portable_e2e
 from scripts.verify_velopack_portable_e2e import (
     _diagnose_moved_start,
     _launch,
+    _owned_bootstrap_log_tail,
     _portable_root,
     _stop_process,
     _wait_for_moved_result,
@@ -215,6 +216,9 @@ def test_moved_start_diagnostic_includes_owned_early_bootstrap_events(
     nonce = "a" * 32
     events = state / f"{nonce}-bootstrap-events.jsonl"
     events.write_text('{"phase":"before-velopack","pid":4312}\n', encoding="utf-8")
+    bootstrap_log = state / "logs" / "vibeocr-bootstrap.log"
+    bootstrap_log.parent.mkdir()
+    bootstrap_log.write_text("runtime probe failed", encoding="utf-8")
     process = _Process(running=False)
     monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
@@ -226,6 +230,43 @@ def test_moved_start_diagnostic_includes_owned_early_bootstrap_events(
     )
 
     assert '"phase":"before-velopack"' in evidence["bootstrap_events_tail"]
+    assert evidence["bootstrap_log_tail"] == "runtime probe failed"
+
+
+def test_owned_bootstrap_log_tail_is_bounded_to_portable_state(tmp_path: Path) -> None:
+    log = tmp_path / "state" / "logs" / "vibeocr-bootstrap.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("discarded-prefix\n" + "useful-tail", encoding="utf-8")
+
+    assert _owned_bootstrap_log_tail(tmp_path, limit=11) == "useful-tail"
+
+
+@pytest.mark.parametrize("reparse_name", ["state", "logs", "vibeocr-bootstrap.log"])
+def test_owned_bootstrap_log_tail_refuses_reparse_path(
+    tmp_path: Path, monkeypatch, reparse_name: str
+) -> None:
+    log = tmp_path / "state" / "logs" / "vibeocr-bootstrap.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("must-not-be-read", encoding="utf-8")
+    guarded = {
+        "state": tmp_path / "state",
+        "logs": tmp_path / "state" / "logs",
+        "vibeocr-bootstrap.log": log,
+    }[reparse_name]
+    monkeypatch.setattr(
+        portable_e2e,
+        "_is_reparse_point",
+        lambda path: path == guarded,
+    )
+    monkeypatch.setattr(
+        portable_e2e,
+        "_bounded_file_tail",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("reparse log was read")
+        ),
+    )
+
+    assert _owned_bootstrap_log_tail(tmp_path) == f"<reparse: {reparse_name}>"
 
 
 def test_moved_start_diagnostic_stops_its_own_timed_out_updater(

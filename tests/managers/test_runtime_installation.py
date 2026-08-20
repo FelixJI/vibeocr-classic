@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from vibeocr.classic.runtime_maintenance import ProductMaintenanceCoordinator
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
@@ -55,6 +56,9 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
         component_lock=lock,
         runtime_manifest=manifest,
         command=(str(executable),),
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
 
 
@@ -790,6 +794,9 @@ def test_cancel_and_retry_use_idempotent_v2_commands(
     client = RuntimeInstallerClient(
         tmp_path,
         command=(sys.executable, "-c", "pass"),
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
     requests: list[dict] = []
     monkeypatch.setattr(

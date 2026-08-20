@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from vibeocr.classic.runtime_maintenance import (
     ProductMaintenanceBusy,
+    ProductMaintenanceCoordinator,
     RuntimeInstallerCancelled,
     RuntimeInstallerClientError,
     RuntimeMaintenanceRequestBuilder,
@@ -365,6 +366,7 @@ class RuntimeInstallerClient:
         product_id: str = "classic",
         accelerator: str | None = None,
         command: tuple[str, ...] | None = None,
+        maintenance_coordinator: ProductMaintenanceCoordinator | None = None,
     ) -> None:
         self.product_root = Path(product_root).resolve()
         if content_root is None:
@@ -400,6 +402,7 @@ class RuntimeInstallerClient:
         )
         self.product_id = product_id
         self.accelerator = accelerator
+        self._maintenance_coordinator = maintenance_coordinator
         configured = os.environ.get("VIBEOCR_RUNTIME_INSTALLER")
         self._materialize_bound_installer = False
         if command is not None:
@@ -649,9 +652,10 @@ class RuntimeInstallerClient:
         effective_cancel = cancel_event or threading.Event()
         terminal = threading.Event()
         try:
-            lease = get_product_maintenance_coordinator(
-                self.product_root / "locks" / "product-maintenance.lock"
-            ).begin_runtime_maintenance(
+            coordinator = (
+                self._maintenance_coordinator or get_product_maintenance_coordinator()
+            )
+            lease = coordinator.begin_runtime_maintenance(
                 cancel=effective_cancel.set,
                 wait_terminal=terminal.wait,
             )

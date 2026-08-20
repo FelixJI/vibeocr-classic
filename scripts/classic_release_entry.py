@@ -200,7 +200,7 @@ def _run_velopack_update_smoke() -> int:
 
     mode = os.environ.get("VIBEOCR_CLASSIC_TEST_MODE")
     nonce = os.environ.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
-    if mode != "artifact-smoke" or re.fullmatch(r"[0-9a-f]{32,128}", nonce) is None:
+    if mode != "artifact-smoke" or re.fullmatch(r"[0-9a-fA-F]{32,128}", nonce) is None:
         raise RuntimeError("Velopack artifact smoke requires authenticated test mode")
     feed = os.environ["VIBEOCR_SELF_TEST_UPDATE_FEED"]
     parsed = urlsplit(feed)

@@ -8,6 +8,7 @@
 """
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -569,6 +570,58 @@ def test_activate_portable_state_migrates_current_state_to_root_app_dir(
     assert paths.state_root == executable.parents[1] / "state"
     assert paths.config_file.read_text(encoding="utf-8") == '{"language": "zh-CN"}'
     assert legacy.is_dir()  # 源在 current 被更新替换前保持可恢复。
+
+
+def test_current_state_migration_accepts_only_an_exact_concurrent_winner(
+    tmp_path, monkeypatch
+):
+    import vibeocr.classic.app_paths as app_paths
+
+    executable = _write_velopack_layout(tmp_path / "portable")
+    legacy = executable.parent / "state"
+    (legacy / "config").mkdir(parents=True)
+    (legacy / "config/app_settings.json").write_text("winner", encoding="utf-8")
+    target = executable.parents[1] / "state"
+    original_replace = app_paths.os.replace
+
+    def lose_promote_race(source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == target and "-migration-" in Path(source).name:
+            shutil.copytree(legacy, target)
+            raise PermissionError("concurrent winner promoted first")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(app_paths.os, "replace", lose_promote_race)
+
+    paths = activate_portable_state(executable)
+
+    assert paths.state_root == target
+    assert paths.config_file.read_text(encoding="utf-8") == "winner"
+    assert (legacy / "config/app_settings.json").read_text(encoding="utf-8") == (
+        "winner"
+    )
+
+
+def test_current_state_migration_rejects_partial_concurrent_target(
+    tmp_path, monkeypatch
+):
+    import vibeocr.classic.app_paths as app_paths
+
+    executable = _write_velopack_layout(tmp_path / "portable")
+    legacy = executable.parent / "state"
+    (legacy / "config").mkdir(parents=True)
+    (legacy / "config/app_settings.json").write_text("source", encoding="utf-8")
+    target = executable.parents[1] / "state"
+
+    def partial_winner(_source: str | Path, destination: str | Path) -> None:
+        if Path(destination) == target:
+            target.mkdir()
+            (target / "partial.txt").write_text("partial", encoding="utf-8")
+        raise PermissionError("concurrent target is incomplete")
+
+    monkeypatch.setattr(app_paths.os, "replace", partial_winner)
+
+    with pytest.raises(PortableStateError, match="迁移失败"):
+        activate_portable_state(executable)
 
 
 def test_activate_portable_state_migrates_legacy_runtimes_name(tmp_path, monkeypatch):

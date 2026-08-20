@@ -137,6 +137,42 @@ def test_product_maintenance_file_lock_blocks_a_second_coordinator(
         update.release()
 
 
+def test_runtime_client_uses_active_state_lock_when_product_root_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import vibeocr.classic.app_paths as app_paths
+
+    state = tmp_path / "portable/state"
+    paths = app_paths.AppPaths(
+        install_root=tmp_path / "portable",
+        state_root=state,
+        data_root=state / "data",
+        runtime_root=state / "runtime",
+        model_cache_root=state / "models",
+        output_root=state / "output",
+        config_file=state / "config/app_settings.json",
+    )
+    monkeypatch.setattr(app_paths, "_active_app_paths", paths)
+    coordinator = ProductMaintenanceCoordinator(
+        paths.locks_root / "product-maintenance.lock"
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.runtime_installation.get_product_maintenance_coordinator",
+        lambda: coordinator,
+    )
+    client = RuntimeInstallerClient(
+        tmp_path / "different-product-root",
+        command=("installer.exe",),
+    )
+    update = coordinator.begin_app_update(cancel_runtime=True, timeout=0)
+    try:
+        with pytest.raises(RuntimeInstallerClientError, match="AppUpdate"):
+            with client._maintenance_operation():
+                pass
+    finally:
+        update.release()
+
+
 def test_update_cancels_runtime_and_waits_for_terminal_before_ownership(
     tmp_path: Path,
 ) -> None:

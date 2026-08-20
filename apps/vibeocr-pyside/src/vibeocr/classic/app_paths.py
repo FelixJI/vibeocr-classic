@@ -251,18 +251,19 @@ def _tree_entries(root: Path) -> tuple[tuple[str, bool, int], ...]:
     pending = [root]
     while pending:
         directory = pending.pop()
-        for item in os.scandir(directory):
-            path = Path(item.path)
-            if _is_reparse_point(path):
-                raise PortableStateError(f"旧状态包含 reparse point: {path}")
-            relative = path.relative_to(root).as_posix()
-            if item.is_dir(follow_symlinks=False):
-                records.append((relative, True, 0))
-                pending.append(path)
-            elif item.is_file(follow_symlinks=False):
-                records.append((relative, False, item.stat().st_size))
-            else:
-                raise PortableStateError(f"旧状态包含不受支持的条目: {path}")
+        with os.scandir(directory) as entries:
+            for item in entries:
+                path = Path(item.path)
+                if _is_reparse_point(path):
+                    raise PortableStateError(f"旧状态包含 reparse point: {path}")
+                relative = path.relative_to(root).as_posix()
+                if item.is_dir(follow_symlinks=False):
+                    records.append((relative, True, 0))
+                    pending.append(path)
+                elif item.is_file(follow_symlinks=False):
+                    records.append((relative, False, item.stat().st_size))
+                else:
+                    raise PortableStateError(f"旧状态包含不受支持的条目: {path}")
     return tuple(sorted(records))
 
 
@@ -293,12 +294,33 @@ def _copy_verify_promote(source: Path, target: Path, *, label: str) -> None:
                 source / relative, staging / relative, shallow=False
             ):
                 raise PortableStateError(f"{label} 文件迁移验证失败: {relative}")
-        os.replace(staging, target)
+        try:
+            os.replace(staging, target)
+        except OSError as promote_error:
+            # Concurrent startup may have promoted the same legacy tree first.
+            # Accept only an exact, non-reparse semantic copy; a merely existing
+            # or partial target remains a hard failure.
+            try:
+                if (
+                    not target.is_dir()
+                    or _is_reparse_point(target)
+                    or _tree_entries(target) != source_entries
+                ):
+                    raise PortableStateError(f"{label} 并发迁移目标不完整")
+                for relative, is_directory, _size in source_entries:
+                    if not is_directory and not filecmp.cmp(
+                        source / relative, target / relative, shallow=False
+                    ):
+                        raise PortableStateError(
+                            f"{label} 并发迁移文件不一致: {relative}"
+                        )
+            except (OSError, PortableStateError):
+                raise promote_error
     except OSError as exc:
         raise PortableStateError(f"{label} 迁移失败: {exc}") from exc
     finally:
         if staging.exists():
-            shutil.rmtree(staging)
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _migrate_legacy_runtime_directory(state_root: Path) -> None:

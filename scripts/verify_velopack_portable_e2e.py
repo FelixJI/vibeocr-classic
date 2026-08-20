@@ -75,6 +75,19 @@ def _launch(root: Path, env: dict[str, str]) -> subprocess.Popen:
     )
 
 
+def _stop_process(process: subprocess.Popen, *, timeout: float = 15.0) -> None:
+    """Stop one packaged app without leaking it across E2E failure paths."""
+    if process.poll() is not None:
+        process.wait(timeout=timeout)
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout)
+
+
 def verify_portable_e2e(
     old_portable: Path,
     new_feed: Path,
@@ -138,13 +151,18 @@ def verify_portable_e2e(
     env["VIBEOCR_SELF_TEST_UPDATE_FEED"] = (
         f"http://127.0.0.1:{server.server_address[1]}/"
     )
+    process: subprocess.Popen | None = None
     try:
         process = _launch(root, env)
         evidence = _wait_for_result(result, timeout, process)
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+        try:
+            if process is not None:
+                _stop_process(process)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
     if evidence.get("installed_version") != target_version:
         raise RuntimeError(f"restarted app reported wrong version: {evidence}")
     if replaced_marker.exists():
@@ -165,8 +183,10 @@ def verify_portable_e2e(
     env["VIBEOCR_SELF_TEST_RESULT"] = str(moved_result)
     env["VIBEOCR_SELF_TEST_UPDATE_FEED"] = "http://127.0.0.1:9/"
     moved_process = _launch(moved, env)
-    moved_evidence = _wait_for_result(moved_result, 45.0, moved_process)
-    moved_process.wait(timeout=15)
+    try:
+        moved_evidence = _wait_for_result(moved_result, 45.0, moved_process)
+    finally:
+        _stop_process(moved_process)
     if moved_evidence.get("installed_version") != target_version:
         raise RuntimeError(f"moved app reported wrong version: {moved_evidence}")
     if Path(moved_evidence["install_root"]) != moved.resolve():

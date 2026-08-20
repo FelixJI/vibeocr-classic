@@ -57,6 +57,13 @@ class _Manager:
         self.apply_started = True
 
 
+def _simulate_process_exit(coordinator: VelopackUpdateCoordinator) -> None:
+    lease = coordinator._apply_lease
+    assert lease is not None
+    lease.release()
+    coordinator._apply_lease = None
+
+
 def test_installed_version_reads_local_velopack_state_without_checking_feed():
     manager = _Manager(portable=True)
     coordinator = VelopackUpdateCoordinator(
@@ -69,12 +76,15 @@ def test_installed_version_reads_local_velopack_state_without_checking_feed():
     assert manager.apply_started is False
 
 
-def test_coordinator_exposes_available_update_and_starts_apply():
+def test_coordinator_exposes_available_update_and_starts_apply(tmp_path):
     manager = _Manager()
     observed: list[int] = []
     coordinator = VelopackUpdateCoordinator(
         source_candidates=("https://updates.invalid/",),
         manager_factory=lambda _source: manager,
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
 
     checked = asyncio.run(coordinator.check())
@@ -88,14 +98,18 @@ def test_coordinator_exposes_available_update_and_starts_apply():
     assert manager.downloaded is True
     assert manager.apply_started is True
     assert observed == [25, 100]
+    _simulate_process_exit(coordinator)
 
 
-def test_portable_coordinator_shares_velopack_update_flow():
+def test_portable_coordinator_shares_velopack_update_flow(tmp_path):
     """Portable 不再硬拒绝：check/download/apply 与安装模式共用 Velopack 流程。"""
     manager = _Manager(portable=True)
     coordinator = VelopackUpdateCoordinator(
         source_candidates=("https://updates.invalid/",),
         manager_factory=lambda _source: manager,
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
 
     checked = asyncio.run(coordinator.check())
@@ -105,10 +119,12 @@ def test_portable_coordinator_shares_velopack_update_flow():
     assert applied.status is UpdateApplyStatus.APPLY_STARTED
     assert manager.downloaded is True
     assert manager.apply_started is True
+    _simulate_process_exit(coordinator)
 
 
 def test_installed_forward_proxy_falls_back_to_materialized_local_feed(
     monkeypatch,
+    tmp_path,
 ):
     class FailingRemoteManager(_Manager):
         def check_for_updates(self):
@@ -148,6 +164,9 @@ def test_installed_forward_proxy_falls_back_to_materialized_local_feed(
         source_candidates=("https://updates.invalid/",),
         manager_factory=manager_factory,
         materializer=materializer,
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
 
     checked = asyncio.run(coordinator.check())
@@ -161,6 +180,7 @@ def test_installed_forward_proxy_falls_back_to_materialized_local_feed(
     assert 75 in observed
     assert local_manager.downloaded is True
     assert local_manager.apply_started is True
+    _simulate_process_exit(coordinator)
 
 
 def test_materialized_fallback_cancellation_does_not_call_velopack_download(
@@ -252,6 +272,8 @@ def test_velopack_apply_cancels_runtime_and_waits_for_terminal(tmp_path):
     assert result.status is UpdateApplyStatus.APPLY_STARTED
     assert cancelled.is_set()
     assert manager.apply_started is True
+    assert maintenance.owner.value == "AppUpdate"
+    _simulate_process_exit(coordinator)
     assert maintenance.owner.value == "Idle"
 
 

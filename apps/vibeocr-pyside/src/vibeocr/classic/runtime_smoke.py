@@ -21,11 +21,11 @@ def probe_runtime_launch(launch: RuntimeLaunch, state_root: Path) -> None:
     from vibeocr.runtime_contracts import (
         JobKind,
         JobPriority,
-        OcrEngine,
         PipelineSelection,
         SubmitItem,
         SubmitRequest,
     )
+    from vibeocr.runtime_contracts.dtos import OcrEngine
 
     small = Image.new("RGB", (210, 60), "white")
     ImageDraw.Draw(small).text((12, 20), "VibeOCR 123", fill="black")

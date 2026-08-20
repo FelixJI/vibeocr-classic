@@ -11,6 +11,7 @@ from typing import Protocol
 from vibeocr.classic.runtime_maintenance import (
     ProductMaintenanceBusy,
     ProductMaintenanceCoordinator,
+    ProductMaintenanceLease,
     get_product_maintenance_coordinator,
 )
 from vibeocr.classic.services.update_coordinator import (
@@ -104,6 +105,7 @@ class VelopackUpdateCoordinator:
         self._materialized_source: MaterializedUpdateSource | None = None
         self._manager: _VelopackManager | None = None
         self._update: _VelopackUpdateInfo | None = None
+        self._apply_lease: ProductMaintenanceLease | None = None
 
     async def installed_version(self) -> str:
         """Return Velopack's local version without contacting an update feed."""
@@ -201,6 +203,11 @@ class VelopackUpdateCoordinator:
     ) -> UpdateApplyResult:
         manager = self._manager
         update = self._update
+        if self._apply_lease is not None:
+            return UpdateApplyResult(
+                UpdateApplyStatus.FAILED,
+                "Velopack apply 已启动，等待当前进程退出",
+            )
         if manager is None or update is None:
             return UpdateApplyResult(
                 UpdateApplyStatus.FAILED,
@@ -212,6 +219,7 @@ class VelopackUpdateCoordinator:
         coordinator = (
             self._maintenance_coordinator or get_product_maintenance_coordinator()
         )
+        hold_until_process_exit = False
         try:
             lease = await asyncio.to_thread(
                 coordinator.begin_app_update,
@@ -240,12 +248,17 @@ class VelopackUpdateCoordinator:
                 restart=True,
                 restart_args=None,
             )
+            # Velopack only schedules apply here. The caller exits afterwards;
+            # retain the process/file lease until that exit closes the handle.
+            self._apply_lease = lease
+            hold_until_process_exit = True
         except (_DownloadCancelled, asyncio.CancelledError):
             return UpdateApplyResult(UpdateApplyStatus.CANCELLED)
         except Exception as exc:
             return UpdateApplyResult(UpdateApplyStatus.FAILED, str(exc))
         finally:
-            lease.release()
+            if not hold_until_process_exit:
+                lease.release()
         return UpdateApplyResult(UpdateApplyStatus.APPLY_STARTED)
 
 

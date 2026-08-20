@@ -132,7 +132,7 @@ def test_unknown_source_kind_is_preserved_but_not_editable() -> None:
     ]
 
 
-def test_model_registry_is_preserved_but_not_editable() -> None:
+def test_model_registry_is_an_editable_upstream_source_hint() -> None:
     descriptors = _descriptors()
     descriptors[1]["download_source_catalog"]["sources"].append(
         {
@@ -144,12 +144,13 @@ def test_model_registry_is_preserved_but_not_editable() -> None:
 
     catalog = parse_capability_catalogs(descriptors)
 
-    legacy = next(
+    registry = next(
         source for source in catalog.sources if source.source_id == "legacy-models"
     )
-    assert legacy.kind == "model_registry"
-    assert legacy.endpoint == "https://models.example.invalid"
-    assert legacy.editable is False
+    assert registry.kind == "model_registry"
+    assert registry.endpoint == "https://models.example.invalid"
+    assert registry.editable is True
+    assert catalog.editable_sources_by_kind()["model_registry"] == (registry,)
 
 
 def test_model_registry_rejects_malformed_endpoint() -> None:
@@ -278,6 +279,19 @@ def test_normalize_source_selection_omits_empty_and_validates() -> None:
 
     assert catalog.normalize_source_selection({}) is None
     assert catalog.normalize_source_selection({"package_index": "pypi"}) == ("pypi",)
+
+    descriptors = _descriptors()
+    descriptors[1]["download_source_catalog"]["sources"].append(
+        {
+            "kind": "model_registry",
+            "id": "modelscope",
+            "endpoint": "https://www.modelscope.cn",
+        }
+    )
+    catalog = parse_capability_catalogs(descriptors)
+    assert catalog.normalize_source_selection(
+        {"package_index": "pypi", "model_registry": "modelscope"}
+    ) == ("pypi", "modelscope")
 
     with pytest.raises(RuntimeSelectionError, match="未知下载源"):
         catalog.normalize_source_selection({"package_index": "not-a-source"})

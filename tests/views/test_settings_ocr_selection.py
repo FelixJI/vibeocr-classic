@@ -145,8 +145,7 @@ def _health_payload(
             },
         ]
         if with_model_registry:
-            # 旧 Backend 可能继续声明 model_registry；Classic 保留 wire
-            # descriptor，但不再把模型源渲染成可编辑 UI。
+            # Backend 只声明稳定 source id；模型的下载、校验和缓存归原生下载器。
             sources += [
                 {
                     "kind": "model_registry",
@@ -412,10 +411,10 @@ def test_save_download_sources_waits_for_settings_snapshot(
     assert adapter.fetch_settings_calls == 1
 
 
-def test_model_registry_sources_are_not_exposed_by_classic(
+def test_model_registry_sources_are_editable_and_keep_unknown_selected_ids(
     selection_controller,
 ) -> None:
-    """旧 Backend 的 model_registry 仅保持 wire 兼容，不进入 Classic UI。"""
+    """保存全量设置时，model_registry 可选，未知旧 id 仍原样保留。"""
     controller, host, adapter, _config, _manager = selection_controller
 
     controller._on_health_loaded(
@@ -426,27 +425,39 @@ def test_model_registry_sources_are_not_exposed_by_classic(
     registry_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
     future_combo = host.findChild(QComboBox, "comboDownloadSource_future_registry")
     assert package_combo is not None
-    assert registry_combo is None
+    assert registry_combo is not None
     assert future_combo is None
     assert [package_combo.itemText(i) for i in range(package_combo.count())] == [
         "tuna-pypi",
         "pypi",
     ]
+    assert [registry_combo.itemText(i) for i in range(registry_combo.count())] == [
+        "huggingface",
+        "modelscope",
+    ]
     # Settings 是全量 PUT：先读到现有快照再保存（C6 守卫语义）
     controller._on_settings_loaded(
         SettingsSnapshot(
-            download_source_ids=("tuna-pypi", "modelscope", "future-source")
+            download_source_ids=(
+                "tuna-pypi",
+                "modelscope",
+                "legacy-models",
+                "future-source",
+            )
         )
     )
+
+    assert registry_combo.currentData() == "modelscope"
 
     controller._on_save_download_sources()
 
     assert adapter.update_calls
     saved = adapter.update_calls[-1]
-    # 源集合与顺序无关（每 kind 至多一个）
+    # 源集合与顺序无关（每 kind 至多一个）；未知/旧 id 必须通过全量 PUT 保留。
     assert set(saved.download_source_ids) == {
         "tuna-pypi",
         "modelscope",
+        "legacy-models",
         "future-source",
     }
 

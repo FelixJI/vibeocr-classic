@@ -30,9 +30,10 @@ _VALID_ENGINE_AVAILABILITY = frozenset(
     }
 )
 
-# Protocol 保持 source kind 开放；Classic 只把已知 kind 暴露为可编辑选项，
+# Protocol 保持 source kind 开放；Classic 只暴露稳定的上游来源选择。
+# 选择只按 id 透传，模型下载、缓存与校验仍由各自的原生下载器负责。
 # 未知 kind 保留在 catalog 中但不参与 UI 选择。
-EDITABLE_SOURCE_KINDS = frozenset({"package_index"})
+EDITABLE_SOURCE_KINDS = frozenset({"package_index", "model_registry"})
 
 DEFAULT_ENGINE_ID = "rapidocr"
 VALID_ENGINE_IDS = frozenset({"rapidocr", "windows", "paddleocr"})

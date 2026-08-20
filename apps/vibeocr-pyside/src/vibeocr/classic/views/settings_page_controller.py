@@ -1955,6 +1955,7 @@ class SettingsPageController:
 
     _SOURCE_KIND_LABELS = {
         "package_index": "Python 包索引",
+        "model_registry": "模型源",
     }
 
     def _init_ocr_runtime_group(self) -> None:

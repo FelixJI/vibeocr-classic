@@ -69,7 +69,10 @@ def _immediate_invalidation_manager() -> MagicMock:
 
 
 def _health_payload(
-    *, with_download_sources: bool = True, with_model_registry: bool = False
+    *,
+    with_download_sources: bool = True,
+    with_model_registry: bool = False,
+    with_unknown_source: bool = False,
 ) -> dict:
     descriptors = [
         {
@@ -142,9 +145,8 @@ def _health_payload(
             },
         ]
         if with_model_registry:
-            # Backend 0.13 起 catalog 声明 model_registry 源（huggingface/
-            # modelscope）；设置页必须 catalog 驱动地按 kind 渲染，而不是
-            # 预造 UI 选项。
+            # 旧 Backend 可能继续声明 model_registry；Classic 保留 wire
+            # descriptor，但不再把模型源渲染成可编辑 UI。
             sources += [
                 {
                     "kind": "model_registry",
@@ -157,6 +159,14 @@ def _health_payload(
                     "endpoint": "https://www.modelscope.cn",
                 },
             ]
+        if with_unknown_source:
+            sources.append(
+                {
+                    "kind": "future_registry",
+                    "id": "future-source",
+                    "endpoint": "https://future.example.invalid",
+                }
+            )
         descriptors.append(
             {
                 "name": "runtime.download-sources.v1",
@@ -402,37 +412,43 @@ def test_save_download_sources_waits_for_settings_snapshot(
     assert adapter.fetch_settings_calls == 1
 
 
-def test_model_registry_sources_render_per_kind_from_catalog(
+def test_model_registry_sources_are_not_exposed_by_classic(
     selection_controller,
 ) -> None:
-    """Backend 0.13 的 catalog 声明 model_registry 源：设置页按 kind 渲染
-    Hugging Face / ModelScope 单选，选择经 Backend Settings 持久化。"""
+    """旧 Backend 的 model_registry 仅保持 wire 兼容，不进入 Classic UI。"""
     controller, host, adapter, _config, _manager = selection_controller
 
-    controller._on_health_loaded(_health_payload(with_model_registry=True))
+    controller._on_health_loaded(
+        _health_payload(with_model_registry=True, with_unknown_source=True)
+    )
 
     package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
     registry_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
-    assert package_combo is not None and registry_combo is not None
+    future_combo = host.findChild(QComboBox, "comboDownloadSource_future_registry")
+    assert package_combo is not None
+    assert registry_combo is None
+    assert future_combo is None
     assert [package_combo.itemText(i) for i in range(package_combo.count())] == [
         "tuna-pypi",
         "pypi",
     ]
-    assert [registry_combo.itemText(i) for i in range(registry_combo.count())] == [
-        "huggingface",
-        "modelscope",
-    ]
-    # 每 kind 独立选择：model_registry 选中 modelscope 不影响 package_index
-    registry_combo.setCurrentIndex(1)
     # Settings 是全量 PUT：先读到现有快照再保存（C6 守卫语义）
-    controller._on_settings_loaded(SettingsSnapshot())
+    controller._on_settings_loaded(
+        SettingsSnapshot(
+            download_source_ids=("tuna-pypi", "modelscope", "future-source")
+        )
+    )
 
     controller._on_save_download_sources()
 
     assert adapter.update_calls
     saved = adapter.update_calls[-1]
     # 源集合与顺序无关（每 kind 至多一个）
-    assert set(saved.download_source_ids) == {"tuna-pypi", "modelscope"}
+    assert set(saved.download_source_ids) == {
+        "tuna-pypi",
+        "modelscope",
+        "future-source",
+    }
 
 
 def test_model_registry_absent_from_catalog_renders_nothing(

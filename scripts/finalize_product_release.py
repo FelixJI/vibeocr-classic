@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import ntpath
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 
@@ -23,7 +25,21 @@ EXPECTED_PRODUCT_ROOTS = {
 }
 
 
-def _runtime_pack_names(record: dict[str, object]) -> set[str]:
+def _release_file_name(value: object, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or ntpath.basename(value) != value
+        or ntpath.isreserved(value)
+    ):
+        raise ValueError(
+            f"Backend runtime manifest {field} must be a release file name"
+        )
+    return value
+
+
+def _runtime_pack_names(record: dict[str, object], *, field: str) -> set[str]:
     """Backend 0.12 起 runtime_pack 是分片列表；兼容旧版的单字符串/缺省。"""
 
     names: set[str] = set()
@@ -31,37 +47,41 @@ def _runtime_pack_names(record: dict[str, object]) -> set[str]:
     if runtime_pack is None:
         return names
     if isinstance(runtime_pack, str):
-        parts: list[str] = [runtime_pack]
-    elif isinstance(runtime_pack, list) and all(
-        isinstance(part, str) and part for part in runtime_pack
-    ):
-        parts = list(runtime_pack)
+        parts: list[object] = [runtime_pack]
+    elif isinstance(runtime_pack, list) and runtime_pack:
+        parts = runtime_pack
     else:
         raise ValueError("Backend runtime_pack must be a file name or name list")
-    names.update(parts)
+    names.update(
+        _release_file_name(part, f"{field}[{index}]")
+        for index, part in enumerate(parts)
+    )
     return names
 
 
 def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
     names = {
         "runtime-manifest.json",
-        str(manifest["backend_wheel"]),
-        str(manifest["protocol_manifest"]),
-        str(manifest["protocol_wheel"]),
+        _release_file_name(manifest["backend_wheel"], "backend_wheel"),
+        _release_file_name(manifest["protocol_manifest"], "protocol_manifest"),
+        _release_file_name(manifest["protocol_wheel"], "protocol_wheel"),
     }
     for field in ("python", "installer"):
         record = manifest[field]
         if not isinstance(record, dict):
             raise ValueError(f"Backend runtime manifest {field} must be an object")
-        names.add(str(record["archive"]))
+        names.add(_release_file_name(record["archive"], f"{field}.archive"))
     profiles = manifest.get("profiles")
     if not isinstance(profiles, dict):
         raise ValueError("Backend runtime manifest profiles must be an object")
-    for record in profiles.values():
-        if not isinstance(record, dict):
+    base_packs: set[str] = set()
+    for profile_id, record in profiles.items():
+        if not isinstance(profile_id, str) or not isinstance(record, dict):
             raise ValueError("Backend runtime profile must be an object")
-        names.add(str(record["lock"]))
-        names.update(_runtime_pack_names(record))
+        names.add(_release_file_name(record["lock"], f"profiles.{profile_id}.lock"))
+        packs = _runtime_pack_names(record, field=f"profiles.{profile_id}.runtime_pack")
+        if profile_id == "win-x64-base":
+            base_packs.update(packs)
         # Backend 0.12 起 profile 可声明 install_scopes；每个 scope 自带
         # 精确 lock（如 cu126 的 gpu-runtime 闭包），缺文件会让绑定
         # Installer 的 inspect 失败。
@@ -70,12 +90,43 @@ def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
             continue
         if not isinstance(scopes, list):
             raise ValueError("Backend runtime install_scopes must be a list")
-        for scope in scopes:
+        for scope_index, scope in enumerate(scopes):
             if not isinstance(scope, dict):
                 raise ValueError("Backend runtime install scope must be an object")
-            names.add(str(scope["lock"]))
-            names.update(_runtime_pack_names(scope))
+            scope_field = f"profiles.{profile_id}.install_scopes[{scope_index}]"
+            names.add(
+                _release_file_name(
+                    scope["lock"],
+                    f"{scope_field}.lock",
+                )
+            )
+            _runtime_pack_names(
+                scope,
+                field=f"{scope_field}.runtime_pack",
+            )  # validate advanced pack declarations
+    if "win-x64-base" not in profiles or not base_packs:
+        raise ValueError("Backend runtime manifest is missing the base Runtime Pack")
+    names.update(base_packs)
     return names
+
+
+def _require_regular_release_file(release_root: Path, name: str) -> Path:
+    source = release_root / name
+    try:
+        metadata = source.lstat()
+    except OSError as exc:
+        raise FileNotFoundError(source) from exc
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    file_attributes = getattr(metadata, "st_file_attributes", 0)
+    if not stat.S_ISREG(metadata.st_mode) or file_attributes & reparse_point:
+        raise ValueError(
+            "Backend runtime release entry must be a regular non-reparse file: "
+            f"{source}"
+        )
+    resolved = source.resolve(strict=True)
+    if resolved.parent != release_root:
+        raise ValueError(f"Backend runtime release entry escapes its root: {source}")
+    return source
 
 
 def _sha256(path: Path) -> str:
@@ -173,13 +224,13 @@ def finalize_product_release(
     if backend_output.exists():
         raise ValueError("product layout already contains a backend directory")
     backend_output.mkdir()
-    runtime_manifest = json.loads(
-        (backend_release_dir / "runtime-manifest.json").read_text(encoding="utf-8")
+    backend_release_root = backend_release_dir.resolve(strict=True)
+    runtime_manifest_path = _require_regular_release_file(
+        backend_release_root, "runtime-manifest.json"
     )
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
     for name in sorted(_runtime_asset_names(runtime_manifest)):
-        source = backend_release_dir.resolve(strict=True) / name
-        if not source.is_file():
-            raise FileNotFoundError(source)
+        source = _require_regular_release_file(backend_release_root, name)
         shutil.copyfile(source, backend_output / name)
 
     manifest_path = product_root / "product-release-manifest.json"

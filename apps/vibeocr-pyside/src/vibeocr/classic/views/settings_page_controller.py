@@ -1955,7 +1955,6 @@ class SettingsPageController:
 
     _SOURCE_KIND_LABELS = {
         "package_index": "Python 包索引",
-        "model_registry": "模型仓库",
     }
 
     def _init_ocr_runtime_group(self) -> None:
@@ -2287,11 +2286,18 @@ class SettingsPageController:
             return
         source_ids = self._resolve_download_source_ids()
         current = self._runtime_settings_snapshot
+        preserved_source_ids = (
+            self._selection_catalog.preserve_uneditable_source_ids(
+                current.download_source_ids
+            )
+            if self._selection_catalog is not None
+            else current.download_source_ids
+        )
         snapshot = SettingsSnapshot(
             default_ttl_seconds=current.default_ttl_seconds,
             pipelines=current.pipelines,
             extra=dict(current.extra),
-            download_source_ids=source_ids or (),
+            download_source_ids=(*preserved_source_ids, *(source_ids or ())),
         )
         adapter.update_settings(snapshot)
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")

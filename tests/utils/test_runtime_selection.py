@@ -132,6 +132,36 @@ def test_unknown_source_kind_is_preserved_but_not_editable() -> None:
     ]
 
 
+def test_model_registry_is_preserved_but_not_editable() -> None:
+    descriptors = _descriptors()
+    descriptors[1]["download_source_catalog"]["sources"].append(
+        {
+            "kind": "model_registry",
+            "id": "legacy-models",
+            "endpoint": "https://models.example.invalid",
+        }
+    )
+
+    catalog = parse_capability_catalogs(descriptors)
+
+    legacy = next(
+        source for source in catalog.sources if source.source_id == "legacy-models"
+    )
+    assert legacy.kind == "model_registry"
+    assert legacy.endpoint == "https://models.example.invalid"
+    assert legacy.editable is False
+
+
+def test_model_registry_rejects_malformed_endpoint() -> None:
+    descriptors = _descriptors()
+    descriptors[1]["download_source_catalog"]["sources"].append(
+        {"kind": "model_registry", "id": "legacy-models", "endpoint": {"opaque": True}}
+    )
+
+    with pytest.raises(RuntimeSelectionError, match="source.endpoint"):
+        parse_capability_catalogs(descriptors)
+
+
 def test_missing_catalogs_yield_empty_projection() -> None:
     catalog = parse_capability_catalogs(
         [{"name": ENGINE_SELECTION_CAPABILITY}, {"name": "unrelated.capability.v1"}]

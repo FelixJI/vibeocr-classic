@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import zipfile
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -50,8 +52,20 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
     python.write_bytes(b"python")
     lock = backend / "cpu.lock"
     lock.write_bytes(b"cpu")
-    runtime_pack = backend / "vibeocr-runtime-pack-win-x64-base-0.7.0.part01.zip"
+    advanced_lock = backend / "cpu-advanced.lock"
+    advanced_lock.write_bytes(b"advanced")
+    cuda_lock = backend / "cuda.lock"
+    cuda_lock.write_bytes(b"cuda")
+    runtime_pack = backend / "foundation-runtime.chunk01.zip"
     runtime_pack.write_bytes(b"pack")
+    advanced_packs = {
+        "advanced-win-x64-base-disguise.zip": b"cpu-profile",
+        "cuda-profile-pack.zip": b"cuda-profile",
+        "paddlex-profile-pack.zip": b"paddlex-profile",
+        "mineru-profile-pack.zip": b"mineru-profile",
+    }
+    for name, content in advanced_packs.items():
+        (backend / name).write_bytes(content)
     installer = backend / "installer.zip"
     with zipfile.ZipFile(installer, "w") as archive:
         archive.writestr("runtime-installer/installer.exe", b"installer")
@@ -74,12 +88,43 @@ def _releases(tmp_path: Path) -> tuple[Path, Path]:
                     "executable_sha256": _sha(b"installer"),
                 },
                 "profiles": {
+                    "win-x64-base": {
+                        "lock": lock.name,
+                        "sha256": _sha(b"cpu"),
+                        "runtime_pack": [runtime_pack.name],
+                    },
                     "win-x64-cpu": {
                         "lock": lock.name,
                         "sha256": _sha(b"cpu"),
-                        # Backend 0.12 起 base pack 以分片列表声明
-                        "runtime_pack": [runtime_pack.name],
-                    }
+                        "install_scopes": [
+                            {
+                                "scope_id": "cpu-runtime",
+                                "lock": advanced_lock.name,
+                                "runtime_pack": ["advanced-win-x64-base-disguise.zip"],
+                            },
+                            {
+                                "scope_id": "paddlex-runtime",
+                                "lock": advanced_lock.name,
+                                "runtime_pack": ["paddlex-profile-pack.zip"],
+                            },
+                            {
+                                "scope_id": "mineru-runtime",
+                                "lock": advanced_lock.name,
+                                "runtime_pack": ["mineru-profile-pack.zip"],
+                            },
+                        ],
+                    },
+                    "win-x64-cu126": {
+                        "lock": cuda_lock.name,
+                        "sha256": _sha(b"cuda"),
+                        "install_scopes": [
+                            {
+                                "scope_id": "gpu-runtime",
+                                "lock": cuda_lock.name,
+                                "runtime_pack": ["cuda-profile-pack.zip"],
+                            }
+                        ],
+                    },
                 },
                 "capabilities": ["ocr.recognition.v2"],
             }
@@ -172,7 +217,18 @@ def test_product_finalizer_is_deterministic_and_binds_runtime(tmp_path: Path) ->
     assert "backend/installer.zip" in members
     assert "backend/python.tar.gz" in members
     assert "backend/runtime-manifest.json" in members
-    assert "backend/vibeocr-runtime-pack-win-x64-base-0.7.0.part01.zip" in members
+    assert "backend/foundation-runtime.chunk01.zip" in members
+    assert "backend/cpu-advanced.lock" in members
+    assert "backend/cuda.lock" in members
+    assert (
+        not {
+            "backend/advanced-win-x64-base-disguise.zip",
+            "backend/cuda-profile-pack.zip",
+            "backend/paddlex-profile-pack.zip",
+            "backend/mineru-profile-pack.zip",
+        }
+        & members
+    )
     assert "backend/SHA256SUMS" not in members
     assert "backend/SBOM.spdx.json" not in members
     assert version == {"version": "0.7.0"}
@@ -185,6 +241,55 @@ def test_product_finalizer_is_deterministic_and_binds_runtime(tmp_path: Path) ->
         }
     }
     assert manifest["frontend_protocol_lock_sha256"] == _sha(frontend_lock.read_bytes())
+
+
+def test_product_finalizer_rejects_reparse_runtime_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol, backend = _releases(tmp_path)
+    runtime_pack = backend / "foundation-runtime.chunk01.zip"
+    frontend_protocol, frontend_lock = _frontend_release(tmp_path)
+    component_lock = tmp_path / "component-lock.json"
+    bind_product_releases(
+        protocol_release_dir=protocol,
+        backend_release_dir=backend,
+        protocol_repository="FelixJI/vibeocr-protocol",
+        protocol_version="2.0.0",
+        backend_repository="FelixJI/vibeocr-backend",
+        backend_version="0.7.0",
+        accelerator="cpu",
+        required_capabilities=("ocr.recognition.v2",),
+        output=component_lock,
+    )
+    product = tmp_path / "product" / "VibeOCR"
+    product.mkdir(parents=True)
+    (product / "VibeOCR.exe").write_bytes(b"app")
+    path_type = type(runtime_pack)
+    original_lstat = path_type.lstat
+
+    def _lstat_with_reparse_point(path: Path) -> object:
+        metadata = original_lstat(path)
+        if path == runtime_pack:
+            return SimpleNamespace(
+                st_mode=metadata.st_mode,
+                st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            )
+        return metadata
+
+    monkeypatch.setattr(path_type, "lstat", _lstat_with_reparse_point)
+
+    with pytest.raises(ValueError, match="regular non-reparse file"):
+        finalize_product_release(
+            product_root=product,
+            frontend="classic",
+            frontend_version="0.7.0",
+            source_commit="a" * 40,
+            component_lock=component_lock,
+            frontend_protocol_lock=frontend_lock,
+            frontend_protocol_release_dir=frontend_protocol,
+            protocol_release_dir=protocol,
+            backend_release_dir=backend,
+        )
 
 
 def test_product_finalizer_rejects_unexpected_top_level_items(tmp_path: Path) -> None:
@@ -308,20 +413,17 @@ def test_runtime_asset_names_accepts_pack_string_and_part_list() -> None:
             },
         }
 
-    assert "pack.zip" in _runtime_asset_names(_manifest("pack.zip"))
-    assert _runtime_asset_names(_manifest(["pack.part01.zip", "pack.part02.zip"])) >= {
-        "pack.part01.zip",
-        "pack.part02.zip",
+    base_pack = "arbitrary-foundation-pack.zip"
+    assert base_pack in _runtime_asset_names(_manifest(base_pack))
+    base_parts = [
+        "foundation.part01.zip",
+        "foundation.part02.zip",
+    ]
+    assert _runtime_asset_names(_manifest(base_parts)) >= {
+        *base_parts,
     }
-    assert _runtime_asset_names(_manifest(None)) == {
-        "runtime-manifest.json",
-        "backend.whl",
-        "release-manifest.json",
-        "protocol.whl",
-        "python.tar.gz",
-        "installer.zip",
-        "base.lock",
-    }
+    with pytest.raises(ValueError, match="base Runtime Pack"):
+        _runtime_asset_names(_manifest(None))
 
     with pytest.raises(ValueError, match="runtime_pack"):
         _runtime_asset_names(_manifest(["pack.zip", 42]))
@@ -339,6 +441,13 @@ def test_runtime_asset_names_includes_install_scope_locks() -> None:
         "python": {"archive": "python.tar.gz"},
         "installer": {"archive": "installer.zip"},
         "profiles": {
+            "win-x64-base": {
+                "lock": "requirements-win-x64-base.lock",
+                "runtime_pack": "arbitrary-foundation-pack.zip",
+            },
+            "win-x64-cpu": {
+                "lock": "requirements-win-x64-cpu.lock",
+            },
             "win-x64-cu126": {
                 "lock": "requirements-win-x64-cu126.lock",
                 "runtime_pack": None,
@@ -350,7 +459,7 @@ def test_runtime_asset_names_includes_install_scope_locks() -> None:
                         "runtime_pack": ["gpu-pack.part01.zip"],
                     }
                 ],
-            }
+            },
         },
     }
 
@@ -358,7 +467,7 @@ def test_runtime_asset_names_includes_install_scope_locks() -> None:
 
     assert "requirements-win-x64-cu126.lock" in names
     assert "requirements-win-x64-cu126-gpu.lock" in names
-    assert "gpu-pack.part01.zip" in names
+    assert "gpu-pack.part01.zip" not in names
 
     broken = {
         **manifest,
@@ -371,3 +480,90 @@ def test_runtime_asset_names_includes_install_scope_locks() -> None:
     }
     with pytest.raises(ValueError, match="install_scopes"):
         _runtime_asset_names(broken)
+
+    empty_pack_list = json.loads(json.dumps(manifest))
+    empty_pack_list["profiles"]["win-x64-cu126"]["install_scopes"][0][
+        "runtime_pack"
+    ] = []
+    with pytest.raises(ValueError, match="runtime_pack"):
+        _runtime_asset_names(empty_pack_list)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "backend_wheel",
+        "protocol_manifest",
+        "protocol_wheel",
+        "python.archive",
+        "installer.archive",
+        "profile.lock",
+        "profile.runtime_pack",
+        "scope.lock",
+        "scope.runtime_pack",
+    ],
+)
+def test_runtime_asset_names_rejects_release_path_escape(field: str) -> None:
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    manifest: dict[str, object] = {
+        "backend_wheel": "backend.whl",
+        "protocol_manifest": "release-manifest.json",
+        "protocol_wheel": "protocol.whl",
+        "python": {"archive": "python.tar.gz"},
+        "installer": {"archive": "installer.zip"},
+        "profiles": {
+            "win-x64-base": {
+                "lock": "base.lock",
+                "runtime_pack": ["base-pack.zip"],
+            },
+            "win-x64-cpu": {
+                "lock": "cpu.lock",
+                "install_scopes": [
+                    {
+                        "lock": "scope.lock",
+                        "runtime_pack": ["advanced-pack.zip"],
+                    }
+                ],
+            },
+        },
+    }
+    if "." in field:
+        owner, name = field.split(".", 1)
+        if owner in {"python", "installer"}:
+            cast(dict[str, object], manifest[owner])[name] = "../outside.zip"
+        elif owner == "profile":
+            profiles = cast(dict[str, object], manifest["profiles"])
+            cast(dict[str, object], profiles["win-x64-base"])[name] = "../outside.zip"
+        else:
+            profiles = cast(dict[str, object], manifest["profiles"])
+            cpu_profile = cast(dict[str, object], profiles["win-x64-cpu"])
+            scopes = cast(list[object], cpu_profile["install_scopes"])
+            cast(dict[str, object], scopes[0])[name] = "../outside.zip"
+    else:
+        manifest[field] = "../outside.zip"
+
+    with pytest.raises(ValueError, match="release file name"):
+        _runtime_asset_names(manifest)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["pack.zip:stream", "CON", "pack.zip.", "nested\\pack.zip", "pack?.zip"],
+)
+def test_runtime_asset_names_rejects_nonportable_windows_file_name(name: str) -> None:
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    manifest = {
+        "backend_wheel": "backend.whl",
+        "protocol_manifest": "release-manifest.json",
+        "protocol_wheel": "protocol.whl",
+        "python": {"archive": "python.tar.gz"},
+        "installer": {"archive": "installer.zip"},
+        "profiles": {
+            "win-x64-base": {"lock": "base.lock", "runtime_pack": [name]},
+        },
+    }
+
+    with pytest.raises(ValueError, match="release file name"):
+        _runtime_asset_names(manifest)

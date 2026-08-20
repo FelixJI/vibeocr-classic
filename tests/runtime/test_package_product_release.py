@@ -5,7 +5,7 @@ import json
 import stat
 import zipfile
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -506,7 +506,7 @@ def test_runtime_asset_names_includes_install_scope_locks() -> None:
 def test_runtime_asset_names_rejects_release_path_escape(field: str) -> None:
     from scripts.finalize_product_release import _runtime_asset_names
 
-    manifest: dict[str, Any] = {
+    manifest: dict[str, object] = {
         "backend_wheel": "backend.whl",
         "protocol_manifest": "release-manifest.json",
         "protocol_wheel": "protocol.whl",
@@ -531,13 +531,15 @@ def test_runtime_asset_names_rejects_release_path_escape(field: str) -> None:
     if "." in field:
         owner, name = field.split(".", 1)
         if owner in {"python", "installer"}:
-            manifest[owner][name] = "../outside.zip"
+            cast(dict[str, object], manifest[owner])[name] = "../outside.zip"
         elif owner == "profile":
-            manifest["profiles"]["win-x64-base"][name] = "../outside.zip"
+            profiles = cast(dict[str, object], manifest["profiles"])
+            cast(dict[str, object], profiles["win-x64-base"])[name] = "../outside.zip"
         else:
-            manifest["profiles"]["win-x64-cpu"]["install_scopes"][0][name] = (
-                "../outside.zip"
-            )
+            profiles = cast(dict[str, object], manifest["profiles"])
+            cpu_profile = cast(dict[str, object], profiles["win-x64-cpu"])
+            scopes = cast(list[object], cpu_profile["install_scopes"])
+            cast(dict[str, object], scopes[0])[name] = "../outside.zip"
     else:
         manifest[field] = "../outside.zip"
 

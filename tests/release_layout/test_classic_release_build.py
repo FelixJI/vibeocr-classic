@@ -125,6 +125,10 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "prepare_velopack_input.py" in script
     assert "--packDir $velopackProduct" in script
     assert "--mainExe VibeOCR.exe" in script
+    assert script.count("--packTitle VibeOCR `") == 2
+    assert "--packTitle VibeOCRClassic" not in script
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "根目录的 `VibeOCR.exe`" in readme
     assert "--channel win" in script
     assert "--runtime win-x64" in script
     assert "--delta none" in script

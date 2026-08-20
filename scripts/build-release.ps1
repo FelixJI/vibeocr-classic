@@ -176,7 +176,7 @@ New-Item -ItemType Directory -Path $velopackOutput -Force | Out-Null
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
-  --packAuthors FelixJI --packTitle VibeOCRClassic `
+  --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOutput
 if ($LASTEXITCODE -ne 0) { throw 'Velopack release build failed' }
@@ -189,7 +189,7 @@ New-Item -ItemType Directory -Path $velopackOldOutput -Force | Out-Null
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion 0.0.1 --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
-  --packAuthors FelixJI --packTitle VibeOCRClassic `
+  --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOldOutput
 if ($LASTEXITCODE -ne 0) { throw 'Velopack old-version E2E build failed' }

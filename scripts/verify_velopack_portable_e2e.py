@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 _STATE_MARKERS = ("config", "logs", "cache", "models", "runtime")
-_PORTABLE_LAUNCHER = "VibeOCRClassic.exe"
+_PORTABLE_LAUNCHER = "VibeOCR.exe"
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -52,13 +52,9 @@ def _portable_launcher(root: Path) -> Path:
         for path in root.iterdir()
         if path.is_file() and path.suffix.casefold() == ".exe"
     )
-    initial_executables = frozenset({"update.exe", _PORTABLE_LAUNCHER.casefold()})
-    updated_executables = initial_executables | {"vibeocr.exe"}
+    expected_executables = frozenset({"update.exe", _PORTABLE_LAUNCHER.casefold()})
     actual_executables = frozenset(path.name.casefold() for path in root_executables)
-    if missing or actual_executables not in {
-        initial_executables,
-        updated_executables,
-    }:
+    if missing or actual_executables != expected_executables:
         raise RuntimeError(
             "Portable root does not match the canonical Velopack layout: "
             f"missing={missing}; root_executables="

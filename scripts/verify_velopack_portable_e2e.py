@@ -285,6 +285,8 @@ def _diagnose_moved_start(
             _stop_process(process, timeout=2.0)
 
     result_created = _wait_for_path(result, result_timeout)
+    nonce = env.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
+    bootstrap_events = root / "state" / f"{nonce}-bootstrap-events.jsonl"
     return {
         "command": command,
         "returncode": returncode,
@@ -292,6 +294,10 @@ def _diagnose_moved_start(
         "launch_error": launch_error,
         "result_created": result_created,
         "log_tail": _bounded_file_tail(diagnostic_log, limit=log_limit),
+        "bootstrap_events_tail": _bounded_file_tail(
+            bootstrap_events,
+            limit=8192,
+        ),
     }
 
 

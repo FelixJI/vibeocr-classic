@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import traceback
 from collections.abc import Callable
@@ -14,6 +15,84 @@ from typing import TextIO
 
 
 _BOOTSTRAP_LOG_MAX_BYTES = 1024 * 1024
+_EARLY_BOOTSTRAP_MAX_BYTES = 16 * 1024
+_EARLY_BOOTSTRAP_MAX_EVENTS = 16
+_EARLY_BOOTSTRAP_ENVIRONMENT_KEYS = (
+    "VIBEOCR_CLASSIC_TEST_MODE",
+    "VIBEOCR_CLASSIC_TEST_NONCE",
+    "VIBEOCR_SELF_TEST_RESULT",
+    "VIBEOCR_SELF_TEST_TARGET_VERSION",
+    "VIBEOCR_SELF_TEST_UPDATE_FEED",
+    "VIBEOCR_SELF_TEST_VELOPACK_UPDATE",
+)
+
+
+def _early_bootstrap_event_path() -> Path | None:
+    nonce = os.environ.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
+    if (
+        os.environ.get("VIBEOCR_CLASSIC_TEST_MODE") != "artifact-smoke"
+        or re.fullmatch(r"[0-9a-fA-F]{32,128}", nonce) is None
+    ):
+        return None
+    configured_result = os.environ.get("VIBEOCR_SELF_TEST_RESULT")
+    if not configured_result or not Path(configured_result).is_absolute():
+        return None
+
+    executable = Path(os.path.abspath(sys.executable))
+    if executable.parent.name.casefold() != "current":
+        return None
+    state_root = Path(os.path.abspath(executable.parent.parent / "state"))
+    result = Path(os.path.abspath(configured_result))
+    try:
+        relative_result = result.relative_to(state_root)
+    except ValueError:
+        return None
+    if not relative_result.parts or not state_root.is_dir():
+        return None
+    return state_root / f"{nonce}-bootstrap-events.jsonl"
+
+
+def _record_early_bootstrap_event(phase: str) -> None:
+    """Append one bounded, test-only event before normal diagnostics exist."""
+    if phase not in {"before-velopack", "after-velopack"}:
+        return
+    try:
+        event_path = _early_bootstrap_event_path()
+        if event_path is None:
+            return
+        existing = event_path.read_bytes() if event_path.is_file() else b""
+        if (
+            len(existing) >= _EARLY_BOOTSTRAP_MAX_BYTES
+            or existing.count(b"\n") >= _EARLY_BOOTSTRAP_MAX_EVENTS
+        ):
+            return
+
+        event: dict[str, object] = {
+            "phase": phase,
+            "pid": os.getpid(),
+            "argv": [str(argument)[:512] for argument in sys.argv[:16]],
+            "environment": {
+                name: name in os.environ
+                for name in _EARLY_BOOTSTRAP_ENVIRONMENT_KEYS
+            },
+        }
+        getppid = getattr(os, "getppid", None)
+        if callable(getppid):
+            event["ppid"] = getppid()
+        encoded = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        remaining = _EARLY_BOOTSTRAP_MAX_BYTES - len(existing)
+        if len(encoded) > remaining:
+            return
+
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(event_path, flags, 0o600)
+        try:
+            os.write(descriptor, encoded)
+        finally:
+            os.close(descriptor)
+    except Exception:  # noqa: BLE001 - test-only evidence must not alter startup
+        return
 
 
 class _TeeTextIO:
@@ -358,9 +437,11 @@ def _activate_portable_state() -> None:
 if __name__ == "__main__":
     # Velopack startup hooks must run exactly once before Qt, Runtime,
     # Supervisor, logging, or any other application startup work.
+    _record_early_bootstrap_event("before-velopack")
     import velopack
 
     velopack.App().run()
+    _record_early_bootstrap_event("after-velopack")
 
     _activate_portable_state()
     if os.environ.get("VIBEOCR_SELF_TEST_PDF") == "1":

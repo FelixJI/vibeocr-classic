@@ -206,6 +206,28 @@ def test_moved_start_diagnostic_keeps_bounded_owned_log_tail(
     assert evidence["log_tail"] == "useful-tail"
 
 
+def test_moved_start_diagnostic_includes_owned_early_bootstrap_events(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_portable_layout(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    nonce = "a" * 32
+    events = state / f"{nonce}-bootstrap-events.jsonl"
+    events.write_text('{"phase":"before-velopack","pid":4312}\n', encoding="utf-8")
+    process = _Process(running=False)
+    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
+
+    evidence = _diagnose_moved_start(
+        tmp_path,
+        {"VIBEOCR_CLASSIC_TEST_NONCE": nonce},
+        state / "moved-result.json",
+    )
+
+    assert '"phase":"before-velopack"' in evidence["bootstrap_events_tail"]
+
+
 def test_moved_start_diagnostic_stops_its_own_timed_out_updater(
     tmp_path: Path, monkeypatch
 ) -> None:

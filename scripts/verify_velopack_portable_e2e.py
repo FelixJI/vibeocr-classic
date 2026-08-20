@@ -34,7 +34,25 @@ def _portable_root(extracted: Path) -> Path:
     root = markers[0].parent
     if not (root / "current" / "VibeOCR.exe").is_file():
         raise RuntimeError("Portable archive current root has no VibeOCR.exe")
+    _portable_launcher(root)
     return root
+
+
+def _portable_launcher(root: Path) -> Path:
+    """Return Velopack's stable root execution stub, failing on ambiguity."""
+    launchers = sorted(
+        path
+        for path in root.iterdir()
+        if path.is_file()
+        and path.suffix.casefold() == ".exe"
+        and path.name.casefold() != "update.exe"
+    )
+    if len(launchers) != 1:
+        raise RuntimeError(
+            "Portable root must contain exactly one execution stub: "
+            f"{[path.name for path in launchers]}"
+        )
+    return launchers[0]
 
 
 def _write_state_markers(root: Path, nonce: str) -> dict[str, bytes]:
@@ -62,14 +80,45 @@ def _wait_for_result(result: Path, timeout: float, process: subprocess.Popen) ->
         if result.is_file():
             return json.loads(result.read_text(encoding="utf-8"))
         if process.poll() not in {None, 0}:
-            raise RuntimeError(f"Portable process exited with {process.returncode}")
+            raise RuntimeError(
+                "Portable process exited before writing result "
+                f"{result}: returncode={process.returncode}"
+            )
         time.sleep(0.25)
-    raise RuntimeError(f"Portable update/restart timed out after {timeout:.0f}s")
+    returncode = process.poll()
+    raise RuntimeError(
+        f"Portable update/restart timed out after {timeout:.0f}s; "
+        f"expected={result}; returncode={returncode}; "
+        f"state_evidence={_state_evidence(result.parent)}"
+    )
+
+
+def _state_evidence(state_root: Path, *, limit: int = 24) -> list[str]:
+    """List bounded, shallow state names for CI diagnosis without reading contents."""
+    evidence: list[str] = []
+    try:
+        for path in sorted(state_root.iterdir(), key=lambda item: item.name.casefold()):
+            evidence.append(f"{path.name}/" if path.is_dir() else path.name)
+            if len(evidence) >= limit:
+                break
+            if not path.is_dir():
+                continue
+            for child in sorted(path.iterdir(), key=lambda item: item.name.casefold()):
+                evidence.append(
+                    f"{path.name}/{child.name}/" if child.is_dir() else f"{path.name}/{child.name}"
+                )
+                if len(evidence) >= limit:
+                    break
+            if len(evidence) >= limit:
+                break
+    except OSError as exc:
+        evidence.append(f"<unavailable: {type(exc).__name__}>")
+    return evidence
 
 
 def _launch(root: Path, env: dict[str, str]) -> subprocess.Popen:
     return subprocess.Popen(  # noqa: S603 - verified packaged executable
-        [str(root / "current" / "VibeOCR.exe")],
+        [str(_portable_launcher(root))],
         cwd=root,
         env=env,
     )

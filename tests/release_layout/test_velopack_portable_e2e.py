@@ -3,7 +3,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from scripts.verify_velopack_portable_e2e import _launch, _portable_root, _stop_process
+import pytest
+
+from scripts.verify_velopack_portable_e2e import (
+    _launch,
+    _portable_root,
+    _stop_process,
+    _wait_for_result,
+)
 
 
 class _Process:
@@ -39,14 +46,21 @@ def test_portable_root_uses_velopack_current_layout(tmp_path: Path) -> None:
     current = root / "current"
     current.mkdir(parents=True)
     (root / ".portable").write_text("", encoding="utf-8")
+    (root / "Update.exe").write_bytes(b"MZ")
+    (root / "VibeOCRClassic.exe").write_bytes(b"MZ")
     (current / "VibeOCR.exe").write_bytes(b"MZ")
 
     assert _portable_root(extracted) == root
 
 
-def test_launch_uses_the_current_version_executable(
+def test_launch_uses_the_stable_velopack_execution_stub(
     tmp_path: Path, monkeypatch
 ) -> None:
+    (tmp_path / "Update.exe").write_bytes(b"MZ")
+    (tmp_path / "VibeOCRClassic.exe").write_bytes(b"MZ")
+    current = tmp_path / "current"
+    current.mkdir()
+    (current / "VibeOCR.exe").write_bytes(b"MZ")
     captured: dict[str, object] = {}
     process = object()
 
@@ -62,9 +76,28 @@ def test_launch_uses_the_current_version_executable(
     launched = _launch(tmp_path, {"KEY": "value"})
 
     assert launched is process
-    assert captured["command"] == [str(tmp_path / "current" / "VibeOCR.exe")]
+    assert captured["command"] == [str(tmp_path / "VibeOCRClassic.exe")]
     assert captured["cwd"] == tmp_path
     assert captured["env"] == {"KEY": "value"}
+
+
+def test_wait_timeout_reports_expected_result_process_and_state_evidence(
+    tmp_path: Path,
+) -> None:
+    state = tmp_path / "state"
+    config = state / "config"
+    config.mkdir(parents=True)
+    (config / "runtime-e2e.json").write_text("[]", encoding="utf-8")
+    result = state / "missing-result.json"
+    process = _Process(running=True)
+
+    with pytest.raises(RuntimeError, match="timed out") as captured:
+        _wait_for_result(result, 0.0, process)  # type: ignore[arg-type]
+
+    message = str(captured.value)
+    assert str(result) in message
+    assert "returncode=None" in message
+    assert "config/runtime-e2e.json" in message
 
 
 def test_stop_process_terminates_a_running_packaged_app() -> None:

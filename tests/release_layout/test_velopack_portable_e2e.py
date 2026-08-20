@@ -106,7 +106,7 @@ def test_launch_uses_the_stable_velopack_execution_stub(
     assert captured["env"] == {"KEY": "value"}
 
 
-def test_launch_uses_main_exe_stub_after_velopack_apply(
+def test_launch_keeps_stable_portable_stub_after_velopack_apply(
     tmp_path: Path, monkeypatch
 ) -> None:
     _write_portable_layout(tmp_path)
@@ -126,7 +126,7 @@ def test_launch_uses_main_exe_stub_after_velopack_apply(
     launched = _launch(tmp_path, {"KEY": "value"})
 
     assert launched is process
-    assert captured["command"] == [str(tmp_path / "VibeOCR.exe")]
+    assert captured["command"] == [str(tmp_path / "VibeOCRClassic.exe")]
     assert captured["cwd"] == tmp_path
     assert captured["env"] == {"KEY": "value"}
 

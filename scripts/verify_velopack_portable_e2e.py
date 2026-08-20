@@ -64,8 +64,6 @@ def _portable_launcher(root: Path) -> Path:
             f"missing={missing}; root_executables="
             f"{[path.name for path in root_executables]}"
         )
-    if actual_executables == updated_executables:
-        return root / "VibeOCR.exe"
     return root / _PORTABLE_LAUNCHER
 
 

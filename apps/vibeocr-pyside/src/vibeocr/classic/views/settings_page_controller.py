@@ -2218,27 +2218,24 @@ class SettingsPageController:
             kind_label = QLabel(f"{self._SOURCE_KIND_LABELS.get(kind, kind)}：", row)
             combo = QComboBox(row)
             combo.setObjectName(f"comboDownloadSource_{kind}")
+            combo.addItem("跟随 Backend 默认", None)
             for source in sources:
                 combo.addItem(source.source_id, source.source_id)
-                combo.setItemData(
-                    combo.count() - 1, source.endpoint, Qt.ItemDataRole.ToolTipRole
-                )
-            if sources:
-                selected = next(
-                    (
-                        source.source_id
-                        for source in sources
-                        if source.source_id in selected_ids
-                    ),
-                    sources[0].source_id,
-                )
-                combo.setCurrentIndex(max(0, combo.findData(selected)))
+            selected = next(
+                (
+                    source.source_id
+                    for source in sources
+                    if source.source_id in selected_ids
+                ),
+                None,
+            )
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
             row_layout.addWidget(kind_label)
             row_layout.addWidget(combo, 1)
             layout.insertWidget(insert_at + offset, row)
             self._source_combo_row_widgets.append(row)
             self._source_combo_rows[kind] = combo
-        note = "下载源：每类至多选择一个；endpoint 由 Backend 只读声明"
+        note = "下载源：每类至多选择一个；未选择时跟随 Backend 默认"
         if unknown_kinds:
             note += f"；存在未支持的来源类型：{'、'.join(sorted(set(unknown_kinds)))}"
         label.setText(note)
@@ -2313,7 +2310,8 @@ class SettingsPageController:
             return
         self._runtime_settings_snapshot = snapshot
         selected = set(snapshot.download_source_ids)
-        for kind, combo in self._source_combo_rows.items():
+        for _kind, combo in self._source_combo_rows.items():
+            combo.setCurrentIndex(0)
             for index in range(combo.count()):
                 if combo.itemData(index) in selected:
                     combo.setCurrentIndex(index)

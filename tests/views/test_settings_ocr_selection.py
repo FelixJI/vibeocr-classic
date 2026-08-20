@@ -274,10 +274,12 @@ def test_health_catalog_renders_engines_features_and_sources(
     combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
     assert combo is not None
     assert [combo.itemText(i) for i in range(combo.count())] == [
+        "跟随 Backend 默认",
         "tuna-pypi",
         "pypi",
     ]
-    assert controller._resolve_download_source_ids() == ("tuna-pypi",)
+    assert combo.currentData() is None
+    assert controller._resolve_download_source_ids() is None
 
 
 def test_missing_download_capability_disables_source_ui(selection_controller) -> None:
@@ -300,7 +302,7 @@ def test_save_download_sources_puts_backend_settings_snapshot(
 
     combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
     assert combo.currentData() == "pypi"
-    combo.setCurrentIndex(0)
+    combo.setCurrentIndex(combo.findData("tuna-pypi"))
 
     controller._on_save_download_sources()
 
@@ -338,8 +340,8 @@ def test_install_offline_features_maps_intent_after_confirmation(
         "cpu", ["document_parsing"]
     )
     assert captured["install_component_ids"] == ("win-x64-cpu-document-parsing",)
-    # 安装启动时快照当前 UI 源选择，不受并发设置修改影响
-    assert captured["download_source_ids"] == ("tuna-pypi",)
+    # 没有显式选择时由 Backend 决定默认来源。
+    assert captured["download_source_ids"] is None
 
 
 def test_install_offline_features_declined_does_not_install(
@@ -393,7 +395,7 @@ def test_repeated_health_reload_does_not_accumulate_source_rows(
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     assert len(host.findChildren(QComboBox, "comboDownloadSource_package_index")) == 1
-    assert controller._resolve_download_source_ids() == ("tuna-pypi",)
+    assert controller._resolve_download_source_ids() is None
 
 
 def test_save_download_sources_waits_for_settings_snapshot(
@@ -428,13 +430,22 @@ def test_model_registry_sources_are_editable_and_keep_unknown_selected_ids(
     assert registry_combo is not None
     assert future_combo is None
     assert [package_combo.itemText(i) for i in range(package_combo.count())] == [
+        "跟随 Backend 默认",
         "tuna-pypi",
         "pypi",
     ]
     assert [registry_combo.itemText(i) for i in range(registry_combo.count())] == [
+        "跟随 Backend 默认",
         "huggingface",
         "modelscope",
     ]
+    assert all(
+        combo.itemData(index, Qt.ItemDataRole.ToolTipRole) is None
+        for combo in (package_combo, registry_combo)
+        for index in range(combo.count())
+    )
+    assert "https://" not in host.findChild(QLabel, "labelDownloadSource").text()
+    assert "endpoint" not in host.findChild(QLabel, "labelDownloadSource").text()
     # Settings 是全量 PUT：先读到现有快照再保存（C6 守卫语义）
     controller._on_settings_loaded(
         SettingsSnapshot(
@@ -472,4 +483,32 @@ def test_model_registry_absent_from_catalog_renders_nothing(
 
     assert host.findChild(QComboBox, "comboDownloadSource_model_registry") is None
     package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
-    assert package_combo is not None and package_combo.count() == 2
+    assert package_combo is not None and package_combo.count() == 3
+
+
+def test_empty_settings_follow_backend_defaults_and_preserve_unknown_ids(
+    selection_controller,
+) -> None:
+    controller, host, adapter, _config, _manager = selection_controller
+
+    controller._on_health_loaded(
+        _health_payload(with_model_registry=True, with_unknown_source=True)
+    )
+    controller._on_settings_loaded(SettingsSnapshot())
+
+    package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
+    registry_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
+    assert package_combo.currentData() is None
+    assert registry_combo.currentData() is None
+    assert controller._resolve_download_source_ids() is None
+
+    controller._on_settings_loaded(
+        SettingsSnapshot(download_source_ids=("legacy-models", "future-source"))
+    )
+
+    controller._on_save_download_sources()
+
+    assert adapter.update_calls[-1].download_source_ids == (
+        "legacy-models",
+        "future-source",
+    )

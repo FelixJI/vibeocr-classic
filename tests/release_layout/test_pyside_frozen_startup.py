@@ -432,3 +432,31 @@ def test_offline_base_smoke_detects_rewrite_on_reensure(
         verifier._verify_offline_base_smoke(
             tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
         )
+
+
+def test_offline_base_smoke_detects_same_size_content_rewrite(
+    tmp_path: Path,
+) -> None:
+    """发布边界快照必须发现路径和大小不变的 runtime 内容覆盖。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=("runtime.component-selection.v1",), root=tmp_path
+    )
+    calls = {"n": 0}
+    real_ensure = client.ensure
+
+    def rewrite_ensure(**kwargs):
+        calls["n"] += 1
+        result = real_ensure(**kwargs)
+        if calls["n"] == 2:
+            (tmp_path / "state" / "runtime" / "python.exe").write_bytes(b"zz")
+        return result
+
+    client.ensure = rewrite_ensure
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="re-download|rewrote"):
+        verifier._verify_offline_base_smoke(
+            tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
+        )

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -18,6 +19,7 @@ from pathlib import Path
 
 
 _STATE_MARKERS = ("config", "logs", "cache", "models", "runtime")
+_PORTABLE_LAUNCHER = "VibeOCRClassic.exe"
 
 
 class _QuietHandler(SimpleHTTPRequestHandler):
@@ -32,27 +34,37 @@ def _portable_root(extracted: Path) -> Path:
             f"Portable archive must contain exactly one .portable marker: {markers}"
         )
     root = markers[0].parent
-    if not (root / "current" / "VibeOCR.exe").is_file():
-        raise RuntimeError("Portable archive current root has no VibeOCR.exe")
     _portable_launcher(root)
     return root
 
 
 def _portable_launcher(root: Path) -> Path:
-    """Return Velopack's stable root execution stub, failing on ambiguity."""
-    launchers = sorted(
+    """Validate the canonical Velopack layout and return its stable stub."""
+    required = (
+        root / "Update.exe",
+        root / _PORTABLE_LAUNCHER,
+        root / "current" / "VibeOCR.exe",
+        root / "current" / "sq.version",
+    )
+    missing = [path.relative_to(root).as_posix() for path in required if not path.is_file()]
+    root_executables = sorted(
         path
         for path in root.iterdir()
-        if path.is_file()
-        and path.suffix.casefold() == ".exe"
-        and path.name.casefold() != "update.exe"
+        if path.is_file() and path.suffix.casefold() == ".exe"
     )
-    if len(launchers) != 1:
+    expected_executables = {"update.exe", _PORTABLE_LAUNCHER.casefold()}
+    unexpected = [
+        path.name
+        for path in root_executables
+        if path.name.casefold() not in expected_executables
+    ]
+    if missing or unexpected or len(root_executables) != len(expected_executables):
         raise RuntimeError(
-            "Portable root must contain exactly one execution stub: "
-            f"{[path.name for path in launchers]}"
+            "Portable root does not match the canonical Velopack layout: "
+            f"missing={missing}; root_executables="
+            f"{[path.name for path in root_executables]}"
         )
-    return launchers[0]
+    return root / _PORTABLE_LAUNCHER
 
 
 def _write_state_markers(root: Path, nonce: str) -> dict[str, bytes]:
@@ -98,15 +110,22 @@ def _state_evidence(state_root: Path, *, limit: int = 24) -> list[str]:
     evidence: list[str] = []
     try:
         for path in sorted(state_root.iterdir(), key=lambda item: item.name.casefold()):
+            if _is_reparse_point(path):
+                evidence.append(f"{path.name}/<reparse>")
+                if len(evidence) >= limit:
+                    break
+                continue
             evidence.append(f"{path.name}/" if path.is_dir() else path.name)
             if len(evidence) >= limit:
                 break
             if not path.is_dir():
                 continue
             for child in sorted(path.iterdir(), key=lambda item: item.name.casefold()):
-                evidence.append(
-                    f"{path.name}/{child.name}/" if child.is_dir() else f"{path.name}/{child.name}"
-                )
+                relative = f"{path.name}/{child.name}"
+                if _is_reparse_point(child):
+                    evidence.append(f"{relative}/<reparse>")
+                else:
+                    evidence.append(f"{relative}/" if child.is_dir() else relative)
                 if len(evidence) >= limit:
                     break
             if len(evidence) >= limit:
@@ -114,6 +133,17 @@ def _state_evidence(state_root: Path, *, limit: int = 24) -> list[str]:
     except OSError as exc:
         evidence.append(f"<unavailable: {type(exc).__name__}>")
     return evidence
+
+
+def _is_reparse_point(path: Path) -> bool:
+    """Use lstat so diagnostics never traverse a symlink or Windows junction."""
+    try:
+        metadata = path.lstat()
+    except OSError:
+        return True
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(metadata, "st_file_attributes", 0)
+    return path.is_symlink() or bool(reparse_flag and attributes & reparse_flag)
 
 
 def _launch(root: Path, env: dict[str, str]) -> subprocess.Popen:

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.verify_velopack_portable_e2e as portable_e2e
 from scripts.verify_velopack_portable_e2e import (
     _launch,
     _portable_root,
@@ -40,27 +41,51 @@ class _Process:
         return 0
 
 
-def test_portable_root_uses_velopack_current_layout(tmp_path: Path) -> None:
-    extracted = tmp_path / "extracted"
-    root = extracted / "portable"
+def _write_portable_layout(root: Path) -> None:
     current = root / "current"
     current.mkdir(parents=True)
     (root / ".portable").write_text("", encoding="utf-8")
     (root / "Update.exe").write_bytes(b"MZ")
     (root / "VibeOCRClassic.exe").write_bytes(b"MZ")
     (current / "VibeOCR.exe").write_bytes(b"MZ")
+    (current / "sq.version").write_text("{}", encoding="utf-8")
+
+
+def test_portable_root_uses_velopack_current_layout(tmp_path: Path) -> None:
+    extracted = tmp_path / "extracted"
+    root = extracted / "portable"
+    _write_portable_layout(root)
 
     assert _portable_root(extracted) == root
+
+
+@pytest.mark.parametrize("missing", ["Update.exe", "current/sq.version"])
+def test_portable_root_requires_canonical_velopack_markers(
+    tmp_path: Path, missing: str
+) -> None:
+    extracted = tmp_path / "extracted"
+    root = extracted / "portable"
+    _write_portable_layout(root)
+    (root / missing).unlink()
+
+    with pytest.raises(RuntimeError, match="canonical"):
+        _portable_root(extracted)
+
+
+def test_portable_root_rejects_arbitrary_execution_stub(tmp_path: Path) -> None:
+    extracted = tmp_path / "extracted"
+    root = extracted / "portable"
+    _write_portable_layout(root)
+    (root / "VibeOCRClassic.exe").rename(root / "Surprise.exe")
+
+    with pytest.raises(RuntimeError, match="VibeOCRClassic.exe"):
+        _portable_root(extracted)
 
 
 def test_launch_uses_the_stable_velopack_execution_stub(
     tmp_path: Path, monkeypatch
 ) -> None:
-    (tmp_path / "Update.exe").write_bytes(b"MZ")
-    (tmp_path / "VibeOCRClassic.exe").write_bytes(b"MZ")
-    current = tmp_path / "current"
-    current.mkdir()
-    (current / "VibeOCR.exe").write_bytes(b"MZ")
+    _write_portable_layout(tmp_path)
     captured: dict[str, object] = {}
     process = object()
 
@@ -98,6 +123,32 @@ def test_wait_timeout_reports_expected_result_process_and_state_evidence(
     assert str(result) in message
     assert "returncode=None" in message
     assert "config/runtime-e2e.json" in message
+
+
+def test_state_evidence_does_not_enter_reparse_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = tmp_path / "state"
+    reparse = state / "linked-runtime"
+    reparse.mkdir(parents=True)
+    real_iterdir = Path.iterdir
+
+    def guarded_iterdir(path: Path):
+        if path == reparse:
+            raise AssertionError("diagnostics followed a reparse directory")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+    monkeypatch.setattr(
+        portable_e2e,
+        "_is_reparse_point",
+        lambda path: path == reparse,
+        raising=False,
+    )
+
+    evidence = portable_e2e._state_evidence(state)
+
+    assert "linked-runtime/<reparse>" in evidence
 
 
 def test_stop_process_terminates_a_running_packaged_app() -> None:

@@ -673,13 +673,25 @@ def _verify_offline_base_smoke(
     Returns ``"enforced"`` or ``"skipped"``.
     """
 
-    def snapshot_runtime_tree() -> list[tuple[str, int]]:
+    def snapshot_runtime_tree() -> list[tuple[str, int, str]]:
+        """Bind one post-probe tree by path, size and a single content digest."""
         runtime = root / "state" / "runtime"
-        return sorted(
-            (path.relative_to(runtime).as_posix(), path.stat().st_size)
-            for path in runtime.rglob("*")
-            if path.is_file()
-        )
+        snapshot: list[tuple[str, int, str]] = []
+        for path in runtime.rglob("*"):
+            if not path.is_file():
+                continue
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            snapshot.append(
+                (
+                    path.relative_to(runtime).as_posix(),
+                    path.stat().st_size,
+                    digest.hexdigest(),
+                )
+            )
+        return sorted(snapshot)
 
     production_client = client_factory is None
     if client_factory is None:

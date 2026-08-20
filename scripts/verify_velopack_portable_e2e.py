@@ -32,8 +32,8 @@ def _portable_root(extracted: Path) -> Path:
             f"Portable archive must contain exactly one .portable marker: {markers}"
         )
     root = markers[0].parent
-    if not (root / "VibeOCR.exe").is_file():
-        raise RuntimeError("Portable archive root has no VibeOCR.exe")
+    if not (root / "current" / "VibeOCR.exe").is_file():
+        raise RuntimeError("Portable archive current root has no VibeOCR.exe")
     return root
 
 
@@ -69,7 +69,7 @@ def _wait_for_result(result: Path, timeout: float, process: subprocess.Popen) ->
 
 def _launch(root: Path, env: dict[str, str]) -> subprocess.Popen:
     return subprocess.Popen(  # noqa: S603 - verified packaged executable
-        [str(root / "VibeOCR.exe")],
+        [str(root / "current" / "VibeOCR.exe")],
         cwd=root,
         env=env,
     )

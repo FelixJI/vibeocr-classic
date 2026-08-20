@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
-from scripts.verify_velopack_portable_e2e import _stop_process
+from scripts.verify_velopack_portable_e2e import _launch, _portable_root, _stop_process
 
 
 class _Process:
@@ -30,6 +31,40 @@ class _Process:
             raise subprocess.TimeoutExpired("VibeOCR.exe", 15)
         self.running = False
         return 0
+
+
+def test_portable_root_uses_velopack_current_layout(tmp_path: Path) -> None:
+    extracted = tmp_path / "extracted"
+    root = extracted / "portable"
+    current = root / "current"
+    current.mkdir(parents=True)
+    (root / ".portable").write_text("", encoding="utf-8")
+    (current / "VibeOCR.exe").write_bytes(b"MZ")
+
+    assert _portable_root(extracted) == root
+
+
+def test_launch_uses_the_current_version_executable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, object] = {}
+    process = object()
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(
+        "scripts.verify_velopack_portable_e2e.subprocess.Popen", fake_popen
+    )
+
+    launched = _launch(tmp_path, {"KEY": "value"})
+
+    assert launched is process
+    assert captured["command"] == [str(tmp_path / "current" / "VibeOCR.exe")]
+    assert captured["cwd"] == tmp_path
+    assert captured["env"] == {"KEY": "value"}
 
 
 def test_stop_process_terminates_a_running_packaged_app() -> None:

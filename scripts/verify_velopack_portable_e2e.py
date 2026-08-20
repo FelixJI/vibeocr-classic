@@ -223,6 +223,91 @@ def _launch(root: Path, env: dict[str, str]) -> subprocess.Popen:
     )
 
 
+def _wait_for_path(path: Path, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            return True
+        time.sleep(0.1)
+    return path.is_file()
+
+
+def _bounded_file_tail(path: Path, *, limit: int) -> str | None:
+    if not path.is_file():
+        return None
+    with path.open("rb") as stream:
+        stream.seek(0, os.SEEK_END)
+        size = stream.tell()
+        stream.seek(max(0, size - limit))
+        return stream.read(limit).decode("utf-8", errors="replace")
+
+
+def _diagnose_moved_start(
+    root: Path,
+    env: dict[str, str],
+    result: Path,
+    *,
+    process_timeout: float = 5.0,
+    result_timeout: float = 3.0,
+    log_limit: int = 4096,
+) -> dict[str, object]:
+    """Probe Update.exe after a launcher failure without changing its outcome."""
+    diagnostic_log = root / "state" / "velopack-start-diagnostic.log"
+    command = [
+        str(root / "Update.exe"),
+        "--rootDir",
+        str(root),
+        "--log",
+        str(diagnostic_log),
+        "start",
+        "VibeOCR.exe",
+    ]
+    process: subprocess.Popen | None = None
+    returncode: int | None = None
+    timed_out = False
+    launch_error: str | None = None
+    try:
+        process = subprocess.Popen(  # noqa: S603 - canonical packaged updater
+            command,
+            cwd=root,
+            env=env,
+        )
+        try:
+            returncode = process.wait(timeout=process_timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            _stop_process(process, timeout=2.0)
+            returncode = process.returncode
+    except Exception as exc:  # diagnostic must preserve the original E2E failure
+        launch_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if process is not None and process.poll() is None:
+            _stop_process(process, timeout=2.0)
+
+    result_created = _wait_for_path(result, result_timeout)
+    return {
+        "command": command,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "launch_error": launch_error,
+        "result_created": result_created,
+        "log_tail": _bounded_file_tail(diagnostic_log, limit=log_limit),
+    }
+
+
+def _wait_for_moved_result(
+    result: Path,
+    process: subprocess.Popen,
+    root: Path,
+    env: dict[str, str],
+) -> dict:
+    try:
+        return _wait_for_result(result, 45.0, process)
+    except RuntimeError as exc:
+        diagnostic = _diagnose_moved_start(root, env, result)
+        raise RuntimeError(f"{exc}; update_start_diagnostic={diagnostic!r}") from exc
+
+
 def _stop_process(process: subprocess.Popen, *, timeout: float = 15.0) -> None:
     """Stop one packaged app without leaking it across E2E failure paths."""
     if process.poll() is not None:
@@ -333,7 +418,12 @@ def verify_portable_e2e(
     env["VIBEOCR_SELF_TEST_UPDATE_FEED"] = "http://127.0.0.1:9/"
     moved_process = _launch(moved, env)
     try:
-        moved_evidence = _wait_for_result(moved_result, 45.0, moved_process)
+        moved_evidence = _wait_for_moved_result(
+            moved_result,
+            moved_process,
+            moved,
+            env,
+        )
         _wait_for_evidence_writer_exit(moved_evidence, timeout=15.0)
     finally:
         _stop_process(moved_process)

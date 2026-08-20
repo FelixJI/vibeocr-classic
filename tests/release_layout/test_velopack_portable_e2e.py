@@ -7,23 +7,33 @@ import pytest
 
 import scripts.verify_velopack_portable_e2e as portable_e2e
 from scripts.verify_velopack_portable_e2e import (
+    _diagnose_moved_start,
     _launch,
     _portable_root,
     _stop_process,
+    _wait_for_moved_result,
     _wait_for_result,
 )
 
 
 class _Process:
-    def __init__(self, *, running: bool, terminate_times_out: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        running: bool,
+        terminate_times_out: bool = False,
+        initial_wait_times_out: bool = False,
+    ) -> None:
         self.running = running
         self.terminate_times_out = terminate_times_out
+        self.initial_wait_times_out = initial_wait_times_out
         self.terminated = False
         self.killed = False
         self.waits = 0
+        self.returncode: int | None = None if running else 0
 
     def poll(self) -> int | None:
-        return None if self.running else 0
+        return None if self.running else self.returncode
 
     def terminate(self) -> None:
         self.terminated = True
@@ -31,14 +41,18 @@ class _Process:
     def kill(self) -> None:
         self.killed = True
         self.running = False
+        self.returncode = -9
 
     def wait(self, timeout: float) -> int:
         del timeout
         self.waits += 1
+        if self.initial_wait_times_out and not self.terminated:
+            raise subprocess.TimeoutExpired("Update.exe", 5)
         if self.terminate_times_out and self.terminated and not self.killed:
             raise subprocess.TimeoutExpired("VibeOCR.exe", 15)
         self.running = False
-        return 0
+        self.returncode = 0
+        return self.returncode
 
 
 def _write_portable_layout(root: Path) -> None:
@@ -129,6 +143,110 @@ def test_wait_timeout_reports_expected_result_process_and_state_evidence(
     assert str(result) in message
     assert "returncode=None" in message
     assert "config/runtime-e2e.json" in message
+
+
+def test_moved_start_diagnostic_uses_explicit_root_and_owned_log(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_portable_layout(tmp_path)
+    result = tmp_path / "state" / "moved-result.json"
+    result.parent.mkdir()
+    captured: dict[str, object] = {}
+    process = _Process(running=False)
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(portable_e2e.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
+
+    evidence = _diagnose_moved_start(
+        tmp_path,
+        {"KEY": "value"},
+        result,
+    )
+
+    diagnostic_log = tmp_path / "state" / "velopack-start-diagnostic.log"
+    assert captured["command"] == [
+        str(tmp_path / "Update.exe"),
+        "--rootDir",
+        str(tmp_path),
+        "--log",
+        str(diagnostic_log),
+        "start",
+        "VibeOCR.exe",
+    ]
+    assert captured["cwd"] == tmp_path
+    assert captured["env"] == {"KEY": "value"}
+    assert evidence["returncode"] == 0
+    assert evidence["result_created"] is False
+
+
+def test_moved_start_diagnostic_keeps_bounded_owned_log_tail(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_portable_layout(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir()
+    log = state / "velopack-start-diagnostic.log"
+    log.write_text("discarded-prefix\n" + "useful-tail", encoding="utf-8")
+    process = _Process(running=False)
+    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
+
+    evidence = _diagnose_moved_start(
+        tmp_path,
+        {},
+        state / "moved-result.json",
+        log_limit=11,
+    )
+
+    assert evidence["log_tail"] == "useful-tail"
+
+
+def test_moved_start_diagnostic_stops_its_own_timed_out_updater(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_portable_layout(tmp_path)
+    process = _Process(running=True, initial_wait_times_out=True)
+    monkeypatch.setattr(portable_e2e.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(portable_e2e, "_wait_for_path", lambda *args: False)
+
+    evidence = _diagnose_moved_start(
+        tmp_path,
+        {},
+        tmp_path / "state" / "moved-result.json",
+    )
+
+    assert evidence["timed_out"] is True
+    assert process.terminated is True
+    assert process.killed is False
+
+
+def test_moved_start_diagnostic_never_swallows_original_timeout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original = RuntimeError("original launcher timeout")
+    monkeypatch.setattr(portable_e2e, "_wait_for_result", lambda *args: (_ for _ in ()).throw(original))
+    monkeypatch.setattr(
+        portable_e2e,
+        "_diagnose_moved_start",
+        lambda *args, **kwargs: {"returncode": 0, "result_created": True},
+    )
+
+    with pytest.raises(RuntimeError, match="original launcher timeout") as captured:
+        _wait_for_moved_result(
+            tmp_path / "state" / "moved-result.json",
+            _Process(running=False),  # type: ignore[arg-type]
+            tmp_path,
+            {},
+        )
+
+    assert captured.value is not original
+    assert captured.value.__cause__ is original
+    assert "result_created': True" in str(captured.value)
 
 
 def test_wait_for_evidence_writer_exit_uses_reported_pid(monkeypatch) -> None:

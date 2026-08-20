@@ -76,9 +76,9 @@ def test_portable_root_rejects_arbitrary_execution_stub(tmp_path: Path) -> None:
     extracted = tmp_path / "extracted"
     root = extracted / "portable"
     _write_portable_layout(root)
-    (root / "VibeOCRClassic.exe").rename(root / "Surprise.exe")
+    (root / "Surprise.exe").write_bytes(b"MZ")
 
-    with pytest.raises(RuntimeError, match="VibeOCRClassic.exe"):
+    with pytest.raises(RuntimeError, match="canonical"):
         _portable_root(extracted)
 
 
@@ -102,6 +102,31 @@ def test_launch_uses_the_stable_velopack_execution_stub(
 
     assert launched is process
     assert captured["command"] == [str(tmp_path / "VibeOCRClassic.exe")]
+    assert captured["cwd"] == tmp_path
+    assert captured["env"] == {"KEY": "value"}
+
+
+def test_launch_uses_main_exe_stub_after_velopack_apply(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_portable_layout(tmp_path)
+    (tmp_path / "VibeOCR.exe").write_bytes(b"MZ")
+    captured: dict[str, object] = {}
+    process = object()
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return process
+
+    monkeypatch.setattr(
+        "scripts.verify_velopack_portable_e2e.subprocess.Popen", fake_popen
+    )
+
+    launched = _launch(tmp_path, {"KEY": "value"})
+
+    assert launched is process
+    assert captured["command"] == [str(tmp_path / "VibeOCR.exe")]
     assert captured["cwd"] == tmp_path
     assert captured["env"] == {"KEY": "value"}
 

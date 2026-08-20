@@ -52,18 +52,20 @@ def _portable_launcher(root: Path) -> Path:
         for path in root.iterdir()
         if path.is_file() and path.suffix.casefold() == ".exe"
     )
-    expected_executables = {"update.exe", _PORTABLE_LAUNCHER.casefold()}
-    unexpected = [
-        path.name
-        for path in root_executables
-        if path.name.casefold() not in expected_executables
-    ]
-    if missing or unexpected or len(root_executables) != len(expected_executables):
+    initial_executables = frozenset({"update.exe", _PORTABLE_LAUNCHER.casefold()})
+    updated_executables = initial_executables | {"vibeocr.exe"}
+    actual_executables = frozenset(path.name.casefold() for path in root_executables)
+    if missing or actual_executables not in {
+        initial_executables,
+        updated_executables,
+    }:
         raise RuntimeError(
             "Portable root does not match the canonical Velopack layout: "
             f"missing={missing}; root_executables="
             f"{[path.name for path in root_executables]}"
         )
+    if actual_executables == updated_executables:
+        return root / "VibeOCR.exe"
     return root / _PORTABLE_LAUNCHER
 
 

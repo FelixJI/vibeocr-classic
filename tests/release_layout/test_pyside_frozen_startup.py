@@ -378,6 +378,32 @@ def test_offline_base_smoke_runs_supervisor_rapidocr_pdf_probe_twice(
     assert probes == [tmp_path, tmp_path]
 
 
+def test_offline_base_smoke_uses_post_probe_tree_as_reensure_baseline(
+    tmp_path: Path,
+) -> None:
+    """Runtime 首次启动可写入树；未改树的后续 ensure 不应被误报。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=("runtime.component-selection.v1",), root=tmp_path
+    )
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    def write_runtime_cache(_launch, _root: Path) -> None:
+        runtime_cache = tmp_path / "state" / "runtime" / "runtime-cache.bin"
+        runtime_cache.write_bytes(b"runtime-owned")
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path,
+        tmp_path / "installer.exe",
+        client_factory=lambda: client,
+        runtime_probe=write_runtime_cache,
+    )
+
+    assert result == "enforced"
+    assert len(client.ensure_calls) == 3
+
+
 def test_offline_base_smoke_detects_rewrite_on_reensure(
     monkeypatch, tmp_path: Path
 ) -> None:

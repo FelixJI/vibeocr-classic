@@ -744,9 +744,9 @@ def _verify_offline_base_smoke(
             raise RuntimeError("offline base ensure produced no runtime tree")
         if not Path(launch.python_executable).is_file():
             raise RuntimeError("offline base ensure python executable missing")
-        first_tree = snapshot_runtime_tree()
         if runtime_probe is not None:
             runtime_probe(launch, root)
+        first_tree = snapshot_runtime_tree()
 
         launch = client.ensure(install_component_ids=())
         if snapshot_runtime_tree() != first_tree:

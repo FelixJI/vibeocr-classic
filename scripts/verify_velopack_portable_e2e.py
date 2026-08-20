@@ -349,6 +349,27 @@ def _stop_process(process: subprocess.Popen, *, timeout: float = 15.0) -> None:
         process.wait(timeout=timeout)
 
 
+def _outside_product_writes(*directories: Path) -> dict[str, list[str]]:
+    writes: dict[str, list[str]] = {}
+    for directory in directories:
+        product_files = []
+        for path in directory.rglob("*"):
+            relative = path.relative_to(directory)
+            if not path.is_file():
+                continue
+            if (
+                directory.name == "Temp"
+                and relative.as_posix().casefold()
+                == "velopack_vibeocrclassic.log".casefold()
+            ):
+                continue
+            if any("vibeocr" in part.casefold() for part in relative.parts):
+                product_files.append(relative.as_posix())
+        if product_files:
+            writes[directory.name] = sorted(product_files)
+    return writes
+
+
 def verify_portable_e2e(
     old_portable: Path,
     new_feed: Path,
@@ -460,11 +481,7 @@ def verify_portable_e2e(
     if Path(moved_evidence["install_root"]) != moved.resolve():
         raise RuntimeError("moved app retained its previous Portable root")
     _assert_state_markers(moved, expected)
-    outside_writes = {
-        directory.name: [str(path.relative_to(directory)) for path in directory.rglob("*")]
-        for directory in (local, roaming, profile, temp)
-        if any(directory.rglob("*"))
-    }
+    outside_writes = _outside_product_writes(local, roaming, profile, temp)
     if outside_writes:
         raise RuntimeError(
             "Portable E2E wrote product state outside the Portable root: "

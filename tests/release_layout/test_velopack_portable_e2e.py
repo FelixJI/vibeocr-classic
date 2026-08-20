@@ -391,3 +391,23 @@ def test_stop_process_only_reaps_an_exited_app() -> None:
     assert process.terminated is False
     assert process.killed is False
     assert process.waits == 1
+
+
+def test_outside_write_audit_ignores_tools_but_detects_product_state(
+    tmp_path: Path,
+) -> None:
+    profile = tmp_path / "Profile"
+    temp = tmp_path / "Temp"
+    local = tmp_path / "LocalAppData"
+    roaming = tmp_path / "AppData"
+    (profile / ".rustup").mkdir(parents=True)
+    (profile / ".rustup/settings.toml").write_text("version = 12", encoding="utf-8")
+    temp.mkdir()
+    (temp / "velopack_VibeOCRClassic.log").write_text("updater log", encoding="utf-8")
+    (local / "VibeOCRClassic/config").mkdir(parents=True)
+    (local / "VibeOCRClassic/config/settings.json").write_text("{}", encoding="utf-8")
+    roaming.mkdir()
+
+    assert portable_e2e._outside_product_writes(local, roaming, profile, temp) == {
+        "LocalAppData": ["VibeOCRClassic/config/settings.json"]
+    }

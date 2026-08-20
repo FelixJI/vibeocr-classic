@@ -56,7 +56,7 @@ def isolate_application_log_root(tmp_path_factory):
             install_root=test_install_root,
             state_root=test_state_root,
             data_root=test_state_root / "data",
-            runtime_root=test_state_root / "runtimes",
+            runtime_root=test_state_root / "runtime",
             model_cache_root=test_state_root / "models",
             output_root=test_state_root / "output",
             config_file=test_state_root / "config" / "app_settings.json",

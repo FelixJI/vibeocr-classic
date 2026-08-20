@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import traceback
 from collections.abc import Callable
@@ -14,6 +15,84 @@ from typing import TextIO
 
 
 _BOOTSTRAP_LOG_MAX_BYTES = 1024 * 1024
+_EARLY_BOOTSTRAP_MAX_BYTES = 16 * 1024
+_EARLY_BOOTSTRAP_MAX_EVENTS = 16
+_EARLY_BOOTSTRAP_ENVIRONMENT_KEYS = (
+    "VIBEOCR_CLASSIC_TEST_MODE",
+    "VIBEOCR_CLASSIC_TEST_NONCE",
+    "VIBEOCR_SELF_TEST_RESULT",
+    "VIBEOCR_SELF_TEST_TARGET_VERSION",
+    "VIBEOCR_SELF_TEST_UPDATE_FEED",
+    "VIBEOCR_SELF_TEST_VELOPACK_UPDATE",
+)
+
+
+def _early_bootstrap_event_path() -> Path | None:
+    nonce = os.environ.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
+    if (
+        os.environ.get("VIBEOCR_CLASSIC_TEST_MODE") != "artifact-smoke"
+        or re.fullmatch(r"[0-9a-fA-F]{32,128}", nonce) is None
+    ):
+        return None
+    configured_result = os.environ.get("VIBEOCR_SELF_TEST_RESULT")
+    if not configured_result or not Path(configured_result).is_absolute():
+        return None
+
+    executable = Path(os.path.abspath(sys.executable))
+    if executable.parent.name.casefold() != "current":
+        return None
+    state_root = Path(os.path.abspath(executable.parent.parent / "state"))
+    result = Path(os.path.abspath(configured_result))
+    try:
+        relative_result = result.relative_to(state_root)
+    except ValueError:
+        return None
+    if not relative_result.parts or not state_root.is_dir():
+        return None
+    return state_root / f"{nonce}-bootstrap-events.jsonl"
+
+
+def _record_early_bootstrap_event(phase: str) -> None:
+    """Append one bounded, test-only event before normal diagnostics exist."""
+    if phase not in {"before-velopack", "after-velopack"}:
+        return
+    try:
+        event_path = _early_bootstrap_event_path()
+        if event_path is None:
+            return
+        existing = event_path.read_bytes() if event_path.is_file() else b""
+        if (
+            len(existing) >= _EARLY_BOOTSTRAP_MAX_BYTES
+            or existing.count(b"\n") >= _EARLY_BOOTSTRAP_MAX_EVENTS
+        ):
+            return
+
+        event: dict[str, object] = {
+            "phase": phase,
+            "pid": os.getpid(),
+            "argv": [str(argument)[:512] for argument in sys.argv[:16]],
+            "environment": {
+                name: name in os.environ
+                for name in _EARLY_BOOTSTRAP_ENVIRONMENT_KEYS
+            },
+        }
+        getppid = getattr(os, "getppid", None)
+        if callable(getppid):
+            event["ppid"] = getppid()
+        encoded = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+        remaining = _EARLY_BOOTSTRAP_MAX_BYTES - len(existing)
+        if len(encoded) > remaining:
+            return
+
+        flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        descriptor = os.open(event_path, flags, 0o600)
+        try:
+            os.write(descriptor, encoded)
+        finally:
+            os.close(descriptor)
+    except Exception:  # noqa: BLE001 - test-only evidence must not alter startup
+        return
 
 
 class _TeeTextIO:
@@ -183,6 +262,112 @@ def _run_webengine_smoke() -> int:
     return 0 if all(result.values()) else 1
 
 
+def _run_velopack_update_smoke() -> int:
+    """Exercise the packaged Portable update path without importing the Qt UI."""
+    import asyncio
+    import re
+    from urllib.parse import urlsplit
+
+    from vibeocr.classic.app_paths import AppPaths, get_active_app_paths
+    from vibeocr.classic.runtime_installation import RuntimeInstallerClient
+    from vibeocr.classic.runtime_smoke import probe_runtime_launch
+    from vibeocr.classic.services.update_coordinator import (
+        UpdateApplyStatus,
+        UpdateCheckStatus,
+    )
+    from vibeocr.classic.services.velopack_update import VelopackUpdateCoordinator
+
+    mode = os.environ.get("VIBEOCR_CLASSIC_TEST_MODE")
+    nonce = os.environ.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
+    if mode != "artifact-smoke" or re.fullmatch(r"[0-9a-fA-F]{32,128}", nonce) is None:
+        raise RuntimeError("Velopack artifact smoke requires authenticated test mode")
+    feed = os.environ["VIBEOCR_SELF_TEST_UPDATE_FEED"]
+    parsed = urlsplit(feed)
+    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise RuntimeError("Velopack artifact smoke feed must be loopback HTTP")
+    target = os.environ["VIBEOCR_SELF_TEST_TARGET_VERSION"]
+    paths = get_active_app_paths()
+    result_path = Path(os.environ["VIBEOCR_SELF_TEST_RESULT"]).resolve()
+    try:
+        result_path.relative_to(paths.state_root)
+    except ValueError as exc:
+        raise RuntimeError("Velopack artifact smoke result escaped state root") from exc
+
+    proxy_names = (
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "no_proxy",
+        "NO_PROXY",
+    )
+    saved_proxy = {name: os.environ.get(name) for name in proxy_names}
+    try:
+        for name in proxy_names[:6]:
+            os.environ[name] = "http://127.0.0.1:9"
+        os.environ["no_proxy"] = "127.0.0.1,localhost"
+        os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+        client = RuntimeInstallerClient(paths.state_root)
+        required = client.required_capabilities()
+        client.inspect(required_capabilities=required)
+        launch = client.ensure(install_component_ids=())
+        probe_runtime_launch(launch, paths.state_root)
+    finally:
+        for name, value in saved_proxy.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def runtime_snapshot(app_paths: AppPaths) -> list[tuple[str, int]]:
+        return sorted(
+            (path.relative_to(app_paths.runtime_root).as_posix(), path.stat().st_size)
+            for path in app_paths.runtime_root.rglob("*")
+            if path.is_file()
+        )
+
+    snapshot_path = paths.config_file.parent / f"runtime-e2e-{nonce}.json"
+    current_tree = runtime_snapshot(paths)
+    coordinator = VelopackUpdateCoordinator(source_candidates=(feed,))
+    current = asyncio.run(coordinator.installed_version())
+    if current == target:
+        if not snapshot_path.is_file():
+            raise RuntimeError("packaged update lost the pre-update Runtime snapshot")
+        previous_tree = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        if previous_tree != [list(item) for item in current_tree]:
+            raise RuntimeError("packaged update/restart rewrote state/runtime")
+        temporary_result = result_path.with_suffix(".tmp")
+        temporary_result.write_text(
+            json.dumps(
+                {
+                    "installed_version": current,
+                    "install_root": str(paths.install_root),
+                    "state_root": str(paths.state_root),
+                    "process_id": os.getpid(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.replace(temporary_result, result_path)
+        return 0
+
+    snapshot_path.write_text(json.dumps(current_tree), encoding="utf-8")
+
+    check = asyncio.run(coordinator.check())
+    if check.status is not UpdateCheckStatus.AVAILABLE or check.version != target:
+        raise RuntimeError(
+            f"expected update {target}, got {check.status.value}: {check.version}"
+        )
+    applied = asyncio.run(coordinator.download_and_apply())
+    if applied.status is not UpdateApplyStatus.APPLY_STARTED:
+        raise RuntimeError(
+            f"Velopack apply did not start: {applied.status.value}: {applied.detail}"
+        )
+    return 0
+
+
 def _activate_portable_state() -> None:
     """在 Qt/Runtime/日志之前激活并探针验证便携状态根。
 
@@ -191,20 +376,29 @@ def _activate_portable_state() -> None:
     """
 
     from vibeocr.classic.app_paths import (
+        EnvironmentTestDataRootResolver,
         PortableStateError,
         activate_portable_state,
     )
 
-    executable_root = (
-        Path(sys.executable).resolve().parent
+    executable = (
+        Path(sys.executable).resolve()
         if getattr(sys, "frozen", False)
         else Path(__file__).resolve().parents[1]
     )
     try:
-        paths = activate_portable_state(executable_root)
+        data_root_resolver = (
+            EnvironmentTestDataRootResolver.from_environment()
+            if os.environ.get("VIBEOCR_CLASSIC_DATA_ROOT")
+            else None
+        )
+        paths = activate_portable_state(
+            executable,
+            data_root_resolver=data_root_resolver,
+        )
     except PortableStateError as error:
         message = (
-            f"{error}\n\n程序目录：{executable_root}\n"
+            f"{error}\n\n程序目录：{executable}\n"
             "VibeOCR 需要在程序目录下的 state 文件夹保存配置与运行数据。"
         )
         # windowed 冻结进程没有可用 stderr；artifact smoke 通过结果文件
@@ -243,9 +437,11 @@ def _activate_portable_state() -> None:
 if __name__ == "__main__":
     # Velopack startup hooks must run exactly once before Qt, Runtime,
     # Supervisor, logging, or any other application startup work.
+    _record_early_bootstrap_event("before-velopack")
     import velopack
 
     velopack.App().run()
+    _record_early_bootstrap_event("after-velopack")
 
     _activate_portable_state()
     if os.environ.get("VIBEOCR_SELF_TEST_PDF") == "1":
@@ -255,4 +451,6 @@ if __name__ == "__main__":
         # the offscreen Windows test platform. The load result has already been
         # durably written, so bypass interpreter/Qt finalizers in this test-only path.
         os._exit(_run_with_bootstrap(_run_webengine_smoke))
+    if os.environ.get("VIBEOCR_SELF_TEST_VELOPACK_UPDATE") == "1":
+        raise SystemExit(_run_with_bootstrap(_run_velopack_update_smoke))
     raise SystemExit(_run_with_bootstrap(_run_application))

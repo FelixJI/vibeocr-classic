@@ -18,6 +18,7 @@ from scripts.verify_pyside_artifact import (
     _verify_product_file_closure,
     _verify_reduced_layout,
     _verify_runtime_layout,
+    verify_component_policy_binding,
 )
 
 
@@ -121,8 +122,13 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert velopack_index > binding_index
     assert "--packId VibeOCRClassic" in script
     assert "--packVersion $Version" in script
-    assert "--packDir $product" in script
+    assert "prepare_velopack_input.py" in script
+    assert "--packDir $velopackProduct" in script
     assert "--mainExe VibeOCR.exe" in script
+    assert script.count("--packTitle VibeOCR `") == 2
+    assert "--packTitle VibeOCRClassic" not in script
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "根目录的 `VibeOCR.exe`" in readme
     assert "--channel win" in script
     assert "--runtime win-x64" in script
     assert "--delta none" in script
@@ -133,6 +139,30 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "requirements-build.lock" in script
     assert script.index("uv venv --python") < script.index("& $buildPython")
     assert "updater.exe" not in script
+    assert script.count("dnx --yes vpk@1.2.0 -- pack") == 2
+    assert "--packVersion 0.0.1" in script
+    assert "verify_velopack_portable_e2e.py" in script
+    assert "--old-portable" in script
+    assert "--new-feed $velopackOutput" in script
+
+    e2e = (ROOT / "scripts" / "verify_velopack_portable_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    entry_script = (ROOT / "scripts" / "classic_release_entry.py").read_text(
+        encoding="utf-8"
+    )
+    assert "ThreadingHTTPServer" in e2e
+    assert "subprocess.Popen" in e2e
+    assert "old-content-" in e2e
+    assert "shutil.move" in e2e
+    assert "VIBEOCR_SELF_TEST_VELOPACK_UPDATE" in e2e
+    assert "probe_runtime_launch" in entry_script
+    assert "client.ensure(install_component_ids=())" in entry_script
+    assert '"process_id": os.getpid()' in entry_script
+    assert "_wait_for_evidence_writer_exit(evidence" in e2e
+    assert e2e.index("_wait_for_evidence_writer_exit(evidence") < e2e.index(
+        "shutil.move"
+    )
 
 
 def test_release_contract_publishes_only_exact_velopack_assets() -> None:
@@ -288,6 +318,92 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert "'--collect-data', 'vibeocr.backend'" not in script
     assert "python -m pip install --no-deps" not in script
     assert "vibeocr_backend-$backendVersion" not in script
+
+
+def _policy_bound_component_lock(policy: dict[str, object]) -> dict[str, object]:
+    backend = policy["backend"]
+    assert isinstance(backend, dict)
+    return {
+        "schema_version": 1,
+        "backend": {
+            "repository": backend["repository"],
+            "accelerator": backend["accelerator"],
+            "version": "0.13.0",
+        },
+        "protocol": {
+            "repository": "FelixJI/vibeocr-protocol",
+            "version": "2.7.0",
+        },
+        "required_capabilities": policy["required_capabilities"],
+    }
+
+
+def test_artifact_verifier_uses_product_policy_capability_closure(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    required = policy["required_capabilities"]
+    assert isinstance(required, list)
+    assert "runtime.maintenance.v2" in required
+
+    component_lock = tmp_path / "component-lock.json"
+    lock = _policy_bound_component_lock(policy)
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+    verify_component_policy_binding(component_lock, policy_path)
+
+    lock["required_capabilities"] = [
+        capability for capability in required if capability != "runtime.maintenance.v2"
+    ]
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="differs from component policy"):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
+def test_artifact_verifier_rejects_accelerator_outside_product_policy(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    lock = _policy_bound_component_lock(policy)
+    backend = lock["backend"]
+    assert isinstance(backend, dict)
+    backend["accelerator"] = "nvidia_cuda"
+    component_lock = tmp_path / "component-lock.json"
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="accelerator differs from component policy"):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
+def test_artifact_verifier_rejects_protocol_major_outside_product_policy(
+    tmp_path: Path,
+) -> None:
+    policy_path = ROOT / "component-policy.json"
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    lock = _policy_bound_component_lock(policy)
+    protocol = lock["protocol"]
+    assert isinstance(protocol, dict)
+    protocol["version"] = "3.0.0"
+    component_lock = tmp_path / "component-lock.json"
+    component_lock.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError, match="Protocol major differs from component policy"
+    ):
+        verify_component_policy_binding(component_lock, policy_path)
+
+
+def test_release_build_passes_policy_to_artifact_verifier() -> None:
+    build_script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "verify_pyside_artifact.py') $product --policy $policy" in build_script
+    assert 'parser.add_argument("--policy", type=Path, required=True)' in verifier
+    assert "verify_component_policy_binding(lock_path, args.policy)" in verifier
+    assert "expected_capabilities =" not in verifier
 
 
 def test_release_build_reuses_the_ci_verified_component_input() -> None:

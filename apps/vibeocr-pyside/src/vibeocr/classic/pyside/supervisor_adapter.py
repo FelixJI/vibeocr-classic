@@ -95,6 +95,12 @@ class SupervisorClientAdapter(QObject):
     ) -> SupervisorClientAdapter:
         """Own all Protocol clients for one authenticated Runtime endpoint."""
         from vibeocr.classic.pdf_client import SyncPdfSupervisorClient
+        from vibeocr.classic.protocol_compat import (
+            enable_pipeline_engine_parser_compatibility,
+        )
+
+        enable_pipeline_engine_parser_compatibility()
+
         from vibeocr.runtime_client.client import RuntimeHttpClient, SupervisorClient
         from vibeocr.runtime_client.sync_client import SyncSupervisorClient
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import sys
 import threading
 import zipfile
@@ -9,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+import vibeocr.classic.runtime_installation as runtime_installation
+from vibeocr.classic.runtime_maintenance import ProductMaintenanceCoordinator
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
@@ -55,6 +58,9 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
         component_lock=lock,
         runtime_manifest=manifest,
         command=(str(executable),),
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
 
 
@@ -328,6 +334,88 @@ print(json.dumps({
     value = client._invoke("ensure", timeout=3)
 
     assert value["state"]["accelerator"] == "cpu"
+
+
+def test_control_process_forces_utf8_and_preserves_parent_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _bound_client(tmp_path)
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("VIBEOCR_TEST_PARENT_ENV", "preserved")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    monkeypatch.setattr(
+        runtime_installation,
+        "_parse_runtime_host_response_line",
+        lambda _line: {"ok": True},
+    )
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, "wire\n", "")
+
+    monkeypatch.setattr(runtime_installation.subprocess, "run", fake_run)
+
+    assert client._invoke_control({"request_kind": "inspect"})["ok"] is True
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["VIBEOCR_TEST_PARENT_ENV"] == "preserved"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert environment["PYTHONUTF8"] == "1"
+
+
+def test_installer_process_forces_utf8_and_preserves_parent_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = """
+import json
+
+print(json.dumps({
+    "protocol_version": 2,
+    "ok": True,
+    "operation": "ensure",
+    "state": {
+        "status": "ready",
+        "runtime_root": "runtime",
+        "accelerator": "cpu",
+        "manifest_sha256": "0" * 64,
+        "backend_version": "0.7.0",
+        "integrity": "verified",
+    },
+    "launch": {
+        "python_executable": "python.exe",
+        "supervisor_module": "vibeocr.backend.supervisor.main",
+        "working_directory": ".",
+        "model_root": "models",
+        "environment": {},
+    },
+}))
+"""
+    client = RuntimeInstallerClient(
+        tmp_path,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+    monkeypatch.setenv("VIBEOCR_TEST_PARENT_ENV", "preserved")
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    real_popen = runtime_installation.subprocess.Popen
+    captured: dict[str, object] = {}
+
+    def capture_popen(*args: object, **kwargs: object):
+        captured.update(kwargs)
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_installation.subprocess, "Popen", capture_popen)
+
+    assert client._invoke("ensure", timeout=3)["ok"] is True
+    environment = captured["env"]
+    assert isinstance(environment, dict)
+    assert environment["VIBEOCR_TEST_PARENT_ENV"] == "preserved"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert environment["PYTHONUTF8"] == "1"
 
 
 def test_maintenance_capability_opts_into_ndjson(tmp_path: Path) -> None:
@@ -790,6 +878,9 @@ def test_cancel_and_retry_use_idempotent_v2_commands(
     client = RuntimeInstallerClient(
         tmp_path,
         command=(sys.executable, "-c", "pass"),
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
     requests: list[dict] = []
     monkeypatch.setattr(

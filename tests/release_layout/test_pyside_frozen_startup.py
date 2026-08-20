@@ -89,7 +89,14 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert captured["env"]["PYTHONIOENCODING"] == "utf-8"
     assert captured["env"]["PYTHONUTF8"] == "1"
     assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == sys.executable
-    assert captured["env"]["VIBEOCR_CLASSIC_DATA_ROOT"] == str(tmp_path / ".smoke-data")
+    smoke_data = Path(captured["env"]["VIBEOCR_CLASSIC_DATA_ROOT"])
+    assert smoke_data.parent == tmp_path
+    assert smoke_data.name.startswith(".smoke-data-")
+    assert captured["env"]["VIBEOCR_CLASSIC_TEST_MODE"] == "artifact-smoke"
+    assert (
+        captured["env"]["VIBEOCR_CLASSIC_TEST_NONCE"]
+        == smoke_data.name.removeprefix(".smoke-data-")
+    )
     smoke_pythonpath = Path(captured["env"]["PYTHONPATH"])
     assert ".smoke-runtime" in smoke_pythonpath.parts
     assert smoke_pythonpath.parts[-1] == "site-packages"
@@ -345,6 +352,58 @@ def test_offline_base_smoke_enforces_offline_intent_and_reuse(
     )
 
 
+def test_offline_base_smoke_runs_supervisor_rapidocr_pdf_probe_twice(
+    tmp_path: Path,
+) -> None:
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=(
+            "runtime.maintenance.v2",
+            "runtime.component-selection.v1",
+        ),
+        root=tmp_path,
+    )
+    probes: list[Path] = []
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path,
+        tmp_path / "installer.exe",
+        client_factory=lambda: client,
+        runtime_probe=lambda _launch, root: probes.append(root),
+    )
+
+    assert result == "enforced"
+    assert probes == [tmp_path, tmp_path]
+
+
+def test_offline_base_smoke_uses_post_probe_tree_as_reensure_baseline(
+    tmp_path: Path,
+) -> None:
+    """Runtime 首次启动可写入树；未改树的后续 ensure 不应被误报。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=("runtime.component-selection.v1",), root=tmp_path
+    )
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    def write_runtime_cache(_launch, _root: Path) -> None:
+        runtime_cache = tmp_path / "state" / "runtime" / "runtime-cache.bin"
+        runtime_cache.write_bytes(b"runtime-owned")
+
+    result = verifier._verify_offline_base_smoke(
+        tmp_path,
+        tmp_path / "installer.exe",
+        client_factory=lambda: client,
+        runtime_probe=write_runtime_cache,
+    )
+
+    assert result == "enforced"
+    assert len(client.ensure_calls) == 3
+
+
 def test_offline_base_smoke_detects_rewrite_on_reensure(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -366,6 +425,34 @@ def test_offline_base_smoke_detects_rewrite_on_reensure(
         return result
 
     client.ensure = grow_ensure
+    for name in ("component-lock.json", "frontend-protocol-lock.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="re-download|rewrote"):
+        verifier._verify_offline_base_smoke(
+            tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
+        )
+
+
+def test_offline_base_smoke_detects_same_size_content_rewrite(
+    tmp_path: Path,
+) -> None:
+    """发布边界快照必须发现路径和大小不变的 runtime 内容覆盖。"""
+    verifier = _load_verifier()
+    client = _FakeOfflineClient(
+        capabilities=("runtime.component-selection.v1",), root=tmp_path
+    )
+    calls = {"n": 0}
+    real_ensure = client.ensure
+
+    def rewrite_ensure(**kwargs):
+        calls["n"] += 1
+        result = real_ensure(**kwargs)
+        if calls["n"] == 2:
+            (tmp_path / "state" / "runtime" / "python.exe").write_bytes(b"zz")
+        return result
+
+    client.ensure = rewrite_ensure
     for name in ("component-lock.json", "frontend-protocol-lock.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
 

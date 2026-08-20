@@ -14,15 +14,18 @@ profile 机制：
 - ``"winui-dev"``：旁路开发 profile，路径解析到 ``install_root/data/profiles/winui-dev``，
   **不触碰**正式配置。Phase 0–4 期间 WinUI 旁路版必须用此 profile。
 
-``VIBEOCR_CLASSIC_DATA_ROOT`` 环境变量是唯一的开发/测试注入缝：它整体替换
-状态根（仍需通过可用性探针），供 pytest 与 artifact smoke 隔离使用。
+跨进程 artifact smoke 可显式注入 ``EnvironmentTestDataRootResolver``；环境
+适配器要求 test mode 与随机 nonce 同时匹配。普通生产环境变量不能重定向状态根。
 
 此模块是 UI-free 边界（不加载任何 GUI 框架），可被 WorkerHost 和前端壳共享。
 """
 
 from __future__ import annotations
 
+import filecmp
 import os
+import re
+import shutil
 import sys
 import uuid
 from dataclasses import dataclass
@@ -35,7 +38,7 @@ from typing import Protocol
 # ---------------------------------------------------------------------------
 # 正式 profile 下的状态目录名（相对 portable root）
 CONFIG_DIR = "config"
-RUNTIME_DIR = "runtimes"
+RUNTIME_DIR = "runtime"
 MODEL_CACHE_DIR = "models"
 OUTPUT_DIR = "output"
 DATA_DIR = "data"
@@ -64,22 +67,94 @@ class DataRootResolver(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class VelopackRootResolver:
+    """Resolve the stable Windows ``RootAppDir`` from the executable layout.
+
+    Velopack replaces ``current`` as a unit.  A process running from that
+    directory is accepted only when the canonical marker set proves the
+    relationship to its parent; ambiguous layouts fail closed.
+    """
+
+    executable: Path
+
+    def resolve(self) -> Path:
+        content_root = _lexical_executable_root(self.executable)
+        if content_root.name.casefold() != "current":
+            if _is_reparse_point(content_root):
+                raise PortableStateError(
+                    "Velopack RootAppDir 不允许经过 reparse point"
+                )
+            return content_root.resolve()
+        root = content_root.parent
+        for segment in (root, content_root):
+            if _is_reparse_point(segment):
+                raise PortableStateError(
+                    f"Velopack RootAppDir 不允许经过 reparse point: {segment}"
+                )
+        required = (
+            content_root / "sq.version",
+            root / "Update.exe",
+            root / ".portable",
+        )
+        reparsed = [path.name for path in required if _is_reparse_point(path)]
+        if reparsed:
+            raise PortableStateError(
+                "Velopack RootAppDir 标记不允许是 reparse point: "
+                + ", ".join(reparsed)
+            )
+        missing = [path.name for path in required if not path.is_file()]
+        if missing:
+            raise PortableStateError(
+                "Velopack RootAppDir 布局含糊，缺少标记: " + ", ".join(missing)
+            )
+        try:
+            canonical_root = root.resolve(strict=True)
+            content_root.resolve(strict=True).relative_to(canonical_root)
+        except (OSError, ValueError) as exc:
+            raise PortableStateError("Velopack current 已逃逸 RootAppDir") from exc
+        return canonical_root
+
+
+@dataclass(frozen=True, slots=True)
 class PortableRootResolver:
     """Production resolver: ``<portable-root>/state`` without user-directory fallback.
 
-    ``portable_root`` is the stable executable root (Velopack portable extract
-    directory or per-user install directory). The ``VIBEOCR_CLASSIC_DATA_ROOT``
-    environment variable is the explicit development/test seam and replaces the
-    whole state root.
+    ``portable_root`` is the stable Velopack ``RootAppDir``.  Test overrides are
+    deliberately a different injected adapter, so production semantics cannot
+    be changed by an ordinary environment variable.
     """
 
     portable_root: Path
 
     def resolve(self) -> Path:
-        configured_root = os.environ.get("VIBEOCR_CLASSIC_DATA_ROOT")
-        if configured_root:
-            return Path(configured_root).resolve()
         return (self.portable_root / STATE_DIR).resolve()
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentTestDataRootResolver:
+    """Authenticated cross-process adapter used only by frozen artifact smoke."""
+
+    state_root: Path
+
+    @classmethod
+    def from_environment(cls) -> EnvironmentTestDataRootResolver:
+        configured = os.environ.get("VIBEOCR_CLASSIC_DATA_ROOT")
+        mode = os.environ.get("VIBEOCR_CLASSIC_TEST_MODE")
+        nonce = os.environ.get("VIBEOCR_CLASSIC_TEST_NONCE", "")
+        if (
+            not configured
+            or mode != "artifact-smoke"
+            or re.fullmatch(r"[0-9a-fA-F]{32,128}", nonce) is None
+            or nonce.casefold() not in Path(configured).name.casefold()
+        ):
+            raise PortableStateError(
+                "VIBEOCR_CLASSIC_DATA_ROOT 是 test-only override，"
+                "必须由 artifact-smoke mode 与匹配 nonce 显式授权"
+            )
+        return cls(Path(configured))
+
+    def resolve(self) -> Path:
+        return self.state_root.resolve()
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -115,7 +190,7 @@ def ensure_portable_state_usable(
     )
     if not resolved.is_absolute() or resolved.parent == resolved:
         raise PortableStateError(f"{message} 无效状态根: {state_root}")
-    if portable_root is not None and not os.environ.get("VIBEOCR_CLASSIC_DATA_ROOT"):
+    if portable_root is not None:
         declared = portable_root / STATE_DIR
         if _is_reparse_point(declared):
             raise PortableStateError(
@@ -135,6 +210,129 @@ def ensure_portable_state_usable(
     except OSError as exc:
         raise PortableStateError(f"{message} {exc}") from exc
     return resolved
+
+
+def _owned_directory(state_root: Path, relative: str | Path) -> Path:
+    """Safely create and return one directory owned by ``state_root``.
+
+    Every existing and newly-created segment is checked for a symlink/junction
+    before the next segment is touched, and the final resolved path must remain
+    contained by the declared state root.
+    """
+
+    relative_path = Path(relative)
+    if relative_path.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative_path.parts
+    ):
+        raise PortableStateError(f"状态子目录无效: {relative}")
+    root = state_root.resolve(strict=True)
+    current = state_root
+    for part in relative_path.parts:
+        current = current / part
+        if _is_reparse_point(current):
+            raise PortableStateError(
+                f"状态子目录 {current} 是 junction/symlink/reparse point"
+            )
+        try:
+            current.mkdir(exist_ok=True)
+        except OSError as exc:
+            raise PortableStateError(f"状态子目录无法创建: {current} ({exc})") from exc
+        if _is_reparse_point(current):
+            raise PortableStateError(f"状态子目录创建后成为 reparse point: {current}")
+        try:
+            current.resolve(strict=True).relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise PortableStateError(f"状态子目录越界: {current}") from exc
+    return current.resolve(strict=True)
+
+
+def _tree_entries(root: Path) -> tuple[tuple[str, bool, int], ...]:
+    records: list[tuple[str, bool, int]] = []
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for item in entries:
+                path = Path(item.path)
+                if _is_reparse_point(path):
+                    raise PortableStateError(f"旧状态包含 reparse point: {path}")
+                relative = path.relative_to(root).as_posix()
+                if item.is_dir(follow_symlinks=False):
+                    records.append((relative, True, 0))
+                    pending.append(path)
+                elif item.is_file(follow_symlinks=False):
+                    records.append((relative, False, item.stat().st_size))
+                else:
+                    raise PortableStateError(f"旧状态包含不受支持的条目: {path}")
+    return tuple(sorted(records))
+
+
+def _migrate_legacy_current_state(content_root: Path, stable_state: Path) -> None:
+    """Copy/verify/promote ``current/state`` without deleting the source."""
+
+    legacy = content_root / STATE_DIR
+    if content_root == stable_state.parent or not legacy.exists():
+        return
+    if _is_reparse_point(legacy):
+        raise PortableStateError("旧 current/state 是 reparse point，拒绝迁移")
+    if stable_state.exists():
+        return
+    _copy_verify_promote(legacy, stable_state, label="旧 current/state")
+
+
+def _copy_verify_promote(source: Path, target: Path, *, label: str) -> None:
+    """Copy one owned tree, verify exact contents, and atomically promote it."""
+
+    source_entries = _tree_entries(source)
+    staging = target.parent / f".{target.name}-migration-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(source, staging, symlinks=False)
+        if _tree_entries(staging) != source_entries:
+            raise PortableStateError(f"{label} 迁移验证失败")
+        for relative, is_directory, _size in source_entries:
+            if not is_directory and not filecmp.cmp(
+                source / relative, staging / relative, shallow=False
+            ):
+                raise PortableStateError(f"{label} 文件迁移验证失败: {relative}")
+        try:
+            os.replace(staging, target)
+        except OSError as promote_error:
+            # Concurrent startup may have promoted the same legacy tree first.
+            # Accept only an exact, non-reparse semantic copy; a merely existing
+            # or partial target remains a hard failure.
+            try:
+                if (
+                    not target.is_dir()
+                    or _is_reparse_point(target)
+                    or _tree_entries(target) != source_entries
+                ):
+                    raise PortableStateError(f"{label} 并发迁移目标不完整")
+                for relative, is_directory, _size in source_entries:
+                    if not is_directory and not filecmp.cmp(
+                        source / relative, target / relative, shallow=False
+                    ):
+                        raise PortableStateError(
+                            f"{label} 并发迁移文件不一致: {relative}"
+                        )
+            except (OSError, PortableStateError):
+                raise promote_error
+    except OSError as exc:
+        raise PortableStateError(f"{label} 迁移失败: {exc}") from exc
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def _migrate_legacy_runtime_directory(state_root: Path) -> None:
+    """Preserve the pre-release ``runtimes`` tree under canonical ``runtime``."""
+
+    legacy = state_root / "runtimes"
+    target = state_root / RUNTIME_DIR
+    if not legacy.exists() or target.exists():
+        return
+    if _is_reparse_point(legacy):
+        raise PortableStateError("旧 state/runtimes 是 reparse point，拒绝迁移")
+    _copy_verify_promote(legacy, target, label="旧 state/runtimes")
 
 
 def get_install_root() -> Path:
@@ -197,60 +395,82 @@ class AppPaths:
     output_root: Path
     config_file: Path
 
+    def owned_directory(self, relative: str | Path) -> Path:
+        """Return a verified state directory, creating it segment-by-segment."""
+
+        if not self.state_root.is_dir():
+            production_root = (
+                self.install_root
+                if self.state_root == (self.install_root / STATE_DIR).resolve()
+                else None
+            )
+            ensure_portable_state_usable(
+                self.state_root,
+                portable_root=production_root,
+            )
+        return _owned_directory(self.state_root, relative)
+
+    def ensure_state_tree(self) -> None:
+        """Create every product-owned mutable directory via the safe seam."""
+
+        for relative in _STATE_TREE_DIRS:
+            self.owned_directory(relative)
+
     @property
     def logs_root(self) -> Path:
-        return self.state_root / "logs"
+        return self.owned_directory("logs")
 
     @property
     def cache_root(self) -> Path:
-        return self.state_root / "cache"
+        return self.owned_directory("cache")
 
     @property
     def temp_root(self) -> Path:
-        return self.state_root / "temp"
+        return self.owned_directory("temp")
 
     @property
     def clipboard_temp_dir(self) -> Path:
-        return self.temp_root / "clipboard"
+        return self.owned_directory("temp/clipboard")
 
     @property
     def update_root(self) -> Path:
-        return self.state_root / "update"
+        return self.owned_directory("update")
 
     @property
     def locks_root(self) -> Path:
-        return self.state_root / "locks"
+        return self.owned_directory("locks")
 
     @property
     def webengine_root(self) -> Path:
-        return self.state_root / "web" / "qtwebengine"
+        return self.owned_directory("web/qtwebengine")
 
     @property
     def webengine_cache_dir(self) -> Path:
-        return self.webengine_root / "cache"
+        return self.owned_directory("web/qtwebengine/cache")
 
     @property
     def webengine_persistent_dir(self) -> Path:
-        return self.webengine_root / "persistent"
+        return self.owned_directory("web/qtwebengine/persistent")
+
+
+def _lexical_executable_root(
+    executable: str | os.PathLike[str] | Path,
+) -> Path:
+    """Return an absolute executable directory without following reparse points."""
+
+    path = Path(os.path.abspath(os.fspath(executable)))
+    if path.suffix.lower() in (".exe", ".app", ".bin") or path.is_file():
+        return path.parent
+    return path
 
 
 def _normalize_executable(executable: str | os.PathLike[str] | Path) -> Path:
-    """将 executable（目录或文件路径）归一化为安装根目录。
+    """Canonicalize an executable file or directory to its containing root."""
 
-    - 如果是文件（如 VibeOCR.exe），取其 parent。
-    - 如果是目录，直接使用。
-
-    文件检测基于后缀名（.exe/.app 等），而非 is_file()——路径可能指向
-    尚未存在的文件（测试或预创建场景）。
-    """
-    p = Path(executable).resolve()
-    # 常见可执行文件后缀 → 取 parent（安装根 = exe 所在目录）
-    if p.suffix.lower() in (".exe", ".app", ".bin"):
-        return p.parent
-    # 已存在的文件也取 parent
-    if p.is_file():
-        return p.parent
-    return p
+    path = Path(executable).resolve()
+    if path.suffix.lower() in (".exe", ".app", ".bin") or path.is_file():
+        return path.parent
+    return path
 
 
 def resolve_app_paths(
@@ -279,7 +499,7 @@ def resolve_app_paths(
             f"unsupported profile: {profile!r}; allowed: {sorted(_ALLOWED_PROFILES)}"
         )
 
-    install_root = _normalize_executable(executable)
+    install_root = VelopackRootResolver(Path(executable)).resolve()
 
     if profile == "production":
         state_root = (
@@ -332,6 +552,7 @@ def activate_portable_state(
     executable: str | os.PathLike[str] | Path,
     *,
     profile: str = "production",
+    data_root_resolver: DataRootResolver | None = None,
 ) -> AppPaths:
     """Resolve, probe and activate the portable state layout for this process.
 
@@ -341,23 +562,21 @@ def activate_portable_state(
     must fail closed (no LocalAppData/temp fallback).
     """
 
-    paths = resolve_app_paths(executable, profile=profile)
+    paths = resolve_app_paths(
+        executable,
+        profile=profile,
+        data_root_resolver=data_root_resolver,
+    )
     if profile == "production":
+        _migrate_legacy_current_state(
+            _normalize_executable(executable), paths.state_root
+        )
         ensure_portable_state_usable(
             paths.state_root,
-            portable_root=None
-            if os.environ.get("VIBEOCR_CLASSIC_DATA_ROOT")
-            else paths.install_root,
+            portable_root=None if data_root_resolver is not None else paths.install_root,
         )
-        for relative in _STATE_TREE_DIRS:
-            directory = paths.state_root / relative
-            try:
-                directory.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise PortableStateError(
-                    f"VibeOCR 状态目录不可用：{directory} 无法创建（{exc}）。"
-                    "请将程序移动到可写位置后重试。"
-                ) from exc
+        _migrate_legacy_runtime_directory(paths.state_root)
+        paths.ensure_state_tree()
     activate_app_paths(paths)
     return paths
 

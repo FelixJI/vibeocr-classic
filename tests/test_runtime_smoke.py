@@ -16,12 +16,20 @@ def test_offline_probe_uses_protocol_27_engine_export(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Protocol 2.7.0 exposes OcrEngine from dtos, not the package root."""
+    from vibeocr.classic import protocol_compat
     import vibeocr.runtime_contracts as contracts
     from vibeocr.runtime_client.process import SupervisorProcess
 
+    lifecycle: list[str] = []
+    monkeypatch.setattr(
+        protocol_compat,
+        "enable_pipeline_engine_parser_compatibility",
+        lambda: lifecycle.append("compat"),
+    )
     monkeypatch.delattr(contracts, "OcrEngine", raising=False)
 
     def stop_after_protocol_imports(**_kwargs: object) -> None:
+        assert lifecycle == ["compat"]
         raise _LaunchReached
 
     monkeypatch.setattr(SupervisorProcess, "launch", stop_after_protocol_imports)

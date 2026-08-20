@@ -15,6 +15,12 @@ def probe_runtime_launch(launch: RuntimeLaunch, state_root: Path) -> None:
     """Run one explicit RapidOCR job and one basic PDF session."""
     from PIL import Image, ImageDraw
     from vibeocr.classic.pdf_client import SyncPdfSupervisorClient
+    from vibeocr.classic.protocol_compat import (
+        enable_pipeline_engine_parser_compatibility,
+    )
+
+    enable_pipeline_engine_parser_compatibility()
+
     from vibeocr.runtime_client.client import SupervisorClient
     from vibeocr.runtime_client.job_handle import JobHandle
     from vibeocr.runtime_client.process import SupervisorProcess

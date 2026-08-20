@@ -477,16 +477,22 @@ def test_runtime_status_http_client_is_built_lazily() -> None:
 def test_runtime_endpoint_factory_owns_all_protocol_clients(monkeypatch) -> None:
     created: list[tuple[str, dict[str, object]]] = []
     closed: list[str] = []
+    lifecycle: list[str] = []
 
     class Client:
         def __init__(self, kind: str, **kwargs: object) -> None:
             self.kind = kind
             self.kwargs = kwargs
+            lifecycle.append(kind)
             created.append((kind, kwargs))
 
         def close(self) -> None:
             closed.append(self.kind)
 
+    monkeypatch.setattr(
+        "vibeocr.classic.protocol_compat.enable_pipeline_engine_parser_compatibility",
+        lambda: lifecycle.append("compat"),
+    )
     monkeypatch.setattr(
         "vibeocr.runtime_client.client.SupervisorClient",
         lambda **kwargs: Client("async", **kwargs),
@@ -510,10 +516,12 @@ def test_runtime_endpoint_factory_owns_all_protocol_clients(monkeypatch) -> None
         instance_id="runtime-1",
     )
 
+    assert lifecycle == ["compat", "async"]
     assert [kind for kind, _kwargs in created] == ["async"]
     assert adapter.pdf_sync_client.kind == "pdf"
     assert adapter.inference_sync_client.kind == "sync"
     assert adapter.runtime_status_client.kind == "status"
+    assert lifecycle == ["compat", "async", "pdf", "sync", "status"]
     assert [kind for kind, _kwargs in created] == ["async", "pdf", "sync", "status"]
     assert all(
         kwargs["base_url"] == "http://127.0.0.1:43210"

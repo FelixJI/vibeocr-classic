@@ -32,7 +32,7 @@ _VALID_ENGINE_AVAILABILITY = frozenset(
 
 # Protocol 保持 source kind 开放；Classic 只把已知 kind 暴露为可编辑选项，
 # 未知 kind 保留在 catalog 中但不参与 UI 选择。
-EDITABLE_SOURCE_KINDS = frozenset({"package_index", "model_registry"})
+EDITABLE_SOURCE_KINDS = frozenset({"package_index"})
 
 DEFAULT_ENGINE_ID = "rapidocr"
 VALID_ENGINE_IDS = frozenset({"rapidocr", "windows", "paddleocr"})
@@ -165,6 +165,16 @@ class RuntimeSelectionCatalog:
             seen_kinds.add(kind)
             resolved.append(source_id)
         return tuple(resolved)
+
+    def preserve_uneditable_source_ids(
+        self, source_ids: Iterable[str]
+    ) -> tuple[str, ...]:
+        """Keep wire selections that Classic cannot edit through its UI."""
+
+        editable_ids = {source.source_id for source in self.sources if source.editable}
+        return tuple(
+            source_id for source_id in source_ids if source_id not in editable_ids
+        )
 
 
 def _require_str(value: object, field: str) -> str:

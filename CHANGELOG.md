@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.6
+
+### Features
+
+- **policy:** 闭合八能力组件门禁并修复离线 base 安装链路 (#57) (1af3e4d)
+- **release:** 切换 Portable-only 发布并保留 Velopack 自更新资产 (#56) (966d074)
+- **paths:** 切换完全便携状态根并移除 LocalAppData 迁移回退 (#55) (335ef90)
+- **runtime:** 接入 Protocol 2.7 引擎选择与 Runtime 选择客户端 (#54) (135e6f9)
+- **ui:** 文档语言选项暴露中文高精度模型并修正非法语言码 (#53) (b878aab)
+
+### Bug Fixes
+
+- **settings:** 恢复模型源选择 (#62) (eb983a4)
+- **release:** 收敛基础运行时产品闭包 (#61) (4f5f459)
+- **classic:** 收敛便携路径与维护更新契约 (#58) (74528e5)
+- **ui:** 补齐首启安装 Runtime 的进度与重依赖组件状态显示 (#51) (9472399)
+
 ## 0.10.5
 
 ### Features

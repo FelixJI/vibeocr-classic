@@ -140,6 +140,7 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert script.index("uv venv --python") < script.index("& $buildPython")
     assert "updater.exe" not in script
     assert script.count("dnx --yes vpk@1.2.0 -- pack") == 2
+    assert script.count("  --noInst `") == 2
     assert "--packVersion 0.0.1" in script
     assert "verify_velopack_portable_e2e.py" in script
     assert "--old-portable" in script
@@ -169,6 +170,7 @@ def test_release_contract_publishes_only_exact_velopack_assets() -> None:
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
     required = set(config["release"]["required_assets"])
     smoke = config["ci"]["release_smoke"]
+    build_script = (ROOT / "scripts/build-release.ps1").read_text(encoding="utf-8")
 
     # Portable-only：不再发布 Setup 与其 checksum sidecar；NUPKG/feed 仅服务
     # Velopack 自更新，用户可见交付只有 Portable.zip。
@@ -177,12 +179,14 @@ def test_release_contract_publishes_only_exact_velopack_assets() -> None:
         "frontend-protocol-lock.json",
         "SBOM.spdx.json",
         "VibeOCRClassic-*-full.nupkg",
-        "VibeOCRClassic-win-Portable.zip",
+        "VibeOCRClassic-v{version}-win-x64.zip",
         "releases.win.json",
     }
     assert "VibeOCRClassic-win-Setup.exe" not in required
     assert "VibeOCRClassic-win-Setup.exe.sha256" not in required
     assert any("scripts/verify_velopack_release.py" in command for command in smoke)
+    assert "--portable-name" in smoke[1]
+    assert "VibeOCRClassic-v$Version-win-x64.zip" in build_script
     assert "--exact" in smoke[0]
     assert "VibeOCRClassic-win-Setup.exe" not in " ".join(smoke[0])
 
@@ -211,10 +215,23 @@ def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) ->
 
     publishable = verify_velopack_release(tmp_path, "1.2.3")
 
-    # Setup.exe 留在 vpk 中间目录，不进入发布集合
+    # 即使中间目录残留旧 Setup.exe，验证器也不会把它纳入发布集合。
     assert {path.name for path in publishable} == {
         package.name,
         "VibeOCRClassic-win-Portable.zip",
+        "releases.win.json",
+    }
+
+    canonical = tmp_path / "VibeOCRClassic-v1.2.3-win-x64.zip"
+    canonical.write_bytes(b"portable")
+    canonical_publishable = verify_velopack_release(
+        tmp_path,
+        "1.2.3",
+        portable_name=canonical.name,
+    )
+    assert {path.name for path in canonical_publishable} == {
+        package.name,
+        canonical.name,
         "releases.win.json",
     }
 

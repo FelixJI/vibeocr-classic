@@ -16,16 +16,21 @@ def _digest(path: Path, algorithm: str) -> str:
     return digest.hexdigest().upper()
 
 
-def verify_velopack_release(root: Path, version: str) -> tuple[Path, ...]:
+def verify_velopack_release(
+    root: Path,
+    version: str,
+    *,
+    portable_name: str = "VibeOCRClassic-win-Portable.zip",
+) -> tuple[Path, ...]:
     """Return the exact publishable set after validating the pinned vpk output.
 
     Portable-only delivery: users get the Portable zip, machines get the
-    NUPKG/feed for Velopack self-update. vpk's generated Setup.exe stays in
-    the intermediate output directory and is never part of this set.
+    NUPKG/feed for Velopack self-update. The build uses ``--noInst`` so a
+    redundant Setup executable is not generated.
     """
     root = root.resolve(strict=True)
     package = root / f"VibeOCRClassic-{version}-full.nupkg"
-    portable = root / "VibeOCRClassic-win-Portable.zip"
+    portable = root / portable_name
     feed = root / "releases.win.json"
     publishable = (package, portable, feed)
     missing = [path.name for path in publishable if not path.is_file()]
@@ -61,8 +66,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
     parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--portable-name",
+        default="VibeOCRClassic-win-Portable.zip",
+        help="Portable ZIP name (raw Velopack output by default)",
+    )
     args = parser.parse_args(argv)
-    for path in verify_velopack_release(args.root, args.version):
+    for path in verify_velopack_release(
+        args.root,
+        args.version,
+        portable_name=args.portable_name,
+    ):
         print(path)
     return 0
 

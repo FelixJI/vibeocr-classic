@@ -176,6 +176,7 @@ New-Item -ItemType Directory -Path $velopackOutput -Force | Out-Null
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
+  --noInst `
   --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOutput
@@ -189,6 +190,7 @@ New-Item -ItemType Directory -Path $velopackOldOutput -Force | Out-Null
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion 0.0.1 --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
+  --noInst `
   --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOldOutput
@@ -199,14 +201,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Velopack old-version E2E build failed' }
   --work-dir (Join-Path $build 'velopack-portable-e2e') --timeout 1200
 if ($LASTEXITCODE -ne 0) { throw 'Velopack Portable two-version E2E failed' }
 # Portable-only：用户可见交付只有 Portable.zip；NUPKG/feed 服务 Velopack
-# 自更新。vpk 生成的 Setup.exe 留在中间目录，不进入发布资产。
+# 自更新。两次 vpk pack 均以 --noInst 禁止生成多余的 Setup.exe。
 foreach ($name in @(
     "VibeOCRClassic-$Version-full.nupkg",
-    'VibeOCRClassic-win-Portable.zip',
     'releases.win.json'
 )) {
     Copy-Item -LiteralPath (Join-Path $velopackOutput $name) -Destination $artifacts
 }
+Copy-Item -LiteralPath (Join-Path $velopackOutput 'VibeOCRClassic-win-Portable.zip') `
+  -Destination (Join-Path $artifacts "VibeOCRClassic-v$Version-win-x64.zip")
 Copy-Item -LiteralPath $lock -Destination (Join-Path $artifacts 'component-lock.json')
 Copy-Item -LiteralPath $frontendProtocolLock `
   -Destination (Join-Path $artifacts 'frontend-protocol-lock.json')

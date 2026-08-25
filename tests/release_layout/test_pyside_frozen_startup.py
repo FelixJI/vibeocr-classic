@@ -93,10 +93,9 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert smoke_data.parent == tmp_path
     assert smoke_data.name.startswith(".smoke-data-")
     assert captured["env"]["VIBEOCR_CLASSIC_TEST_MODE"] == "artifact-smoke"
-    assert (
-        captured["env"]["VIBEOCR_CLASSIC_TEST_NONCE"]
-        == smoke_data.name.removeprefix(".smoke-data-")
-    )
+    assert captured["env"][
+        "VIBEOCR_CLASSIC_TEST_NONCE"
+    ] == smoke_data.name.removeprefix(".smoke-data-")
     smoke_pythonpath = Path(captured["env"]["PYTHONPATH"])
     assert ".smoke-runtime" in smoke_pythonpath.parts
     assert smoke_pythonpath.parts[-1] == "site-packages"
@@ -109,6 +108,59 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert not (tmp_path / ".startup-smoke.stdout.log").exists()
     assert not (tmp_path / ".startup-smoke.stderr.log").exists()
     assert not (tmp_path / ".startup-smoke-result.json").exists()
+
+
+def test_frozen_startup_smoke_uses_ensured_base_runtime_python(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """T6 must launch Supervisor from the offline Base Runtime closure."""
+    verifier = _load_verifier()
+    (tmp_path / "VibeOCR.exe").write_bytes(b"MZ")
+    runtime_python = tmp_path / "state" / "runtime" / "python.exe"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.write_bytes(b"MZ")
+    runtime_site_packages = runtime_python.parent / "Lib" / "site-packages"
+    runtime_site_packages.mkdir(parents=True)
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        trace = Path(kwargs["env"]["VIBEOCR_STARTUP_TRACE"])
+        trace.write_text(
+            json.dumps({f"T{index}": index / 10 for index in range(7)}) + "\n",
+            encoding="utf-8",
+        )
+        module_file = runtime_site_packages / "vibeocr" / "backend" / "main.py"
+        module_file.parent.mkdir(parents=True)
+        module_file.write_text("# ensured backend\n", encoding="utf-8")
+        Path(kwargs["env"]["VIBEOCR_SELF_TEST_RESULT"]).write_text(
+            json.dumps(
+                {
+                    "supervisor_ready": True,
+                    "module_file": str(module_file),
+                    "python_executable": str(runtime_python),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(verifier.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        verifier,
+        "_prepare_smoke_python",
+        lambda root: pytest.fail("wheel-only smoke Python must not be prepared"),
+    )
+
+    verifier._verify_frozen_startup(
+        tmp_path,
+        runtime_python=runtime_python,
+    )
+
+    assert captured["command"] == [str(tmp_path / "VibeOCR.exe")]
+    assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == str(runtime_python)
+    assert Path(captured["env"]["PYTHONPATH"]) == runtime_site_packages
 
 
 def test_frozen_startup_smoke_rejects_trace_that_stops_at_t3(
@@ -303,11 +355,12 @@ def test_offline_base_smoke_skips_without_component_selection_capability(
     verifier = _load_verifier()
     client = _FakeOfflineClient(capabilities=("runtime.maintenance.v2",), root=tmp_path)
 
-    result = verifier._verify_offline_base_smoke(
+    status, runtime_python = verifier._verify_offline_base_smoke(
         tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
     )
 
-    assert result == "skipped"
+    assert status == "skipped"
+    assert runtime_python is None
     assert client.ensure_calls == []
     assert "does not negotiate" in capsys.readouterr().out
 
@@ -338,11 +391,12 @@ def test_offline_base_smoke_enforces_offline_intent_and_reuse(
     for name in ("component-lock.json", "frontend-protocol-lock.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
 
-    result = verifier._verify_offline_base_smoke(
+    status, runtime_python = verifier._verify_offline_base_smoke(
         tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
     )
 
-    assert result == "enforced"
+    assert status == "enforced"
+    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
     assert len(client.ensure_calls) == 3
     assert all(call.get("install_component_ids") == () for call in client.ensure_calls)
     assert all(
@@ -367,14 +421,15 @@ def test_offline_base_smoke_runs_supervisor_rapidocr_pdf_probe_twice(
     for name in ("component-lock.json", "frontend-protocol-lock.json"):
         (tmp_path / name).write_text("{}", encoding="utf-8")
 
-    result = verifier._verify_offline_base_smoke(
+    status, runtime_python = verifier._verify_offline_base_smoke(
         tmp_path,
         tmp_path / "installer.exe",
         client_factory=lambda: client,
         runtime_probe=lambda _launch, root: probes.append(root),
     )
 
-    assert result == "enforced"
+    assert status == "enforced"
+    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
     assert probes == [tmp_path, tmp_path]
 
 
@@ -393,14 +448,15 @@ def test_offline_base_smoke_uses_post_probe_tree_as_reensure_baseline(
         runtime_cache = tmp_path / "state" / "runtime" / "runtime-cache.bin"
         runtime_cache.write_bytes(b"runtime-owned")
 
-    result = verifier._verify_offline_base_smoke(
+    status, runtime_python = verifier._verify_offline_base_smoke(
         tmp_path,
         tmp_path / "installer.exe",
         client_factory=lambda: client,
         runtime_probe=write_runtime_cache,
     )
 
-    assert result == "enforced"
+    assert status == "enforced"
+    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
     assert len(client.ensure_calls) == 3
 
 

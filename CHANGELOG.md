@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.7
+
+### Bug Fixes
+
+- **release:** 规范便携包并移除安装器副产物 (#64) (34207c5)
+
 ## 0.10.6
 
 ### Features

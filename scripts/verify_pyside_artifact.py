@@ -294,7 +294,19 @@ def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
     return Path(sys.executable), site_packages
 
 
-def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
+def _startup_log_tail(path: Path, *, limit: int = 4096) -> str:
+    if not path.is_file():
+        return "<missing>"
+    content = path.read_text(encoding="utf-8", errors="replace").strip()
+    return content[-limit:] if content else "<empty>"
+
+
+def _verify_frozen_startup(
+    root: Path,
+    timeout_seconds: float = 45.0,
+    *,
+    runtime_python: Path | None = None,
+) -> None:
     """真实启动冻结入口并要求它完成 Supervisor 就绪握手。"""
     exe = root / "VibeOCR.exe"
     trace = root / ".startup-smoke.jsonl"
@@ -306,7 +318,15 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
     stdout_log.unlink(missing_ok=True)
     stderr_log.unlink(missing_ok=True)
     smoke_root = root / ".smoke-runtime"
-    smoke_python, smoke_import_root = _prepare_smoke_python(root)
+    if runtime_python is None:
+        smoke_python, smoke_import_root = _prepare_smoke_python(root)
+    else:
+        smoke_python = runtime_python.resolve(strict=True)
+        smoke_import_root = smoke_python.parent / "Lib" / "site-packages"
+        if not smoke_import_root.is_dir():
+            raise RuntimeError(
+                "ensured Base Runtime has no site-packages for frozen smoke"
+            )
     env = os.environ.copy()
     env["VIBEOCR_SELF_TEST_SMOKE"] = "t6"
     env["VIBEOCR_STARTUP_TRACE"] = str(trace)
@@ -342,13 +362,17 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
                 creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             )
         if process_result.returncode != 0:
-            stderr = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
             raise RuntimeError(
                 f"frozen PySide startup smoke exited with {process_result.returncode}: "
-                f"{stderr}"
+                f"stdout={_startup_log_tail(stdout_log)}, "
+                f"stderr={_startup_log_tail(stderr_log)}"
             )
         if not trace.is_file():
-            raise RuntimeError("frozen PySide startup smoke produced no trace")
+            raise RuntimeError(
+                "frozen PySide startup smoke produced no trace: "
+                f"stdout={_startup_log_tail(stdout_log)}, "
+                f"stderr={_startup_log_tail(stderr_log)}"
+            )
         records = [
             json.loads(line)
             for line in trace.read_text(encoding="utf-8").splitlines()
@@ -362,7 +386,9 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
             )
         if not result_file.is_file():
             raise RuntimeError(
-                "frozen PySide startup smoke produced no result evidence"
+                "frozen PySide startup smoke produced no result evidence: "
+                f"stdout={_startup_log_tail(stdout_log)}, "
+                f"stderr={_startup_log_tail(stderr_log)}"
             )
         smoke_result = json.loads(result_file.read_text(encoding="utf-8"))
         if smoke_result.get("supervisor_ready") is not True:
@@ -381,10 +407,10 @@ def _verify_frozen_startup(root: Path, timeout_seconds: float = 45.0) -> None:
                 f"Supervisor module evidence does not exist in artifact: {module_file}"
             )
     except subprocess.TimeoutExpired as error:
-        stderr = stderr_log.read_text(encoding="utf-8", errors="replace").strip()
         raise RuntimeError(
             f"frozen PySide startup smoke timed out after {timeout_seconds:.0f}s: "
-            f"{stderr}"
+            f"stdout={_startup_log_tail(stdout_log)}, "
+            f"stderr={_startup_log_tail(stderr_log)}"
         ) from error
     finally:
         trace.unlink(missing_ok=True)
@@ -655,7 +681,7 @@ def _verify_offline_base_smoke(
     client_factory=None,
     runtime_probe=None,
     timeout_seconds: float = 1200.0,
-) -> str:
+) -> tuple[str, Path | None]:
     """C6：base 禁网安装 + 幂等复用 + 模拟 apply 后 state 保留。
 
     - 通过先 ``inspect()`` 协商能力；Runtime Host 协商
@@ -670,7 +696,7 @@ def _verify_offline_base_smoke(
       闸门）时输出原因并跳过；下一版合格 Backend Release 后本 smoke 自动
       转为强制。
 
-    Returns ``"enforced"`` or ``"skipped"``.
+    Returns the enforcement status plus the verified Base Runtime Python.
     """
 
     def snapshot_runtime_tree() -> list[tuple[str, int, str]]:
@@ -738,7 +764,7 @@ def _verify_offline_base_smoke(
             "release)"
         )
         print(reason)
-        return "skipped"
+        return "skipped", None
 
     saved_env = {name: os.environ.get(name) for name in _PROXY_VARIABLES}
     saved_no_proxy = {name: os.environ.get(name) for name in ("no_proxy", "NO_PROXY")}
@@ -793,7 +819,7 @@ def _verify_offline_base_smoke(
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
-    return "enforced"
+    return "enforced", Path(launch.python_executable).resolve(strict=True)
 
 
 def main() -> int:
@@ -887,11 +913,18 @@ def main() -> int:
                 installer_executable,
                 str(backend.get("accelerator", "")),
             )
-            _verify_frozen_startup(root)
+            offline_status, runtime_python = _verify_offline_base_smoke(
+                root,
+                installer_executable_path,
+            )
+            if offline_status != "enforced" or runtime_python is None:
+                raise RuntimeError(
+                    "frozen startup smoke requires an ensured Base Runtime"
+                )
+            _verify_frozen_startup(root, runtime_python=runtime_python)
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)
             _verify_portable_state_smoke(root)
-            _verify_offline_base_smoke(root, installer_executable_path)
     return 0
 
 

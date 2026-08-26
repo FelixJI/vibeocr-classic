@@ -282,6 +282,53 @@ def test_health_catalog_renders_engines_features_and_sources(
     assert controller._resolve_download_source_ids() is None
 
 
+def test_health_recovers_persisted_engine_when_interrupted_install_left_it_unavailable(
+    selection_controller,
+) -> None:
+    controller, host, _adapter, config, _manager = selection_controller
+    config.get_ocr_engine_selection.return_value = ("paddleocr", False)
+    controller._populate_engine_combo()
+    health = _health_payload()
+    paddle = health["capability_descriptors"][0]["ocr_engine_catalog"]["engines"][2]
+    paddle["availability"] = "unavailable"
+    paddle["reason_code"] = "engine_not_installed"
+
+    controller._on_health_loaded(health)
+
+    config.set_ocr_engine.assert_called_once_with("rapidocr")
+    combo = host.findChild(QComboBox, "comboOcrEngine")
+    assert combo.currentData() == "rapidocr"
+    assert (
+        "已自动切换到 RapidOCR" in host.findChild(QLabel, "labelOcrEngineStatus").text()
+    )
+
+
+def test_supervisor_ready_requests_health_for_engine_reconciliation(
+    selection_controller,
+) -> None:
+    controller, _host, adapter, _config, _manager = selection_controller
+
+    controller.on_supervisor_ready()
+
+    assert adapter.fetch_health_calls == 1
+
+
+def test_non_ready_engine_cannot_be_persisted_again(
+    selection_controller,
+) -> None:
+    controller, host, _adapter, config, _manager = selection_controller
+    controller._on_health_loaded(_health_payload())
+    config.set_ocr_engine.reset_mock()
+    combo = host.findChild(QComboBox, "comboOcrEngine")
+    paddle_index = combo.findData("paddleocr")
+
+    combo.setCurrentIndex(paddle_index)
+
+    config.set_ocr_engine.assert_not_called()
+    assert combo.currentData() == "rapidocr"
+    assert "需先安装对应组件" in host.findChild(QLabel, "labelOcrEngineStatus").text()
+
+
 def test_missing_download_capability_disables_source_ui(selection_controller) -> None:
     controller, host, _adapter, _config, _manager = selection_controller
 

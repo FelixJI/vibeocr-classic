@@ -4,6 +4,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from vibeocr.classic.views.main_window import MainWindow
+from vibeocr.classic.runtime_selection import (
+    RecognitionModeEntry,
+    RecognitionModeLifecycle,
+    RuntimeSelectionCatalog,
+)
 
 
 class _ReadyWindow:
@@ -41,6 +46,19 @@ class _RapidReadyWindow:
         self._ocr_ready = True
         self._subprocess_manager = SimpleNamespace(is_ready=True)
         self._start_install = MagicMock()
+
+
+class _ShortcutWindow:
+    _start_fresh_overlay_capture = MainWindow._start_fresh_overlay_capture
+
+    def __init__(self, mode: RecognitionModeEntry) -> None:
+        self._closing = False
+        self._overlay = None
+        self._recognition_catalog = RuntimeSelectionCatalog(
+            modes=(mode,), has_recognition_mode_catalog=True
+        )
+        self._statusbar = MagicMock()
+        self._settings_controller = MagicMock()
 
 
 def test_missing_base_runtime_starts_automatic_base_preparation_after_gui_is_ready() -> (
@@ -84,6 +102,45 @@ def test_rapid_screenshot_is_available_after_supervisor_handshake_without_downlo
     message_box.information.assert_not_called()
     message_box.question.assert_not_called()
     window._start_install.assert_not_called()
+
+
+def test_unavailable_screenshot_shortcut_never_creates_overlay() -> None:
+    mode = RecognitionModeEntry(
+        "paddle_table",
+        "specialized",
+        "TABLE_RECOGNITION",
+        None,
+        "advanced_component",
+        "unavailable",
+        RecognitionModeLifecycle("model_residency", True, True, True, True),
+        reason_code="component-disabled",
+    )
+    window = _ShortcutWindow(mode)
+
+    window._start_fresh_overlay_capture("paddle_table")
+
+    assert window._overlay is None
+    window._settings_controller.install_recognition_mode.assert_not_called()
+    assert "不可用" in window._statusbar.showMessage.call_args.args[0]
+
+
+def test_preparation_required_screenshot_shortcut_starts_component_prepare() -> None:
+    mode = RecognitionModeEntry(
+        "paddle_formula",
+        "specialized",
+        "FORMULA_RECOGNITION",
+        None,
+        "advanced_component",
+        "preparation_required",
+        RecognitionModeLifecycle("model_residency", True, True, True, True),
+        required_component="paddle-formula",
+    )
+    window = _ShortcutWindow(mode)
+
+    window._start_fresh_overlay_capture("paddle_formula")
+
+    assert window._overlay is None
+    window._settings_controller.install_recognition_mode.assert_called_once_with(mode)
 
 
 def test_supervisor_ready_is_not_reported_as_startup_failure() -> None:

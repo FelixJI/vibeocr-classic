@@ -672,6 +672,7 @@ class MainWindow(QMainWindow):
     def _on_recognition_catalog_loaded(self, catalog) -> None:
         """把 health 中协商的识别模式投影到所有本地作业入口。"""
         self._recognition_catalog = catalog
+        self._edge_toolbar.set_recognition_catalog(catalog)
         from vibeocr.classic.widgets.preprocess_options_widget import (
             PreprocessOptionsWidget,
         )
@@ -1192,6 +1193,21 @@ class MainWindow(QMainWindow):
         """
         if self._closing:
             return
+        if pipeline_name is not None and self._recognition_catalog is not None:
+            mode = self._recognition_catalog.mode(pipeline_name)
+            if mode is not None:
+                if mode.availability == "unavailable":
+                    reason = f"（{mode.reason_code}）" if mode.reason_code else ""
+                    self._statusbar.showMessage(
+                        f"{mode.display_name} 当前不可用{reason}"
+                    )
+                    return
+                if mode.availability == "preparation_required":
+                    self._statusbar.showMessage(
+                        f"正在准备 {mode.display_name} 所需组件"
+                    )
+                    self._settings_controller.install_recognition_mode(mode)
+                    return
         # 释放上一轮（若未正常 _cleanup，防御性清理）
         if self._overlay is not None:
             previous = self._overlay

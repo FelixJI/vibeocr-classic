@@ -10,6 +10,11 @@ from PySide6.QtWidgets import QCheckBox, QLabel, QMessageBox, QPushButton, QWidg
 
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
+from vibeocr.classic.runtime_selection import (
+    RecognitionModeEntry,
+    RecognitionModeLifecycle,
+    RuntimeSelectionCatalog,
+)
 from vibeocr.runtime_contracts import (
     EvictionReason,
     PipelineSpec,
@@ -177,6 +182,60 @@ def _paddle_status() -> ResidencyStatus:
     )
 
 
+def _ready_lifecycle_catalog() -> RuntimeSelectionCatalog:
+    """A compact negotiated catalog covering every lifecycle shape."""
+
+    unmanaged = RecognitionModeLifecycle("unmanaged", False, False, False, False)
+    residency = RecognitionModeLifecycle("model_residency", True, True, True, True)
+    process = RecognitionModeLifecycle("process_keep_alive", False, True, False, True)
+    return RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                "rapid_text",
+                "text",
+                "OCR",
+                "rapidocr",
+                "base_runtime",
+                "ready",
+                unmanaged,
+            ),
+            RecognitionModeEntry(
+                "paddle_structure",
+                "document",
+                "PP-StructureV3",
+                None,
+                "advanced_component",
+                "ready",
+                residency,
+            ),
+            RecognitionModeEntry(
+                "paddle_table",
+                "specialized",
+                "TABLE_RECOGNITION",
+                None,
+                "advanced_component",
+                "ready",
+                residency,
+            ),
+            RecognitionModeEntry(
+                "mineru_document",
+                "document",
+                "MinerU",
+                None,
+                "advanced_component",
+                "ready",
+                process,
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+
+def _apply_ready_lifecycle_catalog(controller: SettingsPageController) -> None:
+    controller._selection_catalog = _ready_lifecycle_catalog()
+    controller._refresh_lifecycle_controls()
+
+
 def test_refresh_and_typed_residency_rendering(runtime_controller) -> None:
     _controller, host, adapter, _ttls = runtime_controller
     assert adapter.refresh_calls == 1
@@ -222,7 +281,8 @@ def test_evicted_entries_are_not_reported_as_resident(runtime_controller) -> Non
 def test_paddle_ttl_debounce_preserves_unmanaged_ocr_policy(
     runtime_controller, qtbot
 ) -> None:
-    _controller, host, adapter, _ttls = runtime_controller
+    controller, host, adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
     adapter.residency_status.emit(_initial_status())
     adapter.update_calls.clear()
 
@@ -247,7 +307,8 @@ def test_paddle_ttl_debounce_preserves_unmanaged_ocr_policy(
 def test_release_all_uses_release_idle_and_reenables_on_status(
     runtime_controller, monkeypatch
 ) -> None:
-    _controller, host, adapter, _ttls = runtime_controller
+    controller, host, adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
     monkeypatch.setattr(
         "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
         lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
@@ -286,7 +347,8 @@ def test_typed_errors_update_feedback(runtime_controller) -> None:
 def test_paddle_persistent_residency_option_sends_pinned_policy(
     runtime_controller, qtbot
 ) -> None:
-    _controller, host, adapter, ttls = runtime_controller
+    controller, host, adapter, ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
     adapter.residency_status.emit(_initial_status())
     adapter.update_calls.clear()
 
@@ -303,11 +365,12 @@ def test_paddle_persistent_residency_option_sends_pinned_policy(
     assert ttls["PP-StructureV3"] == -1
 
 
-def test_lifecycle_controls_exclude_ocr_and_mineru_pinning(runtime_controller) -> None:
-    _controller, host, _adapter, _ttls = runtime_controller
+def test_lifecycle_controls_follow_negotiated_mode_flags(runtime_controller) -> None:
+    controller, host, _adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
 
     assert host.findChild(QWidget, "comboTtl_OCR") is None
-    assert host.findChild(QCheckBox, "chkPreload_OCR") is None
+    assert not host.findChild(QCheckBox, "chkPreload_OCR").isVisible()
     assert host.findChild(QCheckBox, "chkPreload_DOCUMENT_PARSING") is None
 
     paddle_combo = host.findChild(QWidget, "comboTtl_PP-StructureV3")
@@ -318,10 +381,23 @@ def test_lifecycle_controls_exclude_ocr_and_mineru_pinning(runtime_controller) -
     assert mineru_combo.findText("持久驻留") < 0
 
 
+def test_legacy_lifecycle_fallback_hides_unnegotiated_controls(
+    runtime_controller,
+) -> None:
+    controller, host, _adapter, _ttls = runtime_controller
+    controller._selection_catalog = RuntimeSelectionCatalog()
+    controller._refresh_lifecycle_controls()
+
+    assert host.findChild(QWidget, "comboTtl_PP-StructureV3") is None
+    assert not host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").isVisible()
+    assert not host.findChild(QPushButton, "btnReleaseAll").isEnabled()
+
+
 def test_preload_selected_pipelines_uses_supervisor_adapter(
     runtime_controller, qtbot
 ) -> None:
     controller, host, adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
     runtime_status = controller._runtime_status_callback
     controller._preload_poll_timer.setInterval(10)
     host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").setChecked(True)
@@ -357,6 +433,7 @@ def test_preload_failure_stops_polling_and_keeps_partial_residency(
     runtime_controller, qtbot
 ) -> None:
     controller, host, adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
     runtime_status = controller._runtime_status_callback
     controller._preload_poll_timer.setInterval(10)
     host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").setChecked(True)
@@ -380,6 +457,7 @@ def test_supervisor_ready_automatically_preloads_persisted_selection(
     runtime_controller,
 ) -> None:
     controller, _host, adapter, _ttls = runtime_controller
+    _apply_ready_lifecycle_catalog(controller)
 
     controller.on_supervisor_ready()
 

@@ -142,6 +142,7 @@ class OCROptions:
         from vibeocr.classic.runtime_selection import (
             execution_projection_for_mode,
             recognition_mode_for_engine,
+            supported_options_for_mode,
         )
 
         mode_id = self.recognition_mode
@@ -165,7 +166,16 @@ class OCROptions:
                 ) from exc
             engine_override = projected_engine
 
-        allowed = set(get_pipeline_supported_options(pipeline))
+        mode_options = (
+            supported_options_for_mode(mode_id, pipeline.value)
+            if mode_id is not None
+            else None
+        )
+        allowed = set(
+            mode_options
+            if mode_options is not None
+            else get_pipeline_supported_options(pipeline)
+        )
         options = {
             key: value
             for key, value in self.to_dict().items()

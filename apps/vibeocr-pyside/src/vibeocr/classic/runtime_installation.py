@@ -155,6 +155,13 @@ class RuntimeInspection:
         profile predicate as the conservative fallback.
         """
 
+        # Base Runtime is a narrower component set than a full profile, but
+        # it is never allowed to bypass the host-level inspection verdict.
+        # A stale/failed inspection can otherwise report an old base component
+        # as ready while the Supervisor executable is no longer trustworthy.
+        if not self.ready:
+            return False
+
         base_components = tuple(
             component for component in self.components if component.included_in_base
         )
@@ -165,7 +172,7 @@ class RuntimeInspection:
                 if component.component_id in {"ocr_engine", "rapidocr"}
             )
         if not base_components:
-            return self.ready
+            return True
         return all(component.actual_state == "ready" for component in base_components)
 
 

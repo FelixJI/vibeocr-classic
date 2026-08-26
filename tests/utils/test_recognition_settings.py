@@ -207,6 +207,47 @@ def test_ocr_pipeline_selection_prefers_active_catalog_descriptor_projection() -
     assert selection.engine is None
 
 
+def test_mode_catalog_filters_wire_options_independently_of_shared_pipeline() -> None:
+    """Mode-level capability must win when several modes share OCR pipeline."""
+
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+        set_active_recognition_catalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="OCR",
+                engine="rapidocr",
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=("use_textline_orientation",),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+    set_active_recognition_catalog(catalog)
+    try:
+        selection = OCROptions(
+            recognition_mode="rapid_text",
+            use_doc_orientation_classify=True,
+            use_doc_unwarping=True,
+            use_textline_orientation=True,
+        ).to_pipeline_selection()
+    finally:
+        set_active_recognition_catalog(None)
+
+    assert selection.to_payload()["options"] == {"use_textline_orientation": True}
+
+
 def test_ocr_pipeline_selection_rejects_unknown_mode_when_catalog_is_active() -> None:
     """已协商模式目录后，旧静态表不得接管未知 mode。"""
 

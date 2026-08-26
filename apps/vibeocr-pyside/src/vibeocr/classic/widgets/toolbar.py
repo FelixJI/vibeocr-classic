@@ -128,6 +128,8 @@ class EdgeToolbar(QWidget):
         self._is_hidden = False
         self._auto_hide_enabled = False
         self._hide_delay_ms = 500
+        self._recognition_catalog = None
+        self._mode_buttons: dict[str, QPushButton] = {}
 
         # 隐藏延迟定时器
         self._hide_timer = QTimer(self)
@@ -222,6 +224,7 @@ class EdgeToolbar(QWidget):
         btn_text.clicked.connect(
             lambda: self.pipeline_screenshot_requested.emit("rapid_text")
         )
+        self._mode_buttons["rapid_text"] = btn_text
         layout.addWidget(btn_text)
 
         # 表格识别快捷按钮
@@ -233,6 +236,7 @@ class EdgeToolbar(QWidget):
         btn_table.clicked.connect(
             lambda: self.pipeline_screenshot_requested.emit("paddle_table")
         )
+        self._mode_buttons["paddle_table"] = btn_table
         layout.addWidget(btn_table)
 
         # 公式识别快捷按钮
@@ -244,6 +248,7 @@ class EdgeToolbar(QWidget):
         btn_formula.clicked.connect(
             lambda: self.pipeline_screenshot_requested.emit("paddle_formula")
         )
+        self._mode_buttons["paddle_formula"] = btn_formula
         layout.addWidget(btn_formula)
 
         # 显示主窗口按钮
@@ -265,6 +270,24 @@ class EdgeToolbar(QWidget):
         self.setFixedHeight(36)
         self.setMinimumWidth(220)
         self.adjustSize()
+
+    def set_recognition_catalog(self, catalog) -> None:
+        """Gate semantic screenshot shortcuts by the negotiated mode catalog."""
+
+        self._recognition_catalog = catalog
+        has_catalog = bool(catalog is not None and catalog.has_recognition_mode_catalog)
+        for mode_id, button in self._mode_buttons.items():
+            mode = catalog.mode(mode_id) if has_catalog else None
+            if not has_catalog:
+                button.setEnabled(True)
+                continue
+            available = mode is not None and mode.availability != "unavailable"
+            button.setEnabled(available)
+            if mode is None or mode.availability == "unavailable":
+                reason = mode.reason_code if mode is not None else "未声明"
+                button.setToolTip(f"当前 Runtime 不支持此识别模式（{reason}）")
+            elif mode.availability == "preparation_required":
+                button.setToolTip("需先准备对应组件，点击后开始准备")
 
     def paintEvent(self, event: QPaintEvent) -> None:
         """绘制浅色圆角背景 + 边框。

@@ -525,6 +525,19 @@ class ScreenCaptureOverlay(QWidget):
                 self._reset_capturing()
                 self.hide()
                 return
+            if mode.availability == "unavailable":
+                logger.info("截图快捷识别模式不可用: %s", mode_id)
+                self._reset_capturing()
+                self.hide()
+                return
+            if mode.availability == "preparation_required":
+                logger.info("截图快捷识别模式需要准备组件: %s", mode_id)
+                callback = self._advanced_mode_install_callback
+                if callable(callback):
+                    callback(mode)
+                self._reset_capturing()
+                self.hide()
+                return
             options = self._build_pipeline_options(mode.pipeline_id).copy(
                 recognition_mode=mode_id
             )

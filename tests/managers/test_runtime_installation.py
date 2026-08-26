@@ -13,12 +13,43 @@ import pytest
 import vibeocr.classic.runtime_installation as runtime_installation
 from vibeocr.classic.runtime_maintenance import ProductMaintenanceCoordinator
 from vibeocr.classic.runtime_installation import (
+    RuntimeComponentDescriptor,
+    RuntimeInspection,
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
     RuntimeInstallerClientError,
     RuntimeMaintenancePage,
     RuntimeMaintenanceUpdate,
 )
+
+
+@pytest.mark.parametrize(
+    "status,integrity", [("failed", "verified"), ("ready", "failed")]
+)
+def test_base_ready_never_bypasses_failed_runtime_inspection(
+    status: str, integrity: str
+) -> None:
+    inspection = RuntimeInspection(
+        status=status,
+        runtime_root="C:/runtime",
+        accelerator="cpu",
+        profile="base",
+        python_version="3.13",
+        protocol_version="2.8.0",
+        manifest_sha256="manifest",
+        backend_version="0.13.4",
+        integrity=integrity,
+        components=(
+            RuntimeComponentDescriptor(
+                "ocr_engine",
+                "RapidOCR",
+                actual_state="ready",
+                included_in_base=True,
+            ),
+        ),
+    )
+
+    assert not inspection.base_ready
 
 
 def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):

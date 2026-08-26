@@ -580,6 +580,29 @@ def execution_projection_for_mode(mode_id: str) -> tuple[str, str | None] | None
     return legacy_execution_projection(mode_id)
 
 
+def supported_options_for_mode(
+    mode_id: str, pipeline_id: str
+) -> tuple[str, ...] | None:
+    """Return negotiated option names for a mode, or ``None`` for legacy.
+
+    An advertised recognition-mode catalog is authoritative not only for the
+    execution projection but also for which UI fields can reach the strict
+    PipelineSelection wire.  Legacy Backends have no mode-level option
+    contract, so their existing pipeline schema remains the compatibility
+    fallback.
+    """
+
+    catalog = _active_recognition_catalog
+    if catalog is None or not catalog.has_recognition_mode_catalog:
+        return None
+    mode = catalog.mode(mode_id)
+    if mode is None:
+        raise RuntimeSelectionError(f"当前 Backend 未声明识别模式: {mode_id}")
+    if mode.pipeline_id != pipeline_id:
+        raise RuntimeSelectionError(f"recognition mode 投影不匹配: {mode_id}")
+    return mode.supported_options
+
+
 def _parse_download_source_catalog(value: object) -> tuple[DownloadSourceEntry, ...]:
     if not isinstance(value, dict):
         raise RuntimeSelectionError("download_source_catalog 无效")
@@ -740,6 +763,7 @@ __all__ = [
     "normalize_stored_engine",
     "legacy_execution_projection",
     "execution_projection_for_mode",
+    "supported_options_for_mode",
     "parse_capability_catalogs",
     "recognition_mode_for_engine",
     "resolve_engine_id",

@@ -609,7 +609,16 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
                 break
 
     def _get_supported_options(self, pipeline: OCRPipeline) -> list[str]:
-        """获取管道支持的选项列表"""
+        """获取当前 mode 明确允许的选项；旧 Backend 回退 pipeline schema。"""
+        mode = self._mode_for_current_selection()
+        if (
+            mode is not None
+            and self._recognition_catalog is not None
+            and self._recognition_catalog.has_recognition_mode_catalog
+        ):
+            # ``supported_options`` 是 Protocol 2.8 catalog 的 mode 级契约。
+            # 不可因两个 mode 共用同一个 pipeline 就泄漏彼此的可选字段。
+            return list(mode.supported_options)
         from vibeocr.runtime_contracts.contracts.pipelines import (
             get_pipeline_supported_options,
         )
@@ -629,9 +638,11 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
 
     def get_options(self) -> OCROptions:
         """获取当前选项（仅包含当前管道支持的选项）"""
-        from vibeocr.runtime_contracts.contracts.pipelines import is_option_supported
-
         pipeline = self.get_current_pipeline()
+        supported = set(self._get_supported_options(pipeline))
+
+        def is_option_supported(_pipeline: OCRPipeline, option: str) -> bool:
+            return option in supported
 
         kwargs: dict = {"pipeline": pipeline}
         mode = self._mode_for_current_selection()

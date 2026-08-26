@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from vibeocr.classic.hardware_probe import detect_gpu_info
 from vibeocr.classic.runtime_installation import (
+    RuntimeComponentDescriptor,
     RuntimeMaintenanceUpdate,
     RuntimeProfileDescriptor,
 )
@@ -33,6 +34,7 @@ from vibeocr.classic.widgets.install_dialog import (
     InstallWorker,
     MaintenanceActivityClock,
     build_maintenance_detail,
+    component_state_label,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +86,7 @@ class BackendChoiceDialog(QDialog):
         self._reinstall_python = reinstall_python
         self._missing_only = missing_only
         self._component_items: dict[str, QTreeWidgetItem] = {}
+        self._component_descriptors: dict[str, RuntimeComponentDescriptor] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
         self._setup_ui()
@@ -119,10 +122,10 @@ class BackendChoiceDialog(QDialog):
         choice_layout.addWidget(self._cpu_radio)
 
         self._hint_label = QLabel(
-            "GPU：通常需下载数 GB，识别更快，需兼容的 NVIDIA GPU\n"
-            "CPU：完整 profile 通常超过 1 GB，兼容性广；"
-            "实际流量取决于已有缓存\n"
-            "点击“开始安装”后才会联网下载，安装期间可取消。"
+            "首次初始化只解压安装包内置的 Base Runtime（RapidOCR、PDF、"
+            "二维码等），不会下载完整 CPU/GPU 扩展。\n"
+            "此处选择后续扩展使用的加速方案；文档解析等可选组件及下载源，"
+            "可在设置中按需选择。"
         )
         self._hint_label.setWordWrap(True)
         choice_layout.addWidget(self._hint_label)
@@ -233,6 +236,7 @@ class BackendChoiceDialog(QDialog):
             force_backend=backend,
             reinstall_python=self._reinstall_python,
             missing_only=self._missing_only,
+            install_component_ids=(),
         )
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
@@ -269,13 +273,19 @@ class BackendChoiceDialog(QDialog):
     def _on_profile(self, profile: RuntimeProfileDescriptor) -> None:
         self._components_tree.clear()
         self._component_items.clear()
+        self._component_descriptors.clear()
         for component in profile.components:
             item = QTreeWidgetItem(
-                [component.display_name, "等待中", component.version or "—"]
+                [
+                    component.display_name,
+                    component_state_label(component),
+                    component.actual_version or component.version or "—",
+                ]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, component.component_id)
             self._components_tree.addTopLevelItem(item)
             self._component_items[component.component_id] = item
+            self._component_descriptors[component.component_id] = component
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
@@ -310,8 +320,9 @@ class BackendChoiceDialog(QDialog):
         self._progress_bar.setVisible(False)
         self._cancel_button.setVisible(False)
         if success:
-            for item in self._component_items.values():
-                item.setText(1, "已就绪")
+            for component_id, item in self._component_items.items():
+                component = self._component_descriptors[component_id]
+                item.setText(1, component_state_label(component, completed=True))
             self._progress_label.setText("安装成功！")
             self._log(f"\n{message}")
             self._close_button.setVisible(True)

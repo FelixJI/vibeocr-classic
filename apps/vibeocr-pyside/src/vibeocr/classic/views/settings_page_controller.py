@@ -39,6 +39,7 @@ from vibeocr.classic.runtime_installation import RuntimeInstallerClient
 from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
     ENGINE_AVAILABILITY_LABELS,
+    ENGINE_AVAILABILITY_READY,
     ENGINE_DISPLAY_NAMES,
     VALID_ENGINE_IDS,
     RuntimeSelectionCatalog,
@@ -991,6 +992,11 @@ class SettingsPageController:
         """Supervisor ready 后按持久配置异步预加载选中模型。"""
         from vibeocr.classic.managers.config_manager import ConfigManager
 
+        adapter = self._connect_runtime_adapter()
+        if adapter.is_started:
+            # Runtime 总体 ready 不代表已保存的 OCR 引擎可运行。首个任务前
+            # 主动读取实时 catalog，以便中断安装后恢复到可用 Base 引擎。
+            adapter.fetch_health()
         if ConfigManager.instance().get_preload_enabled():
             self._on_preload_now_clicked()
         else:
@@ -2010,12 +2016,85 @@ class SettingsPageController:
         if label is not None:
             label.setText(text)
 
+    def _select_engine_combo(self, engine_id: str) -> None:
+        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
+        if combo is None:
+            return
+        index = combo.findData(engine_id)
+        if index < 0:
+            return
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _reconcile_engine_selection(self) -> str | None:
+        """让持久化选择服从当前 Runtime 的实时可用性。"""
+
+        catalog = self._selection_catalog
+        if catalog is None or not catalog.engines:
+            return None
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            config = ConfigManager.instance()
+            selected, requires_selection = config.get_ocr_engine_selection()
+        except RuntimeError:
+            return None
+        if requires_selection:
+            return "检测到未知的旧引擎配置，请重新选择识别引擎"
+        current = catalog.engine(selected) if selected is not None else None
+        if current is not None and current.availability == ENGINE_AVAILABILITY_READY:
+            return None
+        ready = [
+            entry
+            for entry in catalog.engines
+            if entry.availability == ENGINE_AVAILABILITY_READY
+        ]
+        fallback = next(
+            (entry for entry in ready if entry.engine_id == "rapidocr"),
+            next(
+                (entry for entry in ready if entry.included_in_base),
+                ready[0] if ready else None,
+            ),
+        )
+        if fallback is None:
+            return "当前 Runtime 没有可用的 OCR 引擎，请修复 Runtime"
+        if not config.set_ocr_engine(fallback.engine_id):
+            return "当前 OCR 引擎不可用，且自动恢复配置失败，请重新选择"
+        self._select_engine_combo(fallback.engine_id)
+        selected_name = ENGINE_DISPLAY_NAMES.get(selected or "", selected or "原选择")
+        message = f"{selected_name} 当前不可用，已自动切换到 {fallback.display_name}"
+        logger.warning("[OCR 引擎恢复] %s", message)
+        self._status_callback(message)
+        return message
+
     def _on_engine_selected(self, index: int) -> None:
         combo = self._ui.findChild(QComboBox, "comboOcrEngine")
         if combo is None or index < 0:
             return
         engine_id = combo.itemData(index)
         if not isinstance(engine_id, str) or engine_id not in VALID_ENGINE_IDS:
+            return
+        entry = (
+            self._selection_catalog.engine(engine_id)
+            if self._selection_catalog is not None
+            else None
+        )
+        if entry is not None and entry.availability != ENGINE_AVAILABILITY_READY:
+            try:
+                from vibeocr.classic.managers.config_manager import ConfigManager
+
+                selected, _requires_selection = (
+                    ConfigManager.instance().get_ocr_engine_selection()
+                )
+            except RuntimeError:
+                selected = None
+            if selected is not None:
+                self._select_engine_combo(selected)
+            reason = f"（{entry.reason_code}）" if entry.reason_code else ""
+            self._set_engine_status(
+                f"{entry.display_name} 尚未就绪{reason}，需先安装对应组件"
+            )
             return
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
@@ -2027,7 +2106,7 @@ class SettingsPageController:
             return
         self._render_engine_availability()
 
-    def _render_engine_availability(self) -> None:
+    def _render_engine_availability(self, notice: str | None = None) -> None:
         catalog = self._selection_catalog
         if catalog is None:
             return
@@ -2041,7 +2120,8 @@ class SettingsPageController:
                 suffix = f"（{entry.reason_code}）"
             parts.append(f"{entry.display_name}：{label}{suffix}")
         if parts:
-            self._set_engine_status("；".join(parts))
+            detail = "；".join(parts)
+            self._set_engine_status(f"{notice}；{detail}" if notice else detail)
 
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
@@ -2057,7 +2137,8 @@ class SettingsPageController:
             self._set_engine_status(f"Backend 选择目录无效：{exc}")
             return
         self._selection_catalog = catalog
-        self._render_engine_availability()
+        recovery_notice = self._reconcile_engine_selection()
+        self._render_engine_availability(recovery_notice)
         self._render_offline_features()
         self._render_download_sources(capabilities)
         self._refresh_selection_availability()

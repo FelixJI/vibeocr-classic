@@ -83,6 +83,7 @@ def test_reinstall_python_passed_to_worker(_cleanup, qtbot, tmp_path):
             force_backend=None,
             reinstall_python=False,
             missing_only=False,
+            install_component_ids=None,
         ):
             captured["force_backend"] = force_backend
             captured["reinstall_python"] = reinstall_python
@@ -133,6 +134,7 @@ def test_missing_only_passed_to_install_worker(_cleanup, qtbot, tmp_path):
             force_backend=None,
             reinstall_python=False,
             missing_only=False,
+            install_component_ids=None,
         ):
             captured["force_backend"] = force_backend
             captured["reinstall_python"] = reinstall_python
@@ -169,6 +171,57 @@ def test_missing_only_passed_to_install_worker(_cleanup, qtbot, tmp_path):
             dlg._on_install_clicked()
 
     assert captured.get("missing_only") is True, "missing_only 应透传给 InstallWorker"
+
+
+def test_first_run_requests_base_only_instead_of_backend_default_scope(
+    _cleanup, qtbot, tmp_path
+):
+    """首启 RapidOCR/PDF/QR 随 Base 提供，不得省略 scope 触发完整 profile。"""
+    captured: dict[str, object] = {}
+
+    class FakeWorker:
+        def __init__(
+            self,
+            project_root,
+            force_backend=None,
+            reinstall_python=False,
+            missing_only=False,
+            install_component_ids=None,
+            download_source_ids=None,
+        ):
+            captured["force_backend"] = force_backend
+            captured["install_component_ids"] = install_component_ids
+            captured["download_source_ids"] = download_source_ids
+            self.progress = MagicMock()
+            self.profile = MagicMock()
+            self.maintenance = MagicMock()
+            self.completed = MagicMock()
+            self.finished = MagicMock()
+
+        def start(self):
+            pass
+
+        def isRunning(self):
+            return False
+
+        def wait(self):
+            pass
+
+    with (
+        patch.object(
+            bcd_module,
+            "detect_gpu_info",
+            return_value={"has_gpu": False, "name": "", "vram_mb": 0, "cuda": None},
+        ),
+        patch.object(bcd_module, "InstallWorker", FakeWorker),
+    ):
+        dlg = bcd_module.BackendChoiceDialog(tmp_path)
+        qtbot.addWidget(dlg)
+        dlg._on_install_clicked()
+
+    assert captured["force_backend"] == "cpu"
+    assert captured["install_component_ids"] == ()
+    assert captured["download_source_ids"] is None
 
 
 def test_failure_shows_warning_messagebox(_cleanup, qtbot, tmp_path):
@@ -266,6 +319,7 @@ def test_install_connects_maintenance_and_profile_signals(_cleanup, qtbot, tmp_p
             force_backend=None,
             reinstall_python=False,
             missing_only=False,
+            install_component_ids=None,
         ):
             workers.append(self)
             self.progress = MagicMock()
@@ -325,6 +379,56 @@ def test_maintenance_bytes_progress_drives_bar_and_component_rows(
     assert dlg._component_items["runtime_base"].text(1) == "进行中"
     assert dlg._component_items["ocr_engine"].text(1) == "等待中"
     assert "Python 运行时" in dlg._log_text.toPlainText()
+
+
+def test_profile_rows_show_bundled_and_not_required_truth(_cleanup, qtbot, tmp_path):
+    """随包 Base 与未选高级组件不能都被投影成“等待下载”。"""
+    dlg = _make_dialog(tmp_path, qtbot, has_gpu=False)
+    qtbot.addWidget(dlg)
+
+    dlg._on_profile(
+        RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "rapidocr",
+                    "RapidOCR",
+                    "1.0",
+                    desired_state="ready",
+                    included_in_base=True,
+                ),
+                RuntimeComponentDescriptor(
+                    "pdf",
+                    "PDF",
+                    "1.0",
+                    desired_state="ready",
+                    included_in_base=True,
+                ),
+                RuntimeComponentDescriptor(
+                    "qr",
+                    "QR",
+                    "1.0",
+                    desired_state="ready",
+                    included_in_base=True,
+                ),
+                RuntimeComponentDescriptor(
+                    "document_parsing",
+                    "文档智能解析",
+                    "2.0",
+                    "not_required",
+                    "2.0",
+                    "missing",
+                    None,
+                ),
+            ),
+        )
+    )
+
+    assert dlg._component_items["rapidocr"].text(1) == "随包提供"
+    assert dlg._component_items["pdf"].text(1) == "随包提供"
+    assert dlg._component_items["qr"].text(1) == "随包提供"
+    assert dlg._component_items["document_parsing"].text(1) == "不需要"
 
 
 def test_maintenance_steps_progress_keeps_indeterminate_bar(_cleanup, qtbot, tmp_path):

@@ -87,6 +87,37 @@ def test_required_capabilities_come_from_product_component_lock(tmp_path: Path) 
     )
 
 
+def test_profile_descriptor_projects_base_only_scope(tmp_path: Path) -> None:
+    client = _bound_client(tmp_path)
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    base_components = [
+        {"component_id": "ocr_engine", "display_name": "RapidOCR"},
+        {"component_id": "pdf_document_tools", "display_name": "PDF tools"},
+    ]
+    manifest["profiles"] = {
+        "win-x64-base": {"components": base_components},
+        "win-x64-cpu": {
+            "components": [
+                *base_components,
+                {
+                    "component_id": "document_parsing",
+                    "display_name": "Document parsing",
+                },
+            ]
+        },
+    }
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    profile = client.profile_descriptor(install_component_ids=())
+    by_id = {component.component_id: component for component in profile.components}
+
+    assert by_id["ocr_engine"].included_in_base is True
+    assert by_id["ocr_engine"].desired_state == "ready"
+    assert by_id["pdf_document_tools"].included_in_base is True
+    assert by_id["document_parsing"].included_in_base is False
+    assert by_id["document_parsing"].desired_state == "not_required"
+
+
 @pytest.mark.parametrize(
     "value",
     [None, ["ocr.recognition.v2", "ocr.recognition.v2"], [""]],
@@ -528,6 +559,48 @@ def test_v2_cancel_command_failure_does_not_fake_cancel_or_kill_process(
         client._invoke("ensure", cancel_event=cancel_event, timeout=1)
 
     assert terminated == []
+
+
+def test_v2_cancel_rejected_after_commit_waits_for_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = tmp_path / "runtime-manifest.json"
+    manifest.write_text(
+        json.dumps({"capabilities": ["runtime.maintenance.v2"]}),
+        encoding="utf-8",
+    )
+    script = (
+        "import json,time; time.sleep(0.1); "
+        "print(json.dumps({"
+        "'protocol_version':2,'ok':True,'operation':'ensure',"
+        "'state':{'status':'ready','runtime_root':'C:/runtime',"
+        "'accelerator':'cpu','integrity':'verified',"
+        "'manifest_sha256':'a'*64,'backend_version':'0.11.1'}}))"
+    )
+    client = RuntimeInstallerClient(
+        tmp_path,
+        runtime_manifest=manifest,
+        command=(sys.executable, "-c", script),
+    )
+    monkeypatch.setattr(client, "_verify_installer_executable", lambda: None)
+    cancel_calls: list[str] = []
+
+    def cancel(operation_id: str, **_kwargs):
+        cancel_calls.append(operation_id)
+        raise RuntimeInstallerClientError(
+            "operation cannot be cancelled during commit",
+            canonical_code="RUNTIME_OPERATION_NOT_CANCELLABLE",
+        )
+
+    monkeypatch.setattr(client, "cancel", cancel)
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    result = client._invoke("ensure", cancel_event=cancel_event, timeout=1)
+
+    assert result["ok"] is True
+    assert len(cancel_calls) == 1
 
 
 def test_ndjson_maintenance_event_is_delivered_before_result(

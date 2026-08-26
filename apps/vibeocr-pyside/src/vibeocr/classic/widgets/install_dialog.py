@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.classic.runtime_installation import (
+    RuntimeComponentDescriptor,
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
     RuntimeMaintenanceUpdate,
@@ -50,6 +51,24 @@ _STATE_LABELS = {
 }
 
 _MAINTENANCE_MIN_EMIT_INTERVAL_SECONDS = 0.5
+
+
+def component_state_label(
+    component: RuntimeComponentDescriptor, *, completed: bool = False
+) -> str:
+    """Project the Runtime descriptor truth without implying every row downloads."""
+
+    if component.desired_state == "not_required":
+        return "不需要"
+    if completed or component.actual_state == "ready":
+        return "已就绪"
+    if component.included_in_base:
+        return "随包提供"
+    return {
+        "missing": "缺失",
+        "drifted": "需修复",
+        "unknown": "未知",
+    }.get(component.actual_state, "等待中")
 
 
 def _format_byte_count(value: int) -> str:
@@ -247,11 +266,18 @@ class InstallWorker(QThread):
                 self._project_root,
                 accelerator=accelerator,
             )
-            self.profile.emit(client.profile_descriptor())
             repair = (
                 self._reinstall_python
+                or self._missing_only
                 or self._single_pkg is not None
                 or self._packages is not None
+            )
+            self.profile.emit(
+                client.profile_descriptor(
+                    install_component_ids=(
+                        None if repair else self._install_component_ids
+                    )
+                )
             )
             if repair:
                 self._emit_progress(
@@ -371,6 +397,7 @@ class InstallDialog(QDialog):
         self._install_component_ids = install_component_ids
         self._download_source_ids = download_source_ids
         self._component_items: dict[str, QTreeWidgetItem] = {}
+        self._component_descriptors: dict[str, RuntimeComponentDescriptor] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
         self._setup_ui()
@@ -500,13 +527,19 @@ class InstallDialog(QDialog):
     def _on_profile(self, profile: RuntimeProfileDescriptor) -> None:
         self._components_tree.clear()
         self._component_items.clear()
+        self._component_descriptors.clear()
         for component in profile.components:
             item = QTreeWidgetItem(
-                [component.display_name, "等待中", component.version or "—"]
+                [
+                    component.display_name,
+                    component_state_label(component),
+                    component.actual_version or component.version or "—",
+                ]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, component.component_id)
             self._components_tree.addTopLevelItem(item)
             self._component_items[component.component_id] = item
+            self._component_descriptors[component.component_id] = component
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
@@ -546,8 +579,9 @@ class InstallDialog(QDialog):
         self._cancel_button.setVisible(False)
 
         if success:
-            for item in self._component_items.values():
-                item.setText(1, "已就绪")
+            for component_id, item in self._component_items.items():
+                component = self._component_descriptors[component_id]
+                item.setText(1, component_state_label(component, completed=True))
             self._title_label.setText("安装成功!")
             # 单包/批量重装时 message 是具体结果（如"scipy 安装成功"/"已重装 3 个依赖包"），
             # 优先用它，避免笼统的"OCR依赖安装完成"（用户报告"单包却提示全部安装完毕"）。

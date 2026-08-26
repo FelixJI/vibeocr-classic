@@ -51,6 +51,7 @@ class RuntimeComponentDescriptor:
     actual_version: str | None = None
     drift_reason: str | None = None
     repairable: bool | None = None
+    included_in_base: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -654,9 +655,7 @@ class RuntimeInstallerClient:
         return envelope
 
     @contextmanager
-    def _maintenance_operation(
-        self, cancel_event: threading.Event | None = None
-    ):
+    def _maintenance_operation(self, cancel_event: threading.Event | None = None):
         effective_cancel = cancel_event or threading.Event()
         terminal = threading.Event()
         try:
@@ -834,7 +833,11 @@ class RuntimeInstallerClient:
         with self._maintenance_operation():
             return self._invoke_control(request, timeout=3600)
 
-    def profile_descriptor(self) -> RuntimeProfileDescriptor:
+    def profile_descriptor(
+        self,
+        *,
+        install_component_ids: tuple[str, ...] | None = None,
+    ) -> RuntimeProfileDescriptor:
         manifest = self._manifest()
         accelerator = self.accelerator
         if accelerator is None:
@@ -858,12 +861,47 @@ class RuntimeInstallerClient:
         components = record.get("components")
         if components is None:
             components = []
-        return _profile_descriptor(
+        descriptor = _profile_descriptor(
             {
                 "profile_id": profile_id,
                 "accelerator": accelerator,
                 "components": components,
             }
+        )
+        base_record = profiles.get("win-x64-base")
+        base_components = (
+            base_record.get("components", []) if isinstance(base_record, dict) else []
+        )
+        if not isinstance(base_components, list):
+            raise RuntimeInstallerClientError("Runtime base profile 组件列表无效")
+        base_ids = {
+            item.get("component_id")
+            for item in base_components
+            if isinstance(item, dict) and isinstance(item.get("component_id"), str)
+        }
+        base_only = install_component_ids == ()
+        return RuntimeProfileDescriptor(
+            descriptor.profile_id,
+            descriptor.accelerator,
+            tuple(
+                RuntimeComponentDescriptor(
+                    component_id=component.component_id,
+                    display_name=component.display_name,
+                    version=component.version,
+                    desired_state=(
+                        "not_required"
+                        if base_only and component.component_id not in base_ids
+                        else component.desired_state or "ready"
+                    ),
+                    desired_version=component.desired_version,
+                    actual_state=component.actual_state,
+                    actual_version=component.actual_version,
+                    drift_reason=component.drift_reason,
+                    repairable=component.repairable,
+                    included_in_base=component.component_id in base_ids,
+                )
+                for component in descriptor.components
+            ),
         )
 
     def _invoke(
@@ -969,17 +1007,31 @@ class RuntimeInstallerClient:
         last_sequences: dict[str, int] = {}
         latest_states: dict[str, str] = {}
         cancel_sent = False
+        cancel_rejected_as_too_late = False
         cancellation_deadline: float | None = None
         while len(completed_channels) < 2:
             if cancel_event is not None and cancel_event.is_set():
-                if supports_v2 and operation_id is not None and not cancel_sent:
-                    self._request_cancel(
-                        operation_id,
-                        expected_sequence=last_sequences.get(operation_id),
-                    )
-                    cancel_sent = True
-                    cancellation_deadline = time.monotonic() + 15
-                    deadline = min(deadline, cancellation_deadline)
+                if (
+                    supports_v2
+                    and operation_id is not None
+                    and not cancel_sent
+                    and not cancel_rejected_as_too_late
+                ):
+                    try:
+                        self._request_cancel(
+                            operation_id,
+                            expected_sequence=last_sequences.get(operation_id),
+                        )
+                    except RuntimeInstallerClientError as exc:
+                        if exc.canonical_code != "RUNTIME_OPERATION_NOT_CANCELLABLE":
+                            raise
+                        # commit_runtime 已进入不可逆提交窗口。此时继续等待原操作
+                        # 的真实终态，不能把一个已安装成功的 Runtime 伪报为取消。
+                        cancel_rejected_as_too_late = True
+                    else:
+                        cancel_sent = True
+                        cancellation_deadline = time.monotonic() + 15
+                        deadline = min(deadline, cancellation_deadline)
                 elif not supports_v2:
                     _terminate_process_tree(process)
                     raise RuntimeInstallerCancelled("Runtime Installer 操作已取消")

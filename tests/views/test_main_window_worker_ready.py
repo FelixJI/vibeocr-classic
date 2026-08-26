@@ -31,7 +31,21 @@ class _MissingRuntimeWindow:
     _on_dependency_check_finished = MainWindow._on_dependency_check_finished
 
 
-def test_missing_runtime_opens_backend_choice_after_gui_is_ready() -> None:
+class _RapidReadyWindow:
+    """Only the readiness fields needed before opening a screenshot overlay."""
+
+    _check_ocr_ready = MainWindow._check_ocr_ready
+
+    def __init__(self) -> None:
+        self._dependency_check_complete = True
+        self._ocr_ready = True
+        self._subprocess_manager = SimpleNamespace(is_ready=True)
+        self._start_install = MagicMock()
+
+
+def test_missing_base_runtime_starts_automatic_base_preparation_after_gui_is_ready() -> (
+    None
+):
     window = _MissingRuntimeWindow()
 
     with patch(
@@ -43,6 +57,33 @@ def test_missing_runtime_opens_backend_choice_after_gui_is_ready() -> None:
     single_shot.assert_called_once()
     window._start_install.assert_called_once_with()
     window._statusbar.set_result.assert_called_once_with("Runtime 未安装：CPU")
+
+
+def test_advanced_component_gaps_never_open_a_first_start_dialog() -> None:
+    """只要 Base Runtime 可启动，Paddle/MinerU 缺失不是首启故障。"""
+
+    window = _MissingRuntimeWindow()
+    window._continue_ready_startup = MagicMock()
+
+    with patch("vibeocr.classic.views.main_window.QTimer.singleShot") as single_shot:
+        window._on_dependency_check_finished(True, [])
+
+    single_shot.assert_not_called()
+    window._start_install.assert_not_called()
+    window._continue_ready_startup.assert_called_once_with()
+
+
+def test_rapid_screenshot_is_available_after_supervisor_handshake_without_download() -> (
+    None
+):
+    window = _RapidReadyWindow()
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is True
+
+    message_box.information.assert_not_called()
+    message_box.question.assert_not_called()
+    window._start_install.assert_not_called()
 
 
 def test_supervisor_ready_is_not_reported_as_startup_failure() -> None:

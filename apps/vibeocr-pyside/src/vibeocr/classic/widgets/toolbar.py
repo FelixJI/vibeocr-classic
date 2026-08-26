@@ -219,7 +219,9 @@ class EdgeToolbar(QWidget):
         btn_text.setIconSize(QSize(16, 16))
         btn_text.setToolTip("文本识别截图")
         btn_text.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_text.clicked.connect(lambda: self.pipeline_screenshot_requested.emit("OCR"))
+        btn_text.clicked.connect(
+            lambda: self.pipeline_screenshot_requested.emit("rapid_text")
+        )
         layout.addWidget(btn_text)
 
         # 表格识别快捷按钮
@@ -229,7 +231,7 @@ class EdgeToolbar(QWidget):
         btn_table.setToolTip("表格识别截图")
         btn_table.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_table.clicked.connect(
-            lambda: self.pipeline_screenshot_requested.emit("TABLE_RECOGNITION")
+            lambda: self.pipeline_screenshot_requested.emit("paddle_table")
         )
         layout.addWidget(btn_table)
 
@@ -240,7 +242,7 @@ class EdgeToolbar(QWidget):
         btn_formula.setToolTip("公式识别截图")
         btn_formula.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_formula.clicked.connect(
-            lambda: self.pipeline_screenshot_requested.emit("FORMULA_RECOGNITION")
+            lambda: self.pipeline_screenshot_requested.emit("paddle_formula")
         )
         layout.addWidget(btn_formula)
 

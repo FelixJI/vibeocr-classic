@@ -8,6 +8,7 @@ from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
     EDITABLE_SOURCE_KINDS,
     ENGINE_SELECTION_CAPABILITY,
+    RECOGNITION_MODE_CAPABILITY,
     DEFAULT_ENGINE_ID,
     RuntimeSelectionError,
     normalize_stored_engine,
@@ -115,6 +116,187 @@ def test_parse_capability_catalogs_projects_all_three_catalogs() -> None:
         catalog.variants[1],
         catalog.variants[2],
     )
+
+
+def test_recognition_mode_catalog_owns_labels_lifecycle_and_execution_projection() -> (
+    None
+):
+    """新目录以用户模式表达选择，但作业仍使用 legacy pipeline + engine。"""
+
+    descriptors = _descriptors(
+        engine_catalog=None,
+    )
+    descriptors.append(
+        {
+            "name": RECOGNITION_MODE_CAPABILITY,
+            "recognition_mode_catalog": {
+                "modes": [
+                    {
+                        "id": "rapid_text",
+                        "family": "text",
+                        "pipeline_id": "OCR",
+                        "engine": "rapidocr",
+                        "provisioning": "base_runtime",
+                        "availability": "ready",
+                        "reason_code": None,
+                        "required_component": None,
+                        "supported_options": [],
+                        "lifecycle": {
+                            "kind": "unmanaged",
+                            "supports_preload": False,
+                            "supports_ttl": False,
+                            "supports_pinning": False,
+                            "supports_release": False,
+                        },
+                    },
+                    {
+                        "id": "paddle_text",
+                        "family": "text",
+                        "pipeline_id": "OCR",
+                        "engine": "paddleocr",
+                        "provisioning": "advanced_component",
+                        "availability": "preparation_required",
+                        "reason_code": "component_missing",
+                        "required_component": "document_parsing",
+                        "supported_options": ["use_doc_unwarping"],
+                        "lifecycle": {
+                            "kind": "model_residency",
+                            "supports_preload": True,
+                            "supports_ttl": True,
+                            "supports_pinning": True,
+                            "supports_release": True,
+                        },
+                    },
+                    {
+                        "id": "mineru_document",
+                        "family": "document",
+                        "pipeline_id": "MinerU",
+                        "engine": None,
+                        "provisioning": "advanced_component",
+                        "availability": "preparation_required",
+                        "reason_code": "component_missing",
+                        "required_component": "document_parsing",
+                        "supported_options": [],
+                        "lifecycle": {
+                            "kind": "process_keep_alive",
+                            "supports_preload": False,
+                            "supports_ttl": True,
+                            "supports_pinning": False,
+                            "supports_release": True,
+                        },
+                    },
+                ]
+            },
+        }
+    )
+    mode_descriptors = descriptors[-1]["recognition_mode_catalog"]["modes"]
+    mode_descriptors.extend(
+        [
+            {
+                "id": mode_id,
+                "family": family,
+                "pipeline_id": pipeline_id,
+                "engine": engine,
+                "provisioning": provisioning,
+                "availability": "ready",
+                "reason_code": None,
+                "required_component": None,
+                "supported_options": [],
+                "lifecycle": {
+                    "kind": lifecycle[0],
+                    "supports_preload": lifecycle[1],
+                    "supports_ttl": lifecycle[2],
+                    "supports_pinning": lifecycle[3],
+                    "supports_release": lifecycle[4],
+                },
+            }
+            for mode_id, family, pipeline_id, engine, provisioning, lifecycle in (
+                (
+                    "windows_text",
+                    "text",
+                    "OCR",
+                    "windows",
+                    "operating_system",
+                    ("unmanaged", False, False, False, False),
+                ),
+                (
+                    "paddle_structure",
+                    "document",
+                    "PP-StructureV3",
+                    None,
+                    "advanced_component",
+                    ("model_residency", True, True, True, True),
+                ),
+                (
+                    "paddle_document_vl",
+                    "document",
+                    "PaddleOCR-VL",
+                    None,
+                    "advanced_component",
+                    ("model_residency", True, True, True, True),
+                ),
+                (
+                    "paddle_table",
+                    "specialized",
+                    "TABLE_RECOGNITION",
+                    None,
+                    "advanced_component",
+                    ("model_residency", True, True, True, True),
+                ),
+                (
+                    "paddle_formula",
+                    "specialized",
+                    "FORMULA_RECOGNITION",
+                    None,
+                    "advanced_component",
+                    ("model_residency", True, True, True, True),
+                ),
+            )
+        ]
+    )
+
+    catalog = parse_capability_catalogs(descriptors)
+
+    rapid = catalog.mode("rapid_text")
+    paddle = catalog.mode("paddle_text")
+    mineru = catalog.mode("mineru_document")
+    assert rapid is not None
+    assert paddle is not None
+    assert mineru is not None
+    assert rapid.display_name == "快速 OCR（RapidOCR）"
+    assert paddle.display_name == "通用 OCR（PaddleOCR）"
+    assert mineru.display_name == "深度文档解析（MinerU）"
+    assert catalog.execution_projection("paddle_text") == ("OCR", "paddleocr")
+    assert catalog.execution_projection("mineru_document") == ("MinerU", None)
+    assert rapid.lifecycle.supports_preload is False
+    assert paddle.lifecycle.supports_preload is True
+    assert paddle.lifecycle.supports_pinning is True
+    assert mineru.lifecycle.supports_preload is False
+    assert mineru.lifecycle.supports_ttl is True
+    assert mineru.lifecycle.supports_pinning is False
+
+    mode_descriptors[0]["pipeline_id"] = "MinerU"
+    with pytest.raises(RuntimeSelectionError, match="固定契约"):
+        parse_capability_catalogs(descriptors)
+
+
+def test_recognition_mode_catalog_rejects_missing_stable_modes() -> None:
+    descriptors = [
+        {
+            "name": RECOGNITION_MODE_CAPABILITY,
+            "recognition_mode_catalog": {"modes": []},
+        }
+    ]
+
+    with pytest.raises(RuntimeSelectionError, match="完整八个稳定模式"):
+        parse_capability_catalogs(descriptors)
+
+
+def test_legacy_engine_catalog_falls_back_to_text_recognition_modes() -> None:
+    catalog = parse_capability_catalogs(_descriptors())
+
+    assert [mode.mode_id for mode in catalog.modes] == ["rapid_text", "paddle_text"]
+    assert catalog.execution_projection("rapid_text") == ("OCR", "rapidocr")
 
 
 def test_unknown_source_kind_is_preserved_but_not_editable() -> None:

@@ -42,14 +42,21 @@ def test_invalid_log_level_falls_back_to_info(cm):
 
 
 def test_preload_selection_and_enabled_state_persist(cm):
-    assert cm.get_preload_pipelines() == ["OCR"]
-    assert cm.get_preload_enabled() is True
+    assert cm.get_preload_pipelines() == []
+    assert cm.get_preload_enabled() is False
 
     assert cm.set_preload_pipelines(["PP-StructureV3", "unknown"])
     assert cm.set_preload_enabled(False)
 
     assert cm.get_preload_pipelines() == ["PP-StructureV3"]
     assert cm.get_preload_enabled() is False
+
+
+def test_preload_never_uses_ambiguous_legacy_ocr_pipeline(cm):
+    """OCR 可投影到 Rapid/Windows/Paddle，不能伪装成统一模型预加载。"""
+
+    assert cm.set_preload_pipelines(["OCR", "PP-StructureV3"])
+    assert cm.get_preload_pipelines() == ["PP-StructureV3"]
 
 
 # ---------------- per-pipeline TTL dict API + migration ----------------

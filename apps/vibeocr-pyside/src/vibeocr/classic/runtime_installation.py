@@ -141,6 +141,33 @@ class RuntimeInspection:
     def ready(self) -> bool:
         return self.status == "ready" and self.integrity == "verified"
 
+    @property
+    def base_ready(self) -> bool:
+        """Whether the embedded Base Runtime can start the Supervisor.
+
+        ``ready`` remains the installer-level full-profile predicate.  The
+        product startup path must instead accept a verified base component
+        set when optional Paddle/MinerU components are intentionally absent.
+        Older Runtime Hosts do not expose ``included_in_base``.  Their
+        stable ``ocr_engine`` descriptor is the Base capability seam, so do
+        not accidentally turn an absent optional component into a startup
+        failure.  Hosts that expose neither representation retain the full
+        profile predicate as the conservative fallback.
+        """
+
+        base_components = tuple(
+            component for component in self.components if component.included_in_base
+        )
+        if not base_components:
+            base_components = tuple(
+                component
+                for component in self.components
+                if component.component_id in {"ocr_engine", "rapidocr"}
+            )
+        if not base_components:
+            return self.ready
+        return all(component.actual_state == "ready" for component in base_components)
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeLaunch:
@@ -223,6 +250,7 @@ def _profile_descriptor(value: object) -> RuntimeProfileDescriptor:
                 actual_version=item.get("actual_version"),
                 drift_reason=item.get("drift_reason"),
                 repairable=repairable,
+                included_in_base=bool(item.get("included_in_base", False)),
             )
         )
     profile_id = wire.get("profile_id")

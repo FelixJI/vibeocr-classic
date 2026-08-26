@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self._ocr_status_callback_fn: Any = None  # OCR 状态回调
         self._app_settings = None  # 应用设置
         self._runtime_gpu_capability: bool | None = None
+        self._recognition_catalog = None
         self._machine_cache_data: dict | None = None
         self._machine_cache_tasks: set[FunctionTask] = set()
         self._machine_cache_generation = 0
@@ -396,6 +397,7 @@ class MainWindow(QMainWindow):
 
         tab = BatchRecognitionTab()
         tab.set_layout_manager(self._layout_manager)
+        self._configure_recognition_mode_widgets(tab)
         return tab
 
     def _build_qrcode_tab(self) -> Any:
@@ -415,7 +417,23 @@ class MainWindow(QMainWindow):
         tab = PdfTab()
         tab.task_status_changed.connect(self._statusbar.showMessage)
         tab.result_status_changed.connect(self._statusbar.finish_task)
+        self._configure_recognition_mode_widgets(tab)
         return tab
+
+    def _configure_recognition_mode_widgets(self, host) -> None:
+        """新建的懒加载入口继承当前 health 模式目录。"""
+        catalog = self._recognition_catalog
+        if catalog is None:
+            return
+        from vibeocr.classic.widgets.preprocess_options_widget import (
+            PreprocessOptionsWidget,
+        )
+
+        for widget in host.findChildren(PreprocessOptionsWidget):
+            widget.set_recognition_catalog(catalog)
+            widget.set_advanced_mode_install_callback(
+                self._settings_controller.install_recognition_mode
+            )
 
     def _on_lazy_tab_changed(self, index: int) -> None:
         """显示 skeleton，并 single-flight 启动纯数据/模块定位预热。"""
@@ -646,9 +664,35 @@ class MainWindow(QMainWindow):
             # 启动子进程 Worker，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
             gpu_capability_callback=self._on_gpu_capability_resolved,
+            recognition_catalog_callback=self._on_recognition_catalog_loaded,
             defer_machine_cache_status=True,
         )
         self._settings_controller.connect_signals()
+
+    def _on_recognition_catalog_loaded(self, catalog) -> None:
+        """把 health 中协商的识别模式投影到所有本地作业入口。"""
+        self._recognition_catalog = catalog
+        from vibeocr.classic.widgets.preprocess_options_widget import (
+            PreprocessOptionsWidget,
+        )
+
+        for widget in self.findChildren(PreprocessOptionsWidget):
+            widget.set_recognition_catalog(catalog)
+            widget.set_advanced_mode_install_callback(
+                self._settings_controller.install_recognition_mode
+            )
+        overlay = getattr(self, "_overlay", None)
+        if overlay is not None:
+            setter = getattr(overlay, "set_recognition_catalog", None)
+            if callable(setter):
+                setter(catalog)
+            install_callback_setter = getattr(
+                overlay, "set_advanced_mode_install_callback", None
+            )
+            if callable(install_callback_setter):
+                install_callback_setter(
+                    self._settings_controller.install_recognition_mode
+                )
 
     def _on_settings_install_succeeded(self) -> None:
         """设置页重装/补装依赖成功后的联动回调（Bug A 修复）
@@ -917,7 +961,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _show_install_dialog(self, missing: list) -> None:
-        """显示后端选择 + 安装对话框（首启合并对话框）"""
+        """自动准备 Base Runtime；高级组件只在用户选择相应模式后安装。"""
         if self._closing:
             return
         self._run_after_supervisor_invalidated(
@@ -928,9 +972,15 @@ class MainWindow(QMainWindow):
         """旧 Supervisor 已退出后显示安装对话框。"""
         if self._closing:
             return
-        from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
+        from vibeocr.classic.widgets.install_dialog import InstallDialog
 
-        dialog = BackendChoiceDialog(self._project_root, self)
+        # ``()`` 是 capability-protected 的“仅 Base Runtime”意图：不向用户
+        # 询问 CPU/GPU，也不把 Paddle/MinerU 当作工作台可用性的前置条件。
+        dialog = InstallDialog(
+            self._project_root,
+            self,
+            install_component_ids=(),
+        )
         dialog.finished.connect(self._on_install_finished)
         dialog.install_succeeded.connect(self._on_install_succeeded)
         dialog.exec()
@@ -961,7 +1011,7 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         self._ocr_ready = True
-        self._statusbar.showMessage("OCR依赖安装成功，首次识别将自动下载模型")
+        self._statusbar.showMessage("Base Runtime 已准备，快速 OCR 可直接使用")
         # 安装完成后 Python 运行时状态已变，刷新设置页环境维护区 label
         # （首启时 label 在 Python 未装时写下"未安装"，此处避免重启才更新）
         self._refresh_settings_env_state()
@@ -1160,11 +1210,30 @@ class MainWindow(QMainWindow):
 
         self._overlay = ScreenCaptureOverlay()
         self._connect_overlay_signals(self._overlay)
+        if self._recognition_catalog is not None:
+            self._overlay.set_recognition_catalog(self._recognition_catalog)
+            self._overlay.set_advanced_mode_install_callback(
+                self._settings_controller.install_recognition_mode
+            )
         if self._runtime_gpu_capability is not None:
             self._apply_gpu_gating_to_all(self._runtime_gpu_capability)
 
         if pipeline_name is not None:
-            self._overlay.set_pending_pipeline(pipeline_name)
+            catalog = self._recognition_catalog
+            mode = catalog.mode(pipeline_name) if catalog is not None else None
+            if mode is not None:
+                self._overlay.set_pending_recognition_mode(mode.mode_id)
+            else:
+                # 旧 Backend 没有 mode catalog 时，toolbar 新语义仍需安全投影
+                # 回已发布的 pipeline wire；旧 toolbar 传 pipeline 也保持兼容。
+                from vibeocr.classic.runtime_selection import (
+                    legacy_execution_projection,
+                )
+
+                projection = legacy_execution_projection(pipeline_name)
+                self._overlay.set_pending_pipeline(
+                    projection[0] if projection is not None else pipeline_name
+                )
         self._overlay.start_capture()
 
     def _connect_overlay_signals(self, overlay: ScreenCaptureOverlay) -> None:

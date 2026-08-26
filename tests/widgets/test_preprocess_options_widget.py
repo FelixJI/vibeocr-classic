@@ -23,6 +23,60 @@ def widget(app, qtbot):
     return w
 
 
+def test_recognition_catalog_renders_user_modes_and_persists_mode_selection(widget):
+    """主识别下拉按目录显示模式，选择结果保留 mode id。"""
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="OCR",
+                engine="rapidocr",
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=(),
+            ),
+            RecognitionModeEntry(
+                mode_id="paddle_table",
+                family="specialized",
+                pipeline_id="TABLE_RECOGNITION",
+                engine=None,
+                provisioning="advanced_component",
+                availability="preparation_required",
+                lifecycle=RecognitionModeLifecycle(
+                    "model_residency", True, True, True, True
+                ),
+                required_component="paddle-table",
+                supported_options=(),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+    widget.set_recognition_catalog(catalog)
+    assert [
+        widget._pipeline_combo.itemText(i)
+        for i in range(widget._pipeline_combo.count())
+    ] == [
+        "快速 OCR（RapidOCR）",
+        "表格结构识别（PaddleOCR）",
+    ]
+
+    widget._pipeline_combo.setCurrentIndex(1)
+    options = widget.get_options()
+    assert options.recognition_mode == "paddle_table"
+    assert options.pipeline is OCRPipeline.TABLE_RECOGNITION
+
+
 class TestPreprocessOptionsWidget:
     """预处理选项组件测试"""
 

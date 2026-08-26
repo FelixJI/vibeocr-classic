@@ -83,7 +83,7 @@ def runtime_controller(qtbot, tmp_path, monkeypatch):
     }
     config = MagicMock()
     config.get_pipeline_ttls.side_effect = lambda: dict(ttls)
-    config.get_preload_pipelines.return_value = ["OCR"]
+    config.get_preload_pipelines.return_value = ["PP-StructureV3"]
     config.get_preload_enabled.return_value = True
     config.set_preload_enabled.return_value = True
     config.set_preload_pipelines.return_value = True
@@ -155,6 +155,28 @@ def _initial_status() -> ResidencyStatus:
     )
 
 
+def _paddle_status() -> ResidencyStatus:
+    """只包含可管理 Paddle 模式的驻留快照。"""
+
+    return ResidencyStatus(
+        default_ttl_seconds=900,
+        pipelines=(
+            PipelineSpec(name="PP-StructureV3", ttl_seconds=300),
+            PipelineSpec(name="TABLE_RECOGNITION", ttl_seconds=300),
+        ),
+        entries=(
+            ResidencyEntry(
+                pipeline="PP-StructureV3",
+                kind=ResidencyKind.PINNED,
+                active_leases=1,
+                remaining_ttl_seconds=480,
+                estimated_vram_mb=512,
+                eviction_reason=EvictionReason.NONE,
+            ),
+        ),
+    )
+
+
 def test_refresh_and_typed_residency_rendering(runtime_controller) -> None:
     _controller, host, adapter, _ttls = runtime_controller
     assert adapter.refresh_calls == 1
@@ -197,25 +219,26 @@ def test_evicted_entries_are_not_reported_as_resident(runtime_controller) -> Non
     assert "MinerU（" not in text
 
 
-def test_ttl_debounce_sends_complete_snapshot_and_can_clear_persistent_residency(
+def test_paddle_ttl_debounce_preserves_unmanaged_ocr_policy(
     runtime_controller, qtbot
 ) -> None:
     _controller, host, adapter, _ttls = runtime_controller
     adapter.residency_status.emit(_initial_status())
     adapter.update_calls.clear()
 
-    combo = host.findChild(QWidget, "comboTtl_OCR")
+    combo = host.findChild(QWidget, "comboTtl_PP-StructureV3")
     combo.setCurrentIndex(combo.findData(60))
     combo.setCurrentIndex(combo.findData(180))
 
     qtbot.waitUntil(lambda: len(adapter.update_calls) == 1, timeout=1500)
     snapshot = adapter.update_calls[0]
     assert snapshot.default_ttl_seconds == 900
-    assert len(snapshot.pipelines) == 6
+    assert len(snapshot.pipelines) == 2
     policies = {spec.name: spec for spec in snapshot.pipelines}
-    assert policies["OCR"].ttl_seconds == 180
-    assert policies["OCR"].pinned is False
-    assert policies["MinerU"].ttl_seconds is None
+    assert policies["PP-StructureV3"].ttl_seconds == 180
+    assert policies["PP-StructureV3"].pinned is False
+    assert policies["OCR"].ttl_seconds == 600
+    assert policies["OCR"].pinned is True
 
     adapter.settings_updated.emit(snapshot)
     assert adapter.refresh_calls == 2
@@ -260,24 +283,39 @@ def test_typed_errors_update_feedback(runtime_controller) -> None:
     )
 
 
-def test_persistent_residency_ttl_option_sends_pinned_policy(
+def test_paddle_persistent_residency_option_sends_pinned_policy(
     runtime_controller, qtbot
 ) -> None:
     _controller, host, adapter, ttls = runtime_controller
     adapter.residency_status.emit(_initial_status())
     adapter.update_calls.clear()
 
-    combo = host.findChild(QWidget, "comboTtl_OCR")
+    combo = host.findChild(QWidget, "comboTtl_PP-StructureV3")
     persistent_index = combo.findText("持久驻留")
     assert persistent_index >= 0
     combo.setCurrentIndex(persistent_index)
 
     qtbot.waitUntil(lambda: len(adapter.update_calls) == 1, timeout=1500)
     snapshot = adapter.update_calls[0]
-    policy = next(spec for spec in snapshot.pipelines if spec.name == "OCR")
+    policy = next(spec for spec in snapshot.pipelines if spec.name == "PP-StructureV3")
     assert policy.ttl_seconds is None
     assert policy.pinned is True
-    assert ttls["OCR"] == -1
+    assert ttls["PP-StructureV3"] == -1
+
+
+def test_lifecycle_controls_exclude_ocr_and_mineru_pinning(runtime_controller) -> None:
+    _controller, host, _adapter, _ttls = runtime_controller
+
+    assert host.findChild(QWidget, "comboTtl_OCR") is None
+    assert host.findChild(QCheckBox, "chkPreload_OCR") is None
+    assert host.findChild(QCheckBox, "chkPreload_DOCUMENT_PARSING") is None
+
+    paddle_combo = host.findChild(QWidget, "comboTtl_PP-StructureV3")
+    mineru_combo = host.findChild(QWidget, "comboTtl_MinerU")
+    assert paddle_combo is not None
+    assert paddle_combo.findText("持久驻留") >= 0
+    assert mineru_combo is not None
+    assert mineru_combo.findText("持久驻留") < 0
 
 
 def test_preload_selected_pipelines_uses_supervisor_adapter(
@@ -286,28 +324,30 @@ def test_preload_selected_pipelines_uses_supervisor_adapter(
     controller, host, adapter, _ttls = runtime_controller
     runtime_status = controller._runtime_status_callback
     controller._preload_poll_timer.setInterval(10)
-    host.findChild(QCheckBox, "chkPreload_OCR").setChecked(True)
     host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").setChecked(True)
+    host.findChild(QCheckBox, "chkPreload_TABLE_RECOGNITION").setChecked(True)
     preload = host.findChild(QPushButton, "btnPreloadNow")
     refresh_calls_before_preload = adapter.refresh_calls
     preload.click()
 
-    assert adapter.preload_calls == [("OCR", "PP-StructureV3")]
+    assert adapter.preload_calls == [("PP-StructureV3", "TABLE_RECOGNITION")]
     assert not preload.isEnabled()
-    runtime_status.assert_called_with("预加载中 · 0/2 驻留 · OCR、PP-StructureV3")
+    runtime_status.assert_called_with(
+        "预加载中 · 0/2 驻留 · PP-StructureV3、TABLE_RECOGNITION"
+    )
     qtbot.waitUntil(
         lambda: adapter.refresh_calls >= refresh_calls_before_preload + 2,
         timeout=500,
     )
 
-    adapter.residency_status.emit(_initial_status())
+    adapter.residency_status.emit(_paddle_status())
     assert "已驻留 1/2" in host.findChild(QLabel, "labelPreloadStatus").text()
-    runtime_status.assert_called_with("预加载中 · 1/2 驻留 · OCR")
+    runtime_status.assert_called_with("预加载中 · 1/2 驻留 · PP-StructureV3")
 
-    adapter.preload_completed.emit(_initial_status())
+    adapter.preload_completed.emit(_paddle_status())
     assert preload.isEnabled()
     assert "预加载完成" in host.findChild(QLabel, "labelPreloadStatus").text()
-    runtime_status.assert_called_with("已驻留 1 个管道 · OCR")
+    runtime_status.assert_called_with("已驻留 1 个管道 · PP-StructureV3")
     refresh_calls_after_completion = adapter.refresh_calls
     qtbot.wait(40)
     assert adapter.refresh_calls == refresh_calls_after_completion
@@ -319,12 +359,12 @@ def test_preload_failure_stops_polling_and_keeps_partial_residency(
     controller, host, adapter, _ttls = runtime_controller
     runtime_status = controller._runtime_status_callback
     controller._preload_poll_timer.setInterval(10)
-    host.findChild(QCheckBox, "chkPreload_OCR").setChecked(True)
+    host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").setChecked(True)
     host.findChild(QCheckBox, "chkPreload_TABLE_RECOGNITION").setChecked(True)
     preload = host.findChild(QPushButton, "btnPreloadNow")
     preload.click()
 
-    adapter.residency_status.emit(_initial_status())
+    adapter.residency_status.emit(_paddle_status())
     adapter.preload_error.emit("表格识别缺少 PaddleX[ocr] 依赖：beautifulsoup4")
 
     assert preload.isEnabled()
@@ -332,7 +372,7 @@ def test_preload_failure_stops_polling_and_keeps_partial_residency(
     assert "beautifulsoup4" in host.findChild(QLabel, "labelPreloadStatus").text()
     cache_text = host.findChild(QLabel, "labelPipelineCacheStatus").text()
     assert "驻留 1 个" in cache_text
-    assert "OCR" in cache_text
+    assert "PP-StructureV3" in cache_text
     runtime_status.assert_called_with("驻留未完成 · 1/2 · 其余按需加载")
 
 
@@ -343,7 +383,7 @@ def test_supervisor_ready_automatically_preloads_persisted_selection(
 
     controller.on_supervisor_ready()
 
-    assert adapter.preload_calls == [("OCR",)]
+    assert adapter.preload_calls == [("PP-StructureV3",)]
 
 
 def test_heavy_release_remains_disabled(runtime_controller) -> None:

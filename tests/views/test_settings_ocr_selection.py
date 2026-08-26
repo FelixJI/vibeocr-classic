@@ -263,8 +263,8 @@ def test_health_catalog_renders_engines_features_and_sources(
     controller._on_health_loaded(_health_payload())
 
     status = host.findChild(QLabel, "labelOcrEngineStatus").text()
-    assert "RapidOCR：可用" in status
-    assert "PaddleOCR：需准备组件（component_missing）" in status
+    assert "快速 OCR（RapidOCR）：可用" in status
+    assert "通用 OCR（PaddleOCR）：需准备组件（component_missing）" in status
 
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItemCount() == 1

@@ -117,7 +117,7 @@ class ConfigManager(QObject):
             return False
 
     def get_preload_pipelines(self) -> list[str]:
-        """返回启动时预加载的管道，兼容迁移旧 cache.json 配置。"""
+        """返回启动时预加载的非歧义驻留管道。"""
         from vibeocr.runtime_contracts.contracts.pipelines import (
             get_preloadable_pipelines,
         )
@@ -125,12 +125,14 @@ class ConfigManager(QObject):
         data = self._load_json("app_settings.json", {})
         raw = data.get("preload_pipelines")
         if raw is None:
-            legacy = self._load_cache_json("cache.json", {}).get("preload_pipelines")
-            raw = legacy if isinstance(legacy, list) else ["OCR"]
+            # 旧 cache 的 OCR 默认值不知道实际会路由到 Rapid、Windows 还是
+            # Paddle。它不能再被迁移为“模型预加载”，新安装默认按需加载。
+            raw = []
         valid = {
             pipeline.value.lower(): pipeline.value
             for pipeline in get_preloadable_pipelines()
         }
+        valid.pop("ocr", None)
         selected: list[str] = []
         if isinstance(raw, list):
             for value in raw:
@@ -161,6 +163,9 @@ class ConfigManager(QObject):
             pipeline.value.lower(): pipeline.value
             for pipeline in get_preloadable_pipelines()
         }
+        # Protocol 2.8 的 recognition mode request 尚未随 Classic 绑定发布；
+        # 在此之前不允许把歧义的 legacy OCR pipeline 写入预加载设置。
+        valid.pop("ocr", None)
         normalized: list[str] = []
         for value in pipelines:
             selected = valid.get(str(value).lower())

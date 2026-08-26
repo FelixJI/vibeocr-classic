@@ -148,6 +148,10 @@ class PdfOptionsWidget(QWidget):
         self._minfont_spin.valueChanged.connect(self._on_settings_changed)
         self._visible_cb.toggled.connect(self._on_settings_changed)
 
+    def set_recognition_catalog(self, catalog) -> None:
+        """PDF 文字层只投影能返回文字层输入的 mode。"""
+        self._pipeline_options.set_recognition_catalog(catalog)
+
     def _on_settings_changed(self):
         settings = self.get_settings()
         self._current_settings = settings

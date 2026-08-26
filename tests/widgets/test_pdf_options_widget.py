@@ -39,6 +39,46 @@ class TestPdfOptionsWidget:
         """首次构造默认选中通用 OCR 管道。"""
         assert widget.pipeline_options.get_current_pipeline() == OCRPipeline.OCR
 
+    def test_catalog_filters_pdf_to_supported_recognition_modes(self, widget):
+        from vibeocr.classic.runtime_selection import (
+            RecognitionModeEntry,
+            RecognitionModeLifecycle,
+            RuntimeSelectionCatalog,
+        )
+
+        modes = (
+            ("rapid_text", "OCR"),
+            ("paddle_table", "TABLE_RECOGNITION"),
+            ("paddle_formula", "FORMULA_RECOGNITION"),
+            ("mineru_document", "MinerU"),
+        )
+        catalog = RuntimeSelectionCatalog(
+            modes=tuple(
+                RecognitionModeEntry(
+                    mode_id=mode_id,
+                    family="text",
+                    pipeline_id=pipeline_id,
+                    engine="rapidocr" if pipeline_id == "OCR" else None,
+                    provisioning="base_runtime",
+                    availability="ready",
+                    lifecycle=RecognitionModeLifecycle(
+                        "unmanaged", False, False, False, False
+                    ),
+                    supported_options=(),
+                )
+                for mode_id, pipeline_id in modes
+            ),
+            has_recognition_mode_catalog=True,
+        )
+
+        widget.set_recognition_catalog(catalog)
+        combo = widget.pipeline_options._pipeline_combo
+        assert [combo.itemData(i) for i in range(combo.count())] == [
+            "rapid_text",
+            "paddle_table",
+            "paddle_formula",
+        ]
+
     def test_default_settings(self, widget):
         """get_settings 默认值应与 PdfGlobalSettings 默认一致。"""
         s = widget.get_settings()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.8
+
+### Bug Fixes
+
+- **runtime:** 修复首启安装范围与状态同步 (#67) (c2b33c0)
+
 ## 0.10.7
 
 ### Bug Fixes

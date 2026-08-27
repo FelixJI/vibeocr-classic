@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.9
+
+### Features
+
+- **recognition:** 落地正式识别模式契约 (#69) (87abd0e)
+
 ## 0.10.8
 
 ### Bug Fixes

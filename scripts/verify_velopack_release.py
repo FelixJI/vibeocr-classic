@@ -59,6 +59,11 @@ def verify_velopack_release(
     for field, value in expected.items():
         if asset.get(field) != value:
             raise RuntimeError(f"Velopack feed {field} does not match full package")
+    # NotesMarkdown 是客户端"发现新版本"弹窗更新日志的唯一来源；缺失即视为
+    # 打包契约破损（vpk pack 未传 --notesFile），fail closed 而不是发布空日志。
+    notes = asset.get("NotesMarkdown")
+    if not isinstance(notes, str) or not notes.strip():
+        raise RuntimeError("Velopack feed full asset must embed release notes")
     return publishable
 
 

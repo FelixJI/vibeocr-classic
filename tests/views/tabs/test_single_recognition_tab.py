@@ -1031,3 +1031,60 @@ class TestPlainTextRendersOnce:
 
         assert counts["display_result"] == 1
         assert counts["display_text_layout"] == 0
+
+
+class TestInflightCancel:
+    """识别进行中「开始识别」按钮转为「取消」的就地取消交互。"""
+
+    def test_cancel_button_cancels_supervisor_job_and_restores_idle(
+        self, qapp, qtbot, qasync_loop
+    ):
+        """识别中按钮可取消：转发 Backend CANCEL，UI 复位回待识别态。
+
+        回归背景：Backend 作业卡死（如缺 winrt Foundation 闭包时 Windows
+        OCR 永久挂起）时，此前单次识别页没有任何取消入口。
+        """
+        from PySide6.QtGui import QPixmap
+
+        from tests.pyside.test_supervisor_adapter import (
+            FakeSupervisorClient,
+            _drive,
+        )
+        from vibeocr.classic.pyside.supervisor_adapter import (
+            SupervisorClientAdapter,
+            set_supervisor_adapter,
+        )
+
+        fake = FakeSupervisorClient()
+        fake.hold_running = True
+        adapter = SupervisorClientAdapter(client_factory=lambda: fake)
+        set_supervisor_adapter(adapter)
+        try:
+            tab = SingleRecognitionTab()
+            pixmap = QPixmap(4, 4)
+            pixmap.fill()
+            tab.set_image_for_recognition(pixmap)
+
+            tab._start_btn.click()
+            assert tab.is_processing is True
+            assert tab._start_btn.text() == "取消"
+            assert tab._start_btn.isEnabled()
+
+            # recognize() 的长轮询含 20ms 真实计时器；只推进 loop，不泵
+            # Qt 事件，避免计时器在非 running-loop 窗口恢复。
+            _drive(qasync_loop, lambda: fake.submit_calls == 1)
+            job_id = next(iter(fake.jobs))
+            assert fake.cancelled == []
+
+            tab._start_btn.click()
+            assert not tab._start_btn.isEnabled()
+
+            _drive(qasync_loop, lambda: tab._recognize_task is None)
+            _drive(qasync_loop, lambda: fake.cancelled == [job_id])
+            assert tab.is_processing is False
+            assert tab._start_btn.text() == "开始识别"
+            assert tab._start_btn.isEnabled()
+        finally:
+            adapter.shutdown()
+            _drive(qasync_loop, lambda: adapter.shutdown_drained)
+            set_supervisor_adapter(None)

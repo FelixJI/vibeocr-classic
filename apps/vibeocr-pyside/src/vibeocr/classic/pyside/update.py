@@ -50,6 +50,8 @@ _CHANGELOG_COMMIT_PREFIX_RE = re.compile(
     r"(?:\([^)]+\))?!?:\s*",
     re.IGNORECASE,
 )
+_CHANGELOG_BOLD_SCOPE_RE = re.compile(r"^\*\*[^*]+:\*\*\s*")
+_CHANGELOG_SHORT_SHA_RE = re.compile(r"\s*\([0-9a-f]{7,40}\)$")
 _CHANGELOG_ORDERED_ITEM_RE = re.compile(r"^\d+[.)]\s+")
 _CHANGELOG_SECTION_TITLES = {
     "added",
@@ -58,6 +60,13 @@ _CHANGELOG_SECTION_TITLES = {
     "removed",
     "fixed",
     "security",
+    "breaking changes",
+    "features",
+    "bug fixes",
+    "performance",
+    "reverts",
+    "dependencies",
+    "changes",
     "新增",
     "变更",
     "修复",
@@ -74,6 +83,11 @@ class UpdateInfo:
 
 
 def _clean_changelog_item(text: str) -> str:
+    # release prepare 生成的条目是 `- **scope:** 标题 (short-sha)`；feed 注入的
+    # NotesMarkdown 即该格式，先剥粗体 scope 前缀与短 sha 后缀再走通用清洗，
+    # 否则 `.strip("#*- ")` 只会吃掉开头的 `**`，留下残缺的 `scope:** …`。
+    text = _CHANGELOG_BOLD_SCOPE_RE.sub("", text.strip())
+    text = _CHANGELOG_SHORT_SHA_RE.sub("", text)
     text = text.strip().strip("#*- ")
     text = re.sub(r"^\[[ xX]\]\s+", "", text)
     text = _CHANGELOG_COMMIT_PREFIX_RE.sub("", text)
@@ -292,6 +306,9 @@ class UpdateService:
             if should_skip_version(result.version, self._settings_path):
                 self._status(f"已跳过版本 v{result.version}", 3000)
                 return
+            # 检查已结束，先刷新状态栏；否则弹窗期间以及用户点「立即更新」后
+            # 状态栏仍停留在"正在检查更新…"，与实际阶段脱节。
+            self._status(f"发现新版本 v{result.version}", 0)
             dialog = UpdateDialog(
                 UpdateInfo(result.version, result.release_notes),
                 result.current_version or "",
@@ -314,6 +331,9 @@ class UpdateService:
         cancel_event = asyncio.Event()
         cls._active_cancel_event = cancel_event
         cls._set_download_state("downloading")
+        # 立即刷新状态栏：维护租约获取（停止 OCR 引擎）可能阻塞数十秒，
+        # 不能等到首个下载进度回调才替换"正在检查更新…"。
+        self._status("正在准备更新…", 0)
         try:
             result = await self._coordinator.download_and_apply(
                 lambda value: self._status(f"正在下载更新… {value}%", 0),

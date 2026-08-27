@@ -155,13 +155,6 @@ class RuntimeInspection:
         profile predicate as the conservative fallback.
         """
 
-        # Base Runtime is a narrower component set than a full profile, but
-        # it is never allowed to bypass the host-level inspection verdict.
-        # A stale/failed inspection can otherwise report an old base component
-        # as ready while the Supervisor executable is no longer trustworthy.
-        if not self.ready:
-            return False
-
         base_components = tuple(
             component for component in self.components if component.included_in_base
         )
@@ -172,8 +165,24 @@ class RuntimeInspection:
                 if component.component_id in {"ocr_engine", "rapidocr"}
             )
         if not base_components:
-            return True
-        return all(component.actual_state == "ready" for component in base_components)
+            # Legacy hosts without a Base descriptor cannot prove which
+            # optional components are intentionally absent. Keep the former
+            # full-profile predicate instead of guessing from one residue.
+            return self.ready
+
+        # Runtime Host publishes a per-component integrity verdict. It is the
+        # only correct readiness boundary for Base: the global profile status
+        # describes the whole installed closure and may be missing solely
+        # because Paddle/MinerU were intentionally not installed. ``"none"``
+        # is the published wire spelling of no drift; ``None`` preserves
+        # compatibility with older host payloads that omitted the field.
+        return all(
+            component.desired_state == "ready"
+            and component.actual_state == "ready"
+            and component.drift_reason in {None, "none"}
+            and component.repairable is False
+            for component in base_components
+        )
 
 
 @dataclass(frozen=True, slots=True)

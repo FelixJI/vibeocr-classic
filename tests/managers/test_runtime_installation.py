@@ -23,14 +23,14 @@ from vibeocr.classic.runtime_installation import (
 )
 
 
-@pytest.mark.parametrize(
-    "status,integrity", [("failed", "verified"), ("ready", "failed")]
-)
-def test_base_ready_never_bypasses_failed_runtime_inspection(
-    status: str, integrity: str
-) -> None:
-    inspection = RuntimeInspection(
-        status=status,
+def _inspection_with_components(
+    *components: RuntimeComponentDescriptor,
+) -> RuntimeInspection:
+    return RuntimeInspection(
+        # These values describe the selected complete profile. Advanced
+        # components can be absent while the separately verified Base scope
+        # remains able to launch the Supervisor.
+        status="missing",
         runtime_root="C:/runtime",
         accelerator="cpu",
         profile="base",
@@ -38,18 +38,81 @@ def test_base_ready_never_bypasses_failed_runtime_inspection(
         protocol_version="2.8.0",
         manifest_sha256="manifest",
         backend_version="0.13.4",
-        integrity=integrity,
-        components=(
-            RuntimeComponentDescriptor(
-                "ocr_engine",
-                "RapidOCR",
-                actual_state="ready",
-                included_in_base=True,
-            ),
+        integrity="not-installed",
+        components=components,
+    )
+
+
+def _base_component(
+    component_id: str = "ocr_engine", **overrides: object
+) -> RuntimeComponentDescriptor:
+    values = {
+        "display_name": component_id,
+        "desired_state": "ready",
+        "actual_state": "ready",
+        "drift_reason": "none",
+        "repairable": False,
+        "included_in_base": True,
+    }
+    values.update(overrides)
+    return RuntimeComponentDescriptor(component_id, **values)
+
+
+def test_base_ready_accepts_verified_base_when_advanced_components_are_missing() -> (
+    None
+):
+    inspection = _inspection_with_components(
+        _base_component("python_runtime"),
+        _base_component("ocr_engine"),
+        RuntimeComponentDescriptor(
+            "paddleocr",
+            "PaddleOCR",
+            desired_state="ready",
+            actual_state="missing",
+            drift_reason="missing",
+            repairable=True,
+            included_in_base=False,
         ),
     )
 
+    assert inspection.base_ready
+
+
+@pytest.mark.parametrize(
+    "base_component",
+    [
+        _base_component(desired_state="not_required"),
+        _base_component(
+            actual_state="missing", drift_reason="missing", repairable=True
+        ),
+        _base_component(
+            actual_state="drifted", drift_reason="integrity_failed", repairable=True
+        ),
+        _base_component(repairable=True),
+    ],
+)
+def test_base_ready_rejects_any_base_component_integrity_gap(
+    base_component: RuntimeComponentDescriptor,
+) -> None:
+    inspection = _inspection_with_components(base_component)
+
     assert not inspection.base_ready
+
+
+def test_base_ready_uses_full_profile_fallback_without_base_descriptors() -> None:
+    inspection = RuntimeInspection(
+        status="ready",
+        runtime_root="C:/runtime",
+        accelerator="cpu",
+        profile="cpu",
+        python_version="3.13",
+        protocol_version="2.8.0",
+        manifest_sha256="manifest",
+        backend_version="0.13.4",
+        integrity="verified",
+    )
+
+    assert inspection.base_ready
 
 
 def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):

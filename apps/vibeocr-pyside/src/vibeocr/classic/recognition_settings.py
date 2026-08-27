@@ -59,6 +59,8 @@ class OCROptions:
     formula_recognition_model_dir: str | None = None
     # 任务级引擎覆盖：None 表示沿用全局默认；仅纯文本 OCR pipeline 有效。
     engine: str | None = None
+    # 用户识别模式只在 Classic 内持久化；当前正式 SDK 尚未接收此请求字段。
+    recognition_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +90,7 @@ class OCROptions:
             "formula_recognition_model_name": self.formula_recognition_model_name,
             "formula_recognition_model_dir": self.formula_recognition_model_dir,
             "engine": self.engine,
+            "recognition_mode": self.recognition_mode,
         }
 
     @classmethod
@@ -132,20 +135,60 @@ class OCROptions:
         字段，交给 Backend 默认。其他 pipeline 不携带 engine。
         """
 
-        allowed = set(get_pipeline_supported_options(self.pipeline))
+        pipeline = self.pipeline
+        engine_override = self.engine
+        # 所有入口（主界面、截图、批量、PDF）最终都经过本方法。模式只在
+        # Classic 内解析，随后仍构造现有的严格 PipelineSelection wire。
+        from vibeocr.classic.runtime_selection import (
+            execution_projection_for_mode,
+            recognition_mode_for_engine,
+            supported_options_for_mode,
+        )
+
+        mode_id = self.recognition_mode
+        if mode_id is None and pipeline is OCRPipeline.OCR:
+            mode_id = recognition_mode_for_engine(engine_override or default_engine)
+        if mode_id is not None:
+            projection = execution_projection_for_mode(mode_id)
+            if projection is None:
+                from vibeocr.classic.runtime_selection import RuntimeSelectionError
+
+                raise RuntimeSelectionError(f"未知 recognition mode: {mode_id}")
+            projected_pipeline, projected_engine = projection
+            try:
+                pipeline = OCRPipeline(projected_pipeline)
+            except ValueError as exc:
+                # 协商目录必须与本地 SDK 的已发布 pipeline enum 一致。
+                from vibeocr.classic.runtime_selection import RuntimeSelectionError
+
+                raise RuntimeSelectionError(
+                    f"recognition mode 投影了未知 pipeline: {mode_id}"
+                ) from exc
+            engine_override = projected_engine
+
+        mode_options = (
+            supported_options_for_mode(mode_id, pipeline.value)
+            if mode_id is not None
+            else None
+        )
+        allowed = set(
+            mode_options
+            if mode_options is not None
+            else get_pipeline_supported_options(pipeline)
+        )
         options = {
             key: value
             for key, value in self.to_dict().items()
             if key in allowed and value is not None
         }
         engine: OcrEngine | None = None
-        if self.pipeline is OCRPipeline.OCR:
+        if pipeline is OCRPipeline.OCR:
             from vibeocr.classic.runtime_selection import resolve_engine_id
 
-            resolved = resolve_engine_id(self.engine, default_engine)
+            resolved = resolve_engine_id(engine_override, default_engine)
             if resolved is not None:
                 engine = OcrEngine(resolved)
-        return PipelineSelection(self.pipeline.value, options=options, engine=engine)
+        return PipelineSelection(pipeline.value, options=options, engine=engine)
 
 
 @dataclass

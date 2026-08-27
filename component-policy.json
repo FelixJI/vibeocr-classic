@@ -6,12 +6,13 @@
   },
   "protocol": {
     "repository": "FelixJI/vibeocr-protocol",
-    "sdk_version": "2.7.1",
+    "sdk_version": "2.8.0",
     "version": "2.0.0"
   },
   "required_capabilities": [
     "export.document.v1",
     "ocr.engine-selection.v1",
+    "ocr.recognition-modes.v1",
     "ocr.recognition.v2",
     "pdf.edit.v2",
     "qrcode.v2",

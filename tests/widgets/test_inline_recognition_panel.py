@@ -96,3 +96,48 @@ class TestInlineRecognitionPanel:
             assert options.pipeline == OCRPipeline.TABLE_RECOGNITION
         finally:
             OCRPreferences.reset_instance()
+
+    def test_catalog_mode_button_persists_mode_id(self, qapp):
+        from vibeocr.classic.runtime_selection import (
+            RecognitionModeEntry,
+            RecognitionModeLifecycle,
+            RuntimeSelectionCatalog,
+        )
+
+        panel = InlineRecognitionPanel()
+        panel.set_recognition_catalog(
+            RuntimeSelectionCatalog(
+                modes=(
+                    RecognitionModeEntry(
+                        mode_id="rapid_text",
+                        family="text",
+                        pipeline_id="OCR",
+                        engine="rapidocr",
+                        provisioning="base_runtime",
+                        availability="ready",
+                        lifecycle=RecognitionModeLifecycle(
+                            "unmanaged", False, False, False, False
+                        ),
+                        supported_options=(),
+                    ),
+                    RecognitionModeEntry(
+                        mode_id="paddle_formula",
+                        family="specialized",
+                        pipeline_id="FORMULA_RECOGNITION",
+                        engine=None,
+                        provisioning="advanced_component",
+                        availability="ready",
+                        lifecycle=RecognitionModeLifecycle(
+                            "model_residency", True, True, True, True
+                        ),
+                        supported_options=(),
+                    ),
+                ),
+                has_recognition_mode_catalog=True,
+            )
+        )
+
+        panel._mode_buttons["paddle_formula"].click()
+        options = panel.get_options()
+        assert options.recognition_mode == "paddle_formula"
+        assert options.pipeline is OCRPipeline.FORMULA_RECOGNITION

@@ -135,11 +135,52 @@ class RuntimeInspection:
     backend_version: str
     integrity: str
     components: tuple[RuntimeComponentDescriptor, ...] = ()
+    # True only when this inspection response itself contained at least one
+    # ``included_in_base=True`` component. Local manifest projections are UI
+    # metadata, not evidence of the Host's actual installed scope.
+    has_explicit_base_components: bool = False
     source: RuntimeSourceIdentity | None = None
 
     @property
     def ready(self) -> bool:
         return self.status == "ready" and self.integrity == "verified"
+
+    @property
+    def base_ready(self) -> bool:
+        """Whether the embedded Base Runtime can start the Supervisor.
+
+        ``ready`` remains the installer-level full-profile predicate.  The
+        product startup path must instead accept a verified base component
+        set when optional Paddle/MinerU components are intentionally absent.
+        Only an explicit Host ``included_in_base`` declaration establishes
+        the narrower Base scope. Older payloads and locally synthesized
+        descriptors retain the full-profile predicate as conservative
+        fallback; component IDs are never guessed.
+        """
+
+        if not self.has_explicit_base_components:
+            return self.ready
+        base_components = tuple(
+            component for component in self.components if component.included_in_base
+        )
+        if not base_components:
+            # Defensive fallback for a manually constructed inspection that
+            # violates the provenance invariant above.
+            return self.ready
+
+        # Runtime Host publishes a per-component integrity verdict. It is the
+        # only correct readiness boundary for Base: the global profile status
+        # describes the whole installed closure and may be missing solely
+        # because Paddle/MinerU were intentionally not installed. ``"none"``
+        # is the published wire spelling of no drift; ``None`` preserves
+        # compatibility with older host payloads that omitted the field.
+        return all(
+            component.desired_state == "ready"
+            and component.actual_state == "ready"
+            and component.drift_reason in {None, "none"}
+            and component.repairable is False
+            for component in base_components
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +264,7 @@ def _profile_descriptor(value: object) -> RuntimeProfileDescriptor:
                 actual_version=item.get("actual_version"),
                 drift_reason=item.get("drift_reason"),
                 repairable=repairable,
+                included_in_base=bool(item.get("included_in_base", False)),
             )
         )
     profile_id = wire.get("profile_id")
@@ -1244,6 +1286,7 @@ class RuntimeInstallerClient:
             if not isinstance(profiles[profile], dict):
                 raise TypeError("invalid runtime profile")
             descriptor_value = envelope.get("profile")
+            host_profile = isinstance(descriptor_value, dict)
             descriptor = (
                 _profile_descriptor(descriptor_value)
                 if descriptor_value is not None
@@ -1260,6 +1303,13 @@ class RuntimeInstallerClient:
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
                 components=descriptor.components,
+                has_explicit_base_components=(
+                    host_profile
+                    and any(
+                        component.included_in_base
+                        for component in descriptor.components
+                    )
+                ),
                 source=_source_identity(value.get("source")),
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:

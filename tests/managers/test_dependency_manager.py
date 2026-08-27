@@ -69,6 +69,26 @@ class TestDependencyCheckTask:
             ["cpu: not-installed"],
         )
 
+    def test_task_accepts_base_runtime_when_advanced_components_are_incomplete(
+        self, tmp_path, qapp
+    ):
+        """Paddle/MinerU 不完整不能阻塞内置 RapidOCR 启动。"""
+
+        client = MagicMock()
+        client.inspect.return_value = SimpleNamespace(
+            ready=False,
+            base_ready=True,
+            accelerator="cpu",
+            integrity="advanced-components-missing",
+        )
+        task = DependencyCheckTask(tmp_path, client)
+        finished_mock = Mock()
+        task.signals.finished.connect(finished_mock)
+
+        task.run()
+
+        finished_mock.assert_called_once_with(True, [])
+
 
 class TestDependencyManager:
     """测试依赖管理器"""

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from vibeocr.classic.recognition_settings import (
     ExportSettings,
     LINE_MODE_MERGE,
@@ -143,6 +145,126 @@ def test_ocr_pipeline_selection_uses_global_default_without_override() -> None:
 
     assert selection.engine is not None
     assert selection.engine.value == "paddleocr"
+
+
+def test_ocr_pipeline_selection_consumes_recognition_mode_projection() -> None:
+    """主界面与截图复用此 seam，wire 仍严格是 pipeline_id + engine。"""
+
+    selection = OCROptions(
+        pipeline=OCRPipeline.OCR,
+        recognition_mode="windows_text",
+    ).to_pipeline_selection(default_engine="rapidocr")
+
+    assert selection.pipeline_id == "OCR"
+    assert selection.engine is not None
+    assert selection.engine.value == "windows"
+    assert selection.to_payload() == {
+        "pipeline_id": "OCR",
+        "options": {
+            "use_doc_orientation_classify": True,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+        },
+        "options_version": 1,
+        "engine": "windows",
+    }
+
+
+def test_ocr_pipeline_selection_prefers_active_catalog_descriptor_projection() -> None:
+    """已协商的模式目录必须成为作业 wire 投影的首选来源。"""
+
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+        set_active_recognition_catalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="TABLE_RECOGNITION",
+                engine=None,
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=(),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+    set_active_recognition_catalog(catalog)
+    try:
+        selection = OCROptions(recognition_mode="rapid_text").to_pipeline_selection()
+    finally:
+        set_active_recognition_catalog(None)
+
+    assert selection.pipeline_id == "TABLE_RECOGNITION"
+    assert selection.engine is None
+
+
+def test_mode_catalog_filters_wire_options_independently_of_shared_pipeline() -> None:
+    """Mode-level capability must win when several modes share OCR pipeline."""
+
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+        set_active_recognition_catalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="OCR",
+                engine="rapidocr",
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=("use_textline_orientation",),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+    set_active_recognition_catalog(catalog)
+    try:
+        selection = OCROptions(
+            recognition_mode="rapid_text",
+            use_doc_orientation_classify=True,
+            use_doc_unwarping=True,
+            use_textline_orientation=True,
+        ).to_pipeline_selection()
+    finally:
+        set_active_recognition_catalog(None)
+
+    assert selection.to_payload()["options"] == {"use_textline_orientation": True}
+
+
+def test_ocr_pipeline_selection_rejects_unknown_mode_when_catalog_is_active() -> None:
+    """已协商模式目录后，旧静态表不得接管未知 mode。"""
+
+    from vibeocr.classic.runtime_selection import (
+        RuntimeSelectionCatalog,
+        RuntimeSelectionError,
+        set_active_recognition_catalog,
+    )
+
+    set_active_recognition_catalog(
+        RuntimeSelectionCatalog(has_recognition_mode_catalog=True)
+    )
+    try:
+        with pytest.raises(RuntimeSelectionError, match="未声明识别模式"):
+            OCROptions(recognition_mode="rapid_text").to_pipeline_selection()
+    finally:
+        set_active_recognition_catalog(None)
 
 
 def test_ocr_pipeline_selection_omits_engine_when_unresolved() -> None:

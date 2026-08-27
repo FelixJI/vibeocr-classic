@@ -37,15 +37,18 @@ class DependencyCheckTask(QRunnable):
         self.signals = DependencyCheckSignals()
 
     def run(self) -> None:
-        """通过 Installer inspect 检查完整 Runtime 的绑定与完整性。"""
+        """检查可启动的 Base Runtime，而非可选组件的完整安装状态。"""
         try:
             inspection = self._client.inspect()
         except RuntimeInstallerClientError as exc:
             logging.warning("[Runtime 检查] %s", exc)
             self.signals.finished.emit(False, [str(exc)])
             return
-        if inspection.ready:
-            logging.debug("[Runtime 检查] %s 已验证", inspection.accelerator)
+        base_ready = getattr(inspection, "base_ready", inspection.ready)
+        if base_ready:
+            logging.debug(
+                "[Runtime 检查] %s Base Runtime 已就绪", inspection.accelerator
+            )
             self.signals.finished.emit(True, [])
         else:
             reason = f"{inspection.accelerator}: {inspection.integrity}"

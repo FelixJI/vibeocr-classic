@@ -23,6 +23,135 @@ def widget(app, qtbot):
     return w
 
 
+def test_recognition_catalog_renders_user_modes_and_persists_mode_selection(widget):
+    """主识别下拉按目录显示模式，选择结果保留 mode id。"""
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="OCR",
+                engine="rapidocr",
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=(),
+            ),
+            RecognitionModeEntry(
+                mode_id="paddle_table",
+                family="specialized",
+                pipeline_id="TABLE_RECOGNITION",
+                engine=None,
+                provisioning="advanced_component",
+                availability="preparation_required",
+                lifecycle=RecognitionModeLifecycle(
+                    "model_residency", True, True, True, True
+                ),
+                required_component="paddle-table",
+                supported_options=(),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+    widget.set_recognition_catalog(catalog)
+    assert [
+        widget._pipeline_combo.itemText(i)
+        for i in range(widget._pipeline_combo.count())
+    ] == [
+        "快速 OCR（RapidOCR）",
+        "表格结构识别（PaddleOCR）",
+    ]
+
+    widget._pipeline_combo.setCurrentIndex(1)
+    options = widget.get_options()
+    assert options.recognition_mode == "paddle_table"
+    assert options.pipeline is OCRPipeline.TABLE_RECOGNITION
+
+
+def test_mode_catalog_gates_visible_and_collected_options(widget):
+    """A mode cannot expose fields merely because its pipeline supports them."""
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+    )
+
+    catalog = RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                mode_id="rapid_text",
+                family="text",
+                pipeline_id="OCR",
+                engine="rapidocr",
+                provisioning="base_runtime",
+                availability="ready",
+                lifecycle=RecognitionModeLifecycle(
+                    "unmanaged", False, False, False, False
+                ),
+                supported_options=("use_textline_orientation",),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+    widget.set_recognition_catalog(catalog)
+    options = widget.get_options()
+
+    assert widget._get_supported_options(OCRPipeline.OCR) == [
+        "use_textline_orientation"
+    ]
+    assert options.use_textline_orientation is False
+
+
+def test_toolbar_disables_only_unavailable_mode_shortcuts(qtbot):
+    from vibeocr.classic.runtime_selection import (
+        RecognitionModeEntry,
+        RecognitionModeLifecycle,
+        RuntimeSelectionCatalog,
+    )
+    from vibeocr.classic.widgets.toolbar import EdgeToolbar
+
+    unavailable = RecognitionModeEntry(
+        "paddle_table",
+        "specialized",
+        "TABLE_RECOGNITION",
+        None,
+        "advanced_component",
+        "unavailable",
+        RecognitionModeLifecycle("model_residency", True, True, True, True),
+        reason_code="component-disabled",
+    )
+    preparation_required = RecognitionModeEntry(
+        "paddle_formula",
+        "specialized",
+        "FORMULA_RECOGNITION",
+        None,
+        "advanced_component",
+        "preparation_required",
+        RecognitionModeLifecycle("model_residency", True, True, True, True),
+    )
+    toolbar = EdgeToolbar()
+    qtbot.addWidget(toolbar)
+    toolbar.set_recognition_catalog(
+        RuntimeSelectionCatalog(
+            modes=(unavailable, preparation_required),
+            has_recognition_mode_catalog=True,
+        )
+    )
+
+    assert not toolbar._mode_buttons["paddle_table"].isEnabled()
+    assert toolbar._mode_buttons["paddle_formula"].isEnabled()
+
+
 class TestPreprocessOptionsWidget:
     """预处理选项组件测试"""
 

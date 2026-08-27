@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.classic.recognition_settings import OCROptions
+from vibeocr.classic.runtime_selection import RuntimeSelectionCatalog
 from vibeocr.classic.ui import theme
 from vibeocr.classic.widgets.collapsible_group_box import CollapsibleGroupBox
 from vibeocr.runtime_contracts.contracts.mineru import (
@@ -52,6 +53,9 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
     def __init__(self, parent: QWidget | None = None):
         super().__init__("识别选项", parent)
         self._current_options = OCROptions()
+        self._recognition_catalog: RuntimeSelectionCatalog | None = None
+        self._mode_entries = {}
+        self._advanced_mode_install_callback = None
         self._pipeline_locked = False
         # 上下文锁定允许的管道集合（仅 _pipeline_locked 为 True 时有效）。
         # 由 lock_to_pipelines 写入，_apply_pipeline_enabled_states 读取。
@@ -70,9 +74,9 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         layout = self.contentLayout()
         layout.setSpacing(8)
 
-        # 管道选择
+        # 识别模式选择。旧 Backend 未声明 mode catalog 时才回退为 legacy pipeline。
         pipeline_layout = QHBoxLayout()
-        pipeline_layout.addWidget(QLabel("管道:"))
+        pipeline_layout.addWidget(QLabel("识别模式:"))
         self._pipeline_combo = QComboBox()
         self._populate_pipeline_combo()
         pipeline_layout.addWidget(self._pipeline_combo)
@@ -114,8 +118,27 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         self._update_tab_visibility()
 
     def _populate_pipeline_combo(self):
-        """填充管道下拉框"""
+        """以协商 mode catalog 填充选择器；旧 Backend 保留管道回退。"""
         self._pipeline_combo.clear()
+        catalog = self._recognition_catalog
+        self._mode_entries = {}
+        if catalog is not None and catalog.has_recognition_mode_catalog:
+            for mode in catalog.modes:
+                try:
+                    mode_pipeline = OCRPipeline(mode.pipeline_id)
+                except ValueError:
+                    continue
+                if self._pipeline_locked and mode_pipeline not in self._locked_allowed:
+                    continue
+                self._pipeline_combo.addItem(mode.display_name, mode.mode_id)
+                self._mode_entries[mode.mode_id] = mode
+                item = self._pipeline_combo.model().item(
+                    self._pipeline_combo.count() - 1
+                )
+                if mode.availability == "unavailable" and item is not None:
+                    item.setEnabled(False)
+            self._apply_pipeline_enabled_states()
+            return
         for pipeline in get_all_pipelines():
             self._pipeline_combo.addItem(
                 get_pipeline_display_name(pipeline),
@@ -123,6 +146,32 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
             )
         # 首启即应用 GPU 门控（apply_gpu_gating 未调用前为空集，全启用）。
         self._apply_pipeline_enabled_states()
+
+    def set_recognition_catalog(self, catalog: RuntimeSelectionCatalog | None) -> None:
+        """将已协商的八模式目录投影到主/批量/PDF 识别选择器。"""
+        current = self.get_options()
+        self._recognition_catalog = catalog
+        self._pipeline_combo.blockSignals(True)
+        self._populate_pipeline_combo()
+        self._pipeline_combo.blockSignals(False)
+        self.set_options(current)
+
+    def set_advanced_mode_install_callback(self, callback) -> None:
+        """Install guidance is supplied by the host that owns Runtime Installer."""
+
+        self._advanced_mode_install_callback = callback
+
+    def _mode_for_current_selection(self):
+        mode_id = self._pipeline_combo.currentData()
+        return self._mode_entries.get(mode_id) if isinstance(mode_id, str) else None
+
+    def _pipeline_for_item_data(self, data) -> OCRPipeline | None:
+        mode = self._mode_entries.get(data) if isinstance(data, str) else None
+        value = mode.pipeline_id if mode is not None else data
+        try:
+            return OCRPipeline(value)
+        except ValueError:
+            return None
 
     def _create_preprocess_tab(self) -> QWidget:
         """创建预处理选项卡"""
@@ -446,6 +495,13 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
 
         new_pipeline = self.get_current_pipeline()
         self.pipeline_switched.emit(new_pipeline)
+        mode = self._mode_for_current_selection()
+        if (
+            mode is not None
+            and mode.availability == "preparation_required"
+            and self._advanced_mode_install_callback is not None
+        ):
+            self._advanced_mode_install_callback(mode)
 
     def _update_tab_visibility(self):
         """根据管道更新选项卡可见性"""
@@ -553,7 +609,16 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
                 break
 
     def _get_supported_options(self, pipeline: OCRPipeline) -> list[str]:
-        """获取管道支持的选项列表"""
+        """获取当前 mode 明确允许的选项；旧 Backend 回退 pipeline schema。"""
+        mode = self._mode_for_current_selection()
+        if (
+            mode is not None
+            and self._recognition_catalog is not None
+            and self._recognition_catalog.has_recognition_mode_catalog
+        ):
+            # ``supported_options`` 是 Protocol 2.8 catalog 的 mode 级契约。
+            # 不可因两个 mode 共用同一个 pipeline 就泄漏彼此的可选字段。
+            return list(mode.supported_options)
         from vibeocr.runtime_contracts.contracts.pipelines import (
             get_pipeline_supported_options,
         )
@@ -568,16 +633,21 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
 
     def get_current_pipeline(self) -> OCRPipeline:
         """获取当前选择的管道"""
-        value = self._pipeline_combo.currentData()
-        return OCRPipeline(value)
+        pipeline = self._pipeline_for_item_data(self._pipeline_combo.currentData())
+        return pipeline or OCRPipeline.OCR
 
     def get_options(self) -> OCROptions:
         """获取当前选项（仅包含当前管道支持的选项）"""
-        from vibeocr.runtime_contracts.contracts.pipelines import is_option_supported
-
         pipeline = self.get_current_pipeline()
+        supported = set(self._get_supported_options(pipeline))
+
+        def is_option_supported(_pipeline: OCRPipeline, option: str) -> bool:
+            return option in supported
 
         kwargs: dict = {"pipeline": pipeline}
+        mode = self._mode_for_current_selection()
+        if mode is not None:
+            kwargs["recognition_mode"] = mode.mode_id
 
         if is_option_supported(pipeline, "use_doc_orientation_classify"):
             kwargs["use_doc_orientation_classify"] = (
@@ -687,8 +757,19 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         for w in widgets:
             w.blockSignals(True)
 
-        # 设置管道
-        index = self._pipeline_combo.findData(options.pipeline.value)
+        # 优先恢复已持久化的模式；只有旧选择没有 mode 时才按 pipeline 匹配。
+        mode_id = options.recognition_mode
+        index = self._pipeline_combo.findData(mode_id) if mode_id else -1
+        if index < 0:
+            index = next(
+                (
+                    i
+                    for i in range(self._pipeline_combo.count())
+                    if self._pipeline_for_item_data(self._pipeline_combo.itemData(i))
+                    == options.pipeline
+                ),
+                -1,
+            )
         if index >= 0:
             self._pipeline_combo.setCurrentIndex(index)
 
@@ -807,13 +888,26 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
                 # 找 allowed 内下拉框中第一个出现的管道
                 fallback = next(
                     (
-                        OCRPipeline(self._pipeline_combo.itemData(i))
+                        pipeline
                         for i in range(self._pipeline_combo.count())
-                        if OCRPipeline(self._pipeline_combo.itemData(i)) in allowed
+                        if (
+                            pipeline := self._pipeline_for_item_data(
+                                self._pipeline_combo.itemData(i)
+                            )
+                        )
+                        in allowed
                     ),
                     current,
                 )
-            idx = self._pipeline_combo.findData(fallback.value)
+            idx = next(
+                (
+                    i
+                    for i in range(self._pipeline_combo.count())
+                    if self._pipeline_for_item_data(self._pipeline_combo.itemData(i))
+                    == fallback
+                ),
+                -1,
+            )
             if idx >= 0:
                 self._pipeline_combo.blockSignals(True)
                 self._pipeline_combo.setCurrentIndex(idx)
@@ -891,7 +985,17 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
             if current in self._gpu_disabled_pipelines:
                 fallback = self._first_enabled_pipeline()
                 if fallback is not None and fallback != current:
-                    idx = self._pipeline_combo.findData(fallback.value)
+                    idx = next(
+                        (
+                            i
+                            for i in range(self._pipeline_combo.count())
+                            if self._pipeline_for_item_data(
+                                self._pipeline_combo.itemData(i)
+                            )
+                            == fallback
+                        ),
+                        -1,
+                    )
                     if idx >= 0:
                         self._pipeline_combo.blockSignals(True)
                         self._pipeline_combo.setCurrentIndex(idx)
@@ -903,11 +1007,11 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         for i in range(self._pipeline_combo.count()):
             item = self._pipeline_combo.model().item(i)
             if item.isEnabled():
-                data = self._pipeline_combo.itemData(i)
-                try:
-                    return OCRPipeline(data)
-                except ValueError:
-                    continue
+                pipeline = self._pipeline_for_item_data(
+                    self._pipeline_combo.itemData(i)
+                )
+                if pipeline is not None:
+                    return pipeline
         return None
 
     def _apply_pipeline_enabled_states(self) -> None:
@@ -920,10 +1024,8 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         二者任一为禁用则禁用。被 GPU 门控禁用的项附加说明性 tooltip。
         """
         for i in range(self._pipeline_combo.count()):
-            data = self._pipeline_combo.itemData(i)
-            try:
-                pipeline = OCRPipeline(data)
-            except ValueError:
+            pipeline = self._pipeline_for_item_data(self._pipeline_combo.itemData(i))
+            if pipeline is None:
                 continue
 
             item = self._pipeline_combo.model().item(i)
@@ -936,8 +1038,8 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
             if gpu_disabled:
                 item.setEnabled(False)
                 item.setToolTip(
-                    "未检测到 CUDA GPU 或当前为 CPU 后端，此管道不可用。\n"
-                    "如需使用，请在设置页切换到 GPU 后端后重启。"
+                    "当前设备未满足此高级识别模式的 CUDA GPU 要求。\n"
+                    "请准备该模式所需组件后重试。"
                 )
             elif context_disabled:
                 item.setEnabled(False)

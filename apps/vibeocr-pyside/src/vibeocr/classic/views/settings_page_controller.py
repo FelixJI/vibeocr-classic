@@ -41,6 +41,7 @@ from vibeocr.classic.runtime_selection import (
     ENGINE_AVAILABILITY_LABELS,
     ENGINE_AVAILABILITY_READY,
     ENGINE_DISPLAY_NAMES,
+    RECOGNITION_MODE_DISPLAY_NAMES,
     VALID_ENGINE_IDS,
     RuntimeSelectionCatalog,
     RuntimeSelectionError,
@@ -93,6 +94,8 @@ class SettingsPageController:
         subprocess_manager,
         install_succeeded_callback: Callable[[], None] | None = None,
         gpu_capability_callback: Callable[[bool], None] | None = None,
+        recognition_catalog_callback: Callable[[RuntimeSelectionCatalog], None]
+        | None = None,
         defer_backend_initialization: bool = False,
         defer_machine_cache_status: bool = False,
         runtime_status_callback: Callable[[str], None] | None = None,
@@ -115,6 +118,7 @@ class SettingsPageController:
         # 设 _ocr_ready + 启动 Worker）。
         self._install_succeeded_callback = install_succeeded_callback
         self._gpu_capability_callback = gpu_capability_callback
+        self._recognition_catalog_callback = recognition_catalog_callback
         self._runtime_has_gpu: bool | None = None
         self._defer_backend_initialization = defer_backend_initialization
         self._defer_machine_cache_status = defer_machine_cache_status
@@ -237,7 +241,12 @@ class SettingsPageController:
         btn_preload_now = self._ui.findChild(QPushButton, "btnPreloadNow")
         if btn_preload_now:
             btn_preload_now.clicked.connect(self._on_preload_now_clicked)
-        for pipeline in self._get_preloadable_pipelines():
+        # Checkbox objects are defined by the .ui form before health arrives.
+        # Connect every stable pipeline once; the negotiated catalog controls
+        # which of them is actually visible and serializable.
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+        for pipeline in OCRPipeline:
             checkbox = self._ui.findChild(QCheckBox, f"chkPreload_{pipeline.name}")
             if checkbox is not None:
                 checkbox.toggled.connect(self._save_preload_pipelines_config)
@@ -725,11 +734,10 @@ class SettingsPageController:
             # 主动触发 WMIC，用户点击"刷新缓存"时再走后台 operation。
             self._update_cache_status("缓存状态尚未刷新")
         self._update_preload_status()
-        self._restore_preload_checkbox_state()
         # 引入拆分后的 labelPipelineCacheStatus（运行时层），再构造每管道 TTL
         # ComboBox。前者由 typed ResidencyStatus signal 写入，后者由用户操作触发。
         self._init_pipeline_cache_status_label()
-        self._init_pipeline_ttl_combos()
+        self._refresh_lifecycle_controls()
         self._init_ocr_runtime_group()
 
     def _init_log_level_control(self) -> None:
@@ -784,6 +792,57 @@ class SettingsPageController:
         ("30 分钟", 1800),
     ]
 
+    def _lifecycle_pipelines(self, capability: str):
+        """Return ready, unambiguous pipeline projections for one control.
+
+        Lifecycle is a mode contract in Protocol 2.8. A shared ``OCR``
+        pipeline is controllable only when every ready mode projecting to it
+        advertises the same capability. Legacy Backends lack this contract,
+        so Classic intentionally exposes no lifecycle controls for them.
+        """
+
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+        catalog = self._selection_catalog
+        if catalog is None or not catalog.has_recognition_mode_catalog:
+            return ()
+        by_pipeline: dict[str, list] = {}
+        for mode in catalog.modes:
+            if mode.availability != ENGINE_AVAILABILITY_READY:
+                continue
+            by_pipeline.setdefault(mode.pipeline_id, []).append(mode)
+        attribute = f"supports_{capability}"
+        result = []
+        for pipeline_id, modes in by_pipeline.items():
+            try:
+                pipeline = OCRPipeline(pipeline_id)
+            except ValueError:
+                continue
+            if modes and all(
+                bool(getattr(mode.lifecycle, attribute)) for mode in modes
+            ):
+                result.append(pipeline)
+        return tuple(result)
+
+    def _managed_lifecycle_pipelines(self):
+        """Pipelines whose negotiated mode contract permits TTL management."""
+
+        return self._lifecycle_pipelines("ttl")
+
+    def _clear_pipeline_ttl_combos(self) -> None:
+        """Drop obsolete dynamic rows before applying a refreshed catalog."""
+
+        layout = self._ui.findChild(QVBoxLayout, "runtimeCacheLayout")
+        if layout is None:
+            return
+        for index in range(layout.count() - 1, -1, -1):
+            item = layout.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is not None and widget.objectName().startswith("ttlRow_"):
+                layout.takeAt(index)
+                widget.setParent(None)
+                widget.deleteLater()
+
     def _init_pipeline_ttl_combos(self) -> None:
         """在「模型管理 → 运行时缓存」分组内追加每管道 TTL ComboBox。
 
@@ -792,16 +851,12 @@ class SettingsPageController:
         相同的 7 档预设（_TTL_PRESETS），选中项经 ConfigManager.set_pipeline_ttl
         持久化，并通过 _sync_configured_pipeline_ttls 批量下发到 worker。
 
-        幂等：重复调用时若已存在 comboTtl_OCR 则直接返回。
+        幂等：重复调用时若已存在任一模式化 TTL 行则直接返回。
         """
         layout = self._ui.findChild(QVBoxLayout, "runtimeCacheLayout")
         if layout is None:
             logger.warning("[TTL Combos] runtimeCacheLayout 未找到，跳过 ComboBox 创建")
             return
-        if self._ui.findChild(QComboBox, "comboTtl_OCR") is not None:
-            logger.debug("[TTL Combos] 已存在 comboTtl_OCR，跳过（幂等）")
-            return
-
         from vibeocr.classic.managers.config_manager import ConfigManager
         from vibeocr.runtime_contracts.contracts.pipelines import (
             OCRPipeline,
@@ -810,7 +865,7 @@ class SettingsPageController:
 
         ttls = ConfigManager.instance().get_pipeline_ttls()
         created_count = 0
-        for pipeline in OCRPipeline:
+        for pipeline in self._managed_lifecycle_pipelines():
             row = QWidget(self._ui)
             row.setObjectName(f"ttlRow_{pipeline.value}")
             row_layout = QHBoxLayout(row)
@@ -819,7 +874,11 @@ class SettingsPageController:
             label = QLabel(get_pipeline_display_name(pipeline), row)
             combo = QComboBox(row)
             combo.setObjectName(f"comboTtl_{pipeline.value}")
-            for display_text, secs in self._TTL_PRESETS:
+            presets = self._TTL_PRESETS
+            if pipeline not in self._lifecycle_pipelines("pinning"):
+                # MinerU 是子进程保活；它只允许 TTL 与释放，不能固定为模型驻留。
+                presets = [entry for entry in presets if entry[1] != -1]
+            for display_text, secs in presets:
                 # 第二参数写入 UserRole data，_restore_pipeline_ttl_combos 用
                 # findData 反查索引（比匹配显示文本更稳）。
                 combo.addItem(display_text, secs)
@@ -860,10 +919,9 @@ class SettingsPageController:
     def _restore_pipeline_ttl_combos(self) -> None:
         """从配置恢复所有 TTL ComboBox 选中项（阻塞信号避免触发下发）。"""
         from vibeocr.classic.managers.config_manager import ConfigManager
-        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
         ttls = ConfigManager.instance().get_pipeline_ttls()
-        for pipeline in OCRPipeline:
+        for pipeline in self._managed_lifecycle_pipelines():
             combo = self._ui.findChild(QComboBox, f"comboTtl_{pipeline.value}")
             if combo is None:
                 continue
@@ -882,9 +940,9 @@ class SettingsPageController:
         _run_cache_operation 线程池）。**禁止**直接调用 env_manager.* 或同步 RPC。
         """
         idx = combo.currentIndex()
-        if idx < 0 or idx >= len(self._TTL_PRESETS):
+        ttl = combo.itemData(idx)
+        if idx < 0 or isinstance(ttl, bool) or not isinstance(ttl, int):
             return
-        _display, ttl = self._TTL_PRESETS[idx]
         from vibeocr.classic.managers.config_manager import ConfigManager
 
         if not ConfigManager.instance().set_pipeline_ttl(pipeline_name, ttl):
@@ -940,14 +998,10 @@ class SettingsPageController:
             page.setAutoFillBackground(False)
             stacked.addWidget(scroll)
 
-    @staticmethod
-    def _get_preloadable_pipelines():
-        """获取可预加载的管道列表"""
-        from vibeocr.runtime_contracts.contracts.pipelines import (
-            get_preloadable_pipelines,
-        )
+    def _get_preloadable_pipelines(self):
+        """Only expose pipelines whose ready modes advertise preload."""
 
-        return get_preloadable_pipelines()
+        return self._lifecycle_pipelines("preload")
 
     def _restore_preload_checkbox_state(self) -> None:
         """恢复持久化选择并根据总开关启用 Supervisor 预加载控件。"""
@@ -955,27 +1009,47 @@ class SettingsPageController:
 
         config = ConfigManager.instance()
         selected = set(config.get_preload_pipelines())
-        for pipeline in self._get_preloadable_pipelines():
+        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+        allowed = set(self._get_preloadable_pipelines())
+        for pipeline in OCRPipeline:
             checkbox = self._ui.findChild(QCheckBox, f"chkPreload_{pipeline.name}")
             if checkbox is None:
                 continue
+            visible = pipeline in allowed
             checkbox.blockSignals(True)
-            checkbox.setChecked(pipeline.value in selected)
+            checkbox.setChecked(visible and pipeline.value in selected)
             checkbox.blockSignals(False)
+            checkbox.setVisible(visible)
+            checkbox.setEnabled(visible)
         chk_enable = self._ui.findChild(QCheckBox, "chkEnablePreload")
         enabled = config.get_preload_enabled()
         if chk_enable is not None:
             chk_enable.blockSignals(True)
             chk_enable.setChecked(enabled)
             chk_enable.blockSignals(False)
-        self._set_preload_controls_enabled(enabled)
+        has_preload = bool(allowed)
+        self._set_preload_controls_enabled(enabled and has_preload)
+        if not has_preload:
+            self._update_preload_status("当前 Runtime 未声明可管理的模型预加载")
+
+    def _refresh_lifecycle_controls(self) -> None:
+        """Re-render lifecycle UI after receiving the authoritative catalog."""
+
+        self._clear_pipeline_ttl_combos()
+        self._init_pipeline_ttl_combos()
+        self._restore_pipeline_ttl_combos()
+        self._restore_preload_checkbox_state()
+        self._set_release_controls_enabled(bool(self._lifecycle_pipelines("release")))
 
     def _on_enable_preload_toggled(self, checked: bool) -> None:
         """启用或禁用手动 Supervisor 预加载选择。"""
         from vibeocr.classic.managers.config_manager import ConfigManager
 
         ConfigManager.instance().set_preload_enabled(checked)
-        self._set_preload_controls_enabled(checked)
+        self._set_preload_controls_enabled(
+            checked and bool(self._get_preloadable_pipelines())
+        )
 
     def _set_preload_controls_enabled(self, enabled: bool) -> None:
         options = self._ui.findChild(QWidget, "preloadOptions")
@@ -1901,20 +1975,26 @@ class SettingsPageController:
             return
 
         from vibeocr.classic.managers.config_manager import ConfigManager
-        from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
 
         configured_ttls = ConfigManager.instance().get_pipeline_ttls()
+        configured_by_name = {
+            pipeline.value: int(configured_ttls.get(pipeline.value, 0))
+            for pipeline in self._managed_lifecycle_pipelines()
+        }
+        pinnable_names = {
+            pipeline.value for pipeline in self._lifecycle_pipelines("pinning")
+        }
         pipelines = tuple(
             PipelineSpec(
-                name=pipeline.value,
+                name=spec.name,
                 ttl_seconds=(
-                    ttl
-                    if (ttl := int(configured_ttls.get(pipeline.value, 0))) > 0
-                    else None
+                    ttl if (ttl := configured_by_name[spec.name]) > 0 else None
                 ),
-                pinned=int(configured_ttls.get(pipeline.value, 0)) == -1,
+                pinned=ttl == -1 and spec.name in pinnable_names,
             )
-            for pipeline in OCRPipeline
+            if spec.name in configured_by_name
+            else spec
+            for spec in current.pipelines
         )
         snapshot = SettingsSnapshot(
             default_ttl_seconds=current.default_ttl_seconds,
@@ -1992,8 +2072,17 @@ class SettingsPageController:
             return
         combo.blockSignals(True)
         combo.clear()
-        for engine_id in ("rapidocr", "windows", "paddleocr"):
-            combo.addItem(ENGINE_DISPLAY_NAMES.get(engine_id, engine_id), engine_id)
+        for engine_id, mode_id in (
+            ("rapidocr", "rapid_text"),
+            ("windows", "windows_text"),
+            ("paddleocr", "paddle_text"),
+        ):
+            combo.addItem(
+                RECOGNITION_MODE_DISPLAY_NAMES.get(
+                    mode_id, ENGINE_DISPLAY_NAMES.get(engine_id, engine_id)
+                ),
+                engine_id,
+            )
         engine_id: str | None = None
         requires_selection = False
         try:
@@ -2111,7 +2200,10 @@ class SettingsPageController:
         if catalog is None:
             return
         parts = []
-        for entry in catalog.engines:
+        # 新目录优先：它同时投影 specialized/document 模式的本地文案和
+        # 生命周期。旧 Backend 仅有 engine catalog 时由 facade 合成 text 模式。
+        entries = catalog.modes or catalog.engines
+        for entry in entries:
             label = ENGINE_AVAILABILITY_LABELS.get(
                 entry.availability, entry.availability
             )
@@ -2137,6 +2229,12 @@ class SettingsPageController:
             self._set_engine_status(f"Backend 选择目录无效：{exc}")
             return
         self._selection_catalog = catalog
+        self._refresh_lifecycle_controls()
+        from vibeocr.classic.runtime_selection import set_active_recognition_catalog
+
+        set_active_recognition_catalog(catalog)
+        if self._recognition_catalog_callback is not None:
+            self._recognition_catalog_callback(catalog)
         recovery_notice = self._reconcile_engine_selection()
         self._render_engine_availability(recovery_notice)
         self._render_offline_features()
@@ -2249,6 +2347,29 @@ class SettingsPageController:
                 install_component_ids=component_ids,
                 download_source_ids=source_ids,
             )
+        )
+
+    def install_recognition_mode(self, mode) -> None:
+        """按已协商 mode 的 required_component 引导安装高级能力。"""
+        component_id = getattr(mode, "required_component", None)
+        if not isinstance(component_id, str) or not component_id:
+            QMessageBox.information(
+                None,
+                "需要准备组件",
+                f"{getattr(mode, 'display_name', '该识别模式')}需要额外组件；"
+                "当前 Backend 未声明可安装组件。",
+            )
+            return
+        answer = QMessageBox.question(
+            None,
+            "准备识别模式",
+            f"{mode.display_name}需要下载并安装对应组件。\n是否现在准备？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._run_after_supervisor_invalidated(
+            lambda: self._show_install_dialog(install_component_ids=(component_id,))
         )
 
     def _clear_source_combo_rows(self) -> None:
@@ -2443,7 +2564,7 @@ class SettingsPageController:
         }.get(action, "运行时驻留状态")
         self._runtime_action = ""
         self._render_residency_status(status, prefix=prefix)
-        self._set_release_controls_enabled(True)
+        self._set_release_controls_enabled(bool(self._lifecycle_pipelines("release")))
 
         if self._preload_selected:
             loaded_names = {
@@ -2540,7 +2661,7 @@ class SettingsPageController:
         if status_label is not None:
             status_label.setText(friendly)
         self._update_release_status(f"运行时缓存操作失败：{error}")
-        self._set_release_controls_enabled(True)
+        self._set_release_controls_enabled(bool(self._lifecycle_pipelines("release")))
 
     @staticmethod
     def _friendly_cache_error(error: str) -> str:

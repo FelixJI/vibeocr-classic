@@ -168,11 +168,14 @@ class ScreenCaptureOverlay(QWidget):
         self._canvas: InlineEditCanvas | None = None
         self._toolbar: InlineToolbar | None = None
         self._recognition_panel: InlineRecognitionPanel | None = None
+        self._recognition_catalog = None
+        self._advanced_mode_install_callback = None
         self._captured_pixmap: QPixmap | None = None
         self._resize_frame: SelectionResizeFrame | None = None
 
         # 管道快捷截图：设置后选区完成直接识别，跳过编辑界面
         self._pending_pipeline: str | None = None
+        self._pending_recognition_mode: str | None = None
 
     # ==================== CAPTURING 模式 ====================
 
@@ -458,6 +461,21 @@ class ScreenCaptureOverlay(QWidget):
         """设置快捷管道名称，下次截图选区完成后直接识别（跳过编辑界面）"""
         self._pending_pipeline = pipeline_name
 
+    def set_pending_recognition_mode(self, mode_id: str) -> None:
+        """设置快捷 recognition mode，保持提交端的 descriptor 投影。"""
+        self._pending_recognition_mode = mode_id
+
+    def set_recognition_catalog(self, catalog) -> None:
+        """把已协商模式传给截图内联选择器（可能尚未构造）。"""
+        self._recognition_catalog = catalog
+        if self._recognition_panel is not None:
+            self._recognition_panel.set_recognition_catalog(catalog)
+
+    def set_advanced_mode_install_callback(self, callback) -> None:
+        self._advanced_mode_install_callback = callback
+        if self._recognition_panel is not None:
+            self._recognition_panel.set_advanced_mode_install_callback(callback)
+
     def _build_pipeline_options(self, pipeline_name: str) -> Any:
         """为快捷管道构建 OCROptions，优先使用 screenshot 源的持久化配置"""
         try:
@@ -495,6 +513,42 @@ class ScreenCaptureOverlay(QWidget):
             return
 
         # 快捷管道：跳过编辑界面，直接确认识别
+        if self._pending_recognition_mode is not None:
+            mode_id = self._pending_recognition_mode
+            self._pending_recognition_mode = None
+            mode = (
+                self._recognition_catalog.mode(mode_id)
+                if self._recognition_catalog
+                else None
+            )
+            if mode is None:
+                self._reset_capturing()
+                self.hide()
+                return
+            if mode.availability == "unavailable":
+                logger.info("截图快捷识别模式不可用: %s", mode_id)
+                self._reset_capturing()
+                self.hide()
+                return
+            if mode.availability == "preparation_required":
+                logger.info("截图快捷识别模式需要准备组件: %s", mode_id)
+                callback = self._advanced_mode_install_callback
+                if callable(callback):
+                    callback(mode)
+                self._reset_capturing()
+                self.hide()
+                return
+            options = self._build_pipeline_options(mode.pipeline_id).copy(
+                recognition_mode=mode_id
+            )
+            pixmap = self._captured_pixmap
+            if pixmap.devicePixelRatio() != 1.0:
+                pixmap = QPixmap(pixmap)
+                pixmap.setDevicePixelRatio(1.0)
+            self.confirmed.emit(pixmap, options)
+            self._reset_capturing()
+            self.hide()
+            return
         if self._pending_pipeline is not None:
             pipeline_name = self._pending_pipeline
             self._pending_pipeline = None
@@ -523,6 +577,10 @@ class ScreenCaptureOverlay(QWidget):
 
         # 创建识别面板
         self._recognition_panel = InlineRecognitionPanel(self)
+        self._recognition_panel.set_recognition_catalog(self._recognition_catalog)
+        self._recognition_panel.set_advanced_mode_install_callback(
+            self._advanced_mode_install_callback
+        )
 
         # 创建 resize 框架
         self._resize_frame = SelectionResizeFrame(

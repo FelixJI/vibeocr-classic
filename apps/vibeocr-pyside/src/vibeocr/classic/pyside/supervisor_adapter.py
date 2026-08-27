@@ -426,8 +426,24 @@ class SupervisorClientAdapter(QObject):
         )
         handle = JobHandle(client=client, ref=ref)
         self._handles[ref.job_id] = handle
-        await handle.wait_for_terminal()
+        try:
+            await handle.wait_for_terminal()
+        except asyncio.CancelledError:
+            # 单次识别把本协程包在可取消的 UI task 里。只丢弃本地等待会在
+            # Backend 留下继续计算的孤儿作业；取消必须转发为 CANCEL 命令。
+            if not self._closing:
+                self._schedule(self._cancel_job_quietly(handle))
+            raise
+        finally:
+            self._handles.pop(ref.job_id, None)
         return await handle.result()
+
+    async def _cancel_job_quietly(self, handle: JobHandle) -> None:
+        """Best-effort cooperative cancel for a locally-abandoned job."""
+        try:
+            await handle.cancel()
+        except (InferenceClientError, RuntimeError):  # pragma: no cover
+            pass
 
     @staticmethod
     async def _submit_job(

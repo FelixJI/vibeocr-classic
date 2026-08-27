@@ -343,11 +343,42 @@ class SingleRecognitionTab(BaseOcrTab):
 
     def _start_recognition(self) -> None:
         """开始识别：保存当前管道选项后执行 OCR"""
+        if self._is_processing:
+            # 识别进行中本按钮呈现为「取消」；就地取消而不是静默忽略。
+            self._request_cancel_recognition()
+            return
         self._save_current_pipeline_options()
         if self._pending_pixmap:
             self.run_ocr(self._pending_pixmap)
         elif self._pending_file_path:
             self.process_file(self._pending_file_path)
+
+    def _request_cancel_recognition(self) -> None:
+        """请求取消进行中的识别。
+
+        取消 asyncio task 会经 SupervisorClientAdapter.recognize 转发为
+        Backend CANCEL 命令；注入式同步 backend 的原生线程调用不可抢占，
+        线程返回前保持「正在取消…」禁用态。
+        """
+        task = self._recognize_task
+        if task is None or task.done():
+            return
+        self._start_btn.setEnabled(False)
+        self.status_changed.emit("正在取消…")
+        self.task_status_changed.emit("单次识别 · 正在取消")
+        task.cancel()
+
+    def _finish_cancelled_recognition(self) -> None:
+        """取消落地后的界面复位（与失败路径同构）。"""
+        self._start_btn.setText("开始识别")
+        if self._closing:
+            return
+        self._ocr_from_screenshot = False
+        self._result_widget._ensure_web_view().setHtml(
+            "<p style='color:#888;'>识别已取消</p>"
+        )
+        self.status_changed.emit("已取消")
+        self.task_status_changed.emit("单次识别 · 已取消")
 
     def _save_current_pipeline_options(self) -> None:
         """保存当前管道选项到持久化"""
@@ -570,7 +601,9 @@ class SingleRecognitionTab(BaseOcrTab):
         self.status_changed.emit("正在识别…")
         self.task_status_changed.emit("单次识别 · 处理中")
         self._set_processing(True)
-        self._refresh_start_btn_enabled()
+        # 识别期间按钮转为「取消」并保持可点；各终态路径恢复文案。
+        self._start_btn.setText("取消")
+        self._start_btn.setEnabled(True)
 
         runner = get_async_runner()
         self._recognize_task = runner.run(
@@ -578,7 +611,6 @@ class SingleRecognitionTab(BaseOcrTab):
             on_complete=self._on_ocr_async_finished,
             on_error=lambda exc: self._on_ocr_async_error(exc, pipeline_val),
         )
-
         # 兜底清理：正常完成/失败由 on_complete/on_error 清 _recognize_task，
         # 但 cancel 路径（set_closing）不触发这两个回调，故用 done_callback 确保
         # task 引用最终被释放（避免持有已完成 task 阻止下一次识别）。
@@ -598,7 +630,8 @@ class SingleRecognitionTab(BaseOcrTab):
                 if self._recognize_task is completed:
                     self._recognize_task = None
                 # cancel 路径下 on_complete/on_error 不会被调，需手动复位忙时。
-                # 正常路径下 _on_ocr_async_* 已清过，这里幂等。
+                # 正常路径下 _on_ocr_async_* 已清过，这里幂等。注入式同步
+                # backend 的原生线程未返回时不复位，等 _on_native_call_finished。
                 if (
                     self._is_processing
                     and completed.cancelled()
@@ -606,6 +639,7 @@ class SingleRecognitionTab(BaseOcrTab):
                 ):
                     self._set_processing(False)
                     self._refresh_start_btn_enabled()
+                    self._finish_cancelled_recognition()
 
             task.add_done_callback(_clear_ref)
 
@@ -709,6 +743,9 @@ class SingleRecognitionTab(BaseOcrTab):
         ):
             self._set_processing(False)
             self._refresh_start_btn_enabled()
+            # 取消请求发出后原生线程才返回：终态复位补走取消界面路径。
+            if task is not None and task.cancelled():
+                self._finish_cancelled_recognition()
 
     def _on_ocr_async_finished(self, result) -> None:
         """异步识别完成回调（在 qasync loop 上执行）。"""
@@ -742,11 +779,14 @@ class SingleRecognitionTab(BaseOcrTab):
     def _refresh_start_btn_enabled(self) -> None:
         """根据忙时状态与是否有待识别图，统一管理 _start_btn 启用状态。
 
-        OCR 进行中强制禁用（即使此时 set_image_for_recognition 被调用）；
-        否则按 _pending_pixmap / _pending_file_path 是否存在恢复。
+        OCR 进行中不在此处改动按钮：派发时置为可用「取消」，取消请求后
+        禁用，终态路径恢复「开始识别/重新识别」。识别被 Backend 卡死或
+        耗时过长时用户必须能就地取消，不再无条件禁用。
         """
-        if self._closing or self._is_processing:
+        if self._closing:
             self._start_btn.setEnabled(False)
+            return
+        if self._is_processing:
             return
         has_pending = (
             self._pending_pixmap is not None and not self._pending_pixmap.isNull()

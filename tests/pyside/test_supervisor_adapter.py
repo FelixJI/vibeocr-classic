@@ -589,3 +589,26 @@ def test_fetch_settings_emits_snapshot(adapter, qasync_loop) -> None:
     assert loaded[0] is snapshot
     runtime_adapter.shutdown()
     _drive(qasync_loop, lambda: runtime_adapter.shutdown_drained)
+
+
+def test_recognize_cancel_forwards_backend_cancel_command(adapter, qasync_loop) -> None:
+    """取消单次识别的本地等待必须转发为 Backend CANCEL 命令。
+
+    回归背景：Windows OCR 等引擎在 Backend 卡死时，job 永不达终态；
+    若取消只丢弃本地 await，会在 Backend 留下孤儿作业且 UI 无法恢复。
+    """
+    fake = adapter._ensure_client()
+    assert isinstance(fake, FakeSupervisorClient)
+    fake.hold_running = True
+
+    from vibeocr.classic.utils.qt_async import get_async_runner
+
+    task = get_async_runner().run(adapter.recognize([("input", None, b"png")]))
+    _drive(qasync_loop, lambda: fake.submit_calls == 1)
+    job_id = next(iter(fake.jobs))
+    assert fake.cancelled == []
+
+    task.cancel()
+    _drive(qasync_loop, task.cancelled)
+    _drive(qasync_loop, lambda: fake.cancelled == [job_id])
+    _drive(qasync_loop, lambda: job_id not in adapter._handles)

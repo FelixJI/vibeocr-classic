@@ -40,6 +40,7 @@ def _inspection_with_components(
         backend_version="0.13.4",
         integrity="not-installed",
         components=components,
+        has_explicit_base_components=True,
     )
 
 
@@ -115,6 +116,32 @@ def test_base_ready_uses_full_profile_fallback_without_base_descriptors() -> Non
     assert inspection.base_ready
 
 
+def test_base_ready_does_not_guess_legacy_ocr_component_as_base() -> None:
+    inspection = RuntimeInspection(
+        status="ready",
+        runtime_root="C:/runtime",
+        accelerator="cpu",
+        profile="cpu",
+        python_version="3.13",
+        protocol_version="2.8.0",
+        manifest_sha256="manifest",
+        backend_version="0.13.4",
+        integrity="verified",
+        components=(
+            RuntimeComponentDescriptor(
+                "ocr_engine",
+                "OCR engine",
+                desired_state="ready",
+                actual_state="missing",
+                drift_reason="missing",
+                repairable=True,
+            ),
+        ),
+    )
+
+    assert inspection.base_ready
+
+
 def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
     executable = tmp_path / executable_name
     executable.write_bytes(b"installer")
@@ -156,6 +183,88 @@ def _bound_client(tmp_path: Path, *, executable_name: str = "renamed.exe"):
             tmp_path / "state/locks/product-maintenance.lock"
         ),
     )
+
+
+def _inspect_envelope(*, profile: object | None, status: str = "ready") -> dict:
+    return {
+        "state": {
+            "status": status,
+            "runtime_root": "C:/runtime",
+            "accelerator": "cpu",
+            "manifest_sha256": "a" * 64,
+            "backend_version": "0.7.0",
+            "integrity": "verified" if status == "ready" else "not-installed",
+        },
+        "profile": profile,
+    }
+
+
+def test_inspect_uses_full_ready_for_legacy_profile_without_base_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _bound_client(tmp_path)
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(
+            profile={
+                "profile_id": "win-x64-cpu",
+                "accelerator": "cpu",
+                "components": [
+                    {
+                        "component_id": "ocr_engine",
+                        "display_name": "OCR engine",
+                        "actual_state": "missing",
+                    }
+                ],
+            }
+        ),
+    )
+
+    inspection = client.inspect()
+
+    assert not inspection.has_explicit_base_components
+    assert inspection.base_ready
+
+
+def test_inspect_does_not_trust_locally_synthesized_base_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _bound_client(tmp_path)
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    manifest["profiles"] = {
+        "win-x64-base": {
+            "components": [{"component_id": "ocr_engine", "display_name": "OCR engine"}]
+        },
+        "win-x64-cpu": {
+            "components": [{"component_id": "ocr_engine", "display_name": "OCR engine"}]
+        },
+    }
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(profile=None),
+    )
+
+    inspection = client.inspect()
+
+    assert inspection.components[0].included_in_base
+    assert not inspection.has_explicit_base_components
+    assert inspection.base_ready
+
+
+def test_inspect_fallback_rejects_non_ready_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _bound_client(tmp_path)
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(profile=None, status="missing"),
+    )
+
+    assert not client.inspect().base_ready
 
 
 def test_renamed_installer_still_requires_full_binding(tmp_path: Path) -> None:

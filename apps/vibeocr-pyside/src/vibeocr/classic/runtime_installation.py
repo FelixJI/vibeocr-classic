@@ -135,6 +135,10 @@ class RuntimeInspection:
     backend_version: str
     integrity: str
     components: tuple[RuntimeComponentDescriptor, ...] = ()
+    # True only when this inspection response itself contained at least one
+    # ``included_in_base=True`` component. Local manifest projections are UI
+    # metadata, not evidence of the Host's actual installed scope.
+    has_explicit_base_components: bool = False
     source: RuntimeSourceIdentity | None = None
 
     @property
@@ -148,26 +152,20 @@ class RuntimeInspection:
         ``ready`` remains the installer-level full-profile predicate.  The
         product startup path must instead accept a verified base component
         set when optional Paddle/MinerU components are intentionally absent.
-        Older Runtime Hosts do not expose ``included_in_base``.  Their
-        stable ``ocr_engine`` descriptor is the Base capability seam, so do
-        not accidentally turn an absent optional component into a startup
-        failure.  Hosts that expose neither representation retain the full
-        profile predicate as the conservative fallback.
+        Only an explicit Host ``included_in_base`` declaration establishes
+        the narrower Base scope. Older payloads and locally synthesized
+        descriptors retain the full-profile predicate as conservative
+        fallback; component IDs are never guessed.
         """
 
+        if not self.has_explicit_base_components:
+            return self.ready
         base_components = tuple(
             component for component in self.components if component.included_in_base
         )
         if not base_components:
-            base_components = tuple(
-                component
-                for component in self.components
-                if component.component_id in {"ocr_engine", "rapidocr"}
-            )
-        if not base_components:
-            # Legacy hosts without a Base descriptor cannot prove which
-            # optional components are intentionally absent. Keep the former
-            # full-profile predicate instead of guessing from one residue.
+            # Defensive fallback for a manually constructed inspection that
+            # violates the provenance invariant above.
             return self.ready
 
         # Runtime Host publishes a per-component integrity verdict. It is the
@@ -1288,6 +1286,7 @@ class RuntimeInstallerClient:
             if not isinstance(profiles[profile], dict):
                 raise TypeError("invalid runtime profile")
             descriptor_value = envelope.get("profile")
+            host_profile = isinstance(descriptor_value, dict)
             descriptor = (
                 _profile_descriptor(descriptor_value)
                 if descriptor_value is not None
@@ -1304,6 +1303,13 @@ class RuntimeInstallerClient:
                 backend_version=str(value["backend_version"]),
                 integrity=str(value["integrity"]),
                 components=descriptor.components,
+                has_explicit_base_components=(
+                    host_profile
+                    and any(
+                        component.included_in_base
+                        for component in descriptor.components
+                    )
+                ),
                 source=_source_identity(value.get("source")),
             )
         except (KeyError, OSError, TypeError, ValueError) as exc:

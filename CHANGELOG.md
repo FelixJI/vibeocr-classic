@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.10
+
+### Bug Fixes
+
+- **runtime:** 修复 Supervisor 重复安装并更新依赖 (#71) (ca886ab)
+
 ## 0.10.9
 
 ### Features

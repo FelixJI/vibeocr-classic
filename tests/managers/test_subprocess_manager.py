@@ -173,6 +173,9 @@ def test_worker_start_keeps_qt_event_loop_responsive(
     assert manager._installer_client.ensure.call_args.kwargs[
         "required_capabilities"
     ] == ("ocr.recognition.v2",)
+    assert (
+        manager._installer_client.ensure.call_args.kwargs["install_component_ids"] == ()
+    )
     from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 
     assert get_supervisor_adapter().thread() is qapp.thread()

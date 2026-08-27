@@ -145,6 +145,11 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "verify_velopack_portable_e2e.py" in script
     assert "--old-portable" in script
     assert "--new-feed $velopackOutput" in script
+    # vpk 1.2.0 的 notes 选项名是 --releaseNotes（Option<FileInfo>，须存在）；
+    # 传错名字（如 --notesFile）要到 CI release build 才暴露，这里锁死拼写，
+    # 并要求正式 pack 前从 CHANGELOG.md 提取当前版本段落。
+    assert "extract_release_notes.py" in script
+    assert script.count("--releaseNotes $releaseNotes") == 1
 
     e2e = (ROOT / "scripts" / "verify_velopack_portable_e2e.py").read_text(
         encoding="utf-8"

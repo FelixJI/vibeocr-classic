@@ -183,7 +183,7 @@ dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
   --noInst `
-  --notesFile $releaseNotes `
+  --releaseNotes $releaseNotes `
   --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOutput

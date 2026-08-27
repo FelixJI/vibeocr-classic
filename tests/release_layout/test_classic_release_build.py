@@ -145,6 +145,11 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "verify_velopack_portable_e2e.py" in script
     assert "--old-portable" in script
     assert "--new-feed $velopackOutput" in script
+    # vpk 1.2.0 的 notes 选项名是 --releaseNotes（Option<FileInfo>，须存在）；
+    # 传错名字（如 --notesFile）要到 CI release build 才暴露，这里锁死拼写，
+    # 并要求正式 pack 前从 CHANGELOG.md 提取当前版本段落。
+    assert "extract_release_notes.py" in script
+    assert script.count("--releaseNotes $releaseNotes") == 1
 
     e2e = (ROOT / "scripts" / "verify_velopack_portable_e2e.py").read_text(
         encoding="utf-8"
@@ -208,6 +213,7 @@ def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) ->
                 "SHA1": hashlib.sha1(package.read_bytes()).hexdigest().upper(),
                 "SHA256": hashlib.sha256(package.read_bytes()).hexdigest().upper(),
                 "Size": package.stat().st_size,
+                "NotesMarkdown": "## 1.2.3\n\n- notes",
             }
         ]
     }
@@ -253,6 +259,7 @@ def test_velopack_verifier_rejects_feed_not_bound_to_package(tmp_path: Path) -> 
                         "SHA1": hashlib.sha1(package.read_bytes()).hexdigest().upper(),
                         "SHA256": "0" * 64,
                         "Size": package.stat().st_size,
+                        "NotesMarkdown": "## 1.2.3\n\n- notes",
                     }
                 ]
             }
@@ -261,6 +268,38 @@ def test_velopack_verifier_rejects_feed_not_bound_to_package(tmp_path: Path) -> 
     )
 
     with pytest.raises(RuntimeError, match="SHA256"):
+        verify_velopack_release(tmp_path, "1.2.3")
+
+
+def test_velopack_verifier_rejects_feed_without_release_notes(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "VibeOCRClassic-1.2.3-full.nupkg"
+    package.write_bytes(b"bound closure")
+    (tmp_path / "VibeOCRClassic-win-Portable.zip").write_bytes(b"portable")
+    (tmp_path / "releases.win.json").write_text(
+        json.dumps(
+            {
+                "Assets": [
+                    {
+                        "PackageId": "VibeOCRClassic",
+                        "Version": "1.2.3",
+                        "Type": "Full",
+                        "FileName": package.name,
+                        "SHA1": hashlib.sha1(package.read_bytes()).hexdigest().upper(),
+                        "SHA256": hashlib.sha256(package.read_bytes())
+                        .hexdigest()
+                        .upper(),
+                        "Size": package.stat().st_size,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # 缺 NotesMarkdown 的 feed 会让"发现新版本"弹窗没有更新日志，fail closed。
+    with pytest.raises(RuntimeError, match="release notes"):
         verify_velopack_release(tmp_path, "1.2.3")
 
 

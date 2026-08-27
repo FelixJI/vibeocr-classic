@@ -775,8 +775,15 @@ def test_fifty_thousand_blocks_use_bounded_overlay_working_set(
     widget.set_text_blocks(blocks)
     elapsed_ms = (time.perf_counter() - before) * 1000
 
-    assert elapsed_ms < 150
+    # 墙钟只作粗粒度回归闸：有界路径本身 ~ms 级（开发机实测 ~1.5ms），但共享
+    # CI 机型叠加后台索引线程的 GIL 争用可到 ~170ms，150ms 预算余量为零；
+    # 500ms 仍能在 CI 上拦住退化为全量 50k 同步构建（秒级）的回归。
+    assert elapsed_ms < 500
     assert len(widget._text_blocks) == 50_000
+    # 同步种子必须只覆盖有界前缀；全量索引由后台线程补齐（语义化的
+    # "无 O(n) 同步工作"断言，不依赖秒表）。
+    seeded_indices = sum(len(indices) for indices in widget._text_page_indices.values())
+    assert seeded_indices <= MAX_INTERACTIVE_OVERLAY_BLOCKS
     assert len(widget._overlay._conf_rects) <= MAX_INTERACTIVE_OVERLAY_BLOCKS
     assert len(widget._confidence_overlay_indices) <= MAX_INTERACTIVE_OVERLAY_BLOCKS
     assert len(widget._block_screen_rects) <= MAX_INTERACTIVE_OVERLAY_BLOCKS

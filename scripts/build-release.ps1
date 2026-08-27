@@ -173,10 +173,17 @@ $velopackProduct = Join-Path $build 'velopack-product'
 if ($LASTEXITCODE -ne 0) { throw 'Velopack immutable input preparation failed' }
 $velopackOutput = Join-Path $build 'velopack'
 New-Item -ItemType Directory -Path $velopackOutput -Force | Out-Null
+# 版本段落注入 feed 的 NotesMarkdown，客户端"发现新版本"弹窗才能展示更新日志。
+$releaseNotes = Join-Path $velopackOutput 'release-notes.md'
+& $buildPython (Join-Path $root 'scripts/extract_release_notes.py') `
+  --changelog (Join-Path $root 'CHANGELOG.md') --version $Version `
+  --output $releaseNotes
+if ($LASTEXITCODE -ne 0) { throw 'Release notes extraction failed' }
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
   --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
   --noInst `
+  --releaseNotes $releaseNotes `
   --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOutput

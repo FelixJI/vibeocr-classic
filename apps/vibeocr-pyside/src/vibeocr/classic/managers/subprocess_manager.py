@@ -71,6 +71,10 @@ class SupervisorStartTask(QRunnable):
                     progress=self.signals.progress.emit,
                     cancel_event=self._cancelled,
                     required_capabilities=self.required_capabilities,
+                    # Supervisor 启动只依赖产品随附的 Base Runtime。可选的
+                    # Paddle/MinerU 组件只能由用户显式维护操作安装，不能在
+                    # Base 已就绪后把一次启动隐式扩张为完整 profile 安装。
+                    install_component_ids=(),
                 )
             proc = SupervisorProcess.launch(
                 python_exe=(

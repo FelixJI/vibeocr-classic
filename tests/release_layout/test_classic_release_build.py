@@ -310,9 +310,9 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         "pyinstaller==6.21.0",
         "pyside6==6.11.1",
         "qasync==0.28.0",
-        "numpy==2.5.1",
+        "numpy==2.5.2",
         "httpx==0.28.1",
-        "jsonschema==4.25.1",
+        "jsonschema==4.26.0",
         "pillow==12.3.0",
         "velopack==1.2.0",
     ):

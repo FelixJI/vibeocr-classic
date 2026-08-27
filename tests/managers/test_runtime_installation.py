@@ -79,6 +79,12 @@ def test_base_ready_accepts_verified_base_when_advanced_components_are_missing()
     assert inspection.base_ready
 
 
+def test_base_ready_accepts_legacy_missing_drift_reason_when_base_is_verified() -> None:
+    inspection = _inspection_with_components(_base_component(drift_reason=None))
+
+    assert inspection.base_ready
+
+
 @pytest.mark.parametrize(
     "base_component",
     [
@@ -224,6 +230,38 @@ def test_inspect_uses_full_ready_for_legacy_profile_without_base_flag(
     inspection = client.inspect()
 
     assert not inspection.has_explicit_base_components
+    assert inspection.base_ready
+
+
+def test_inspect_parses_explicit_host_base_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _bound_client(tmp_path)
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(
+            profile={
+                "profile_id": "win-x64-cpu",
+                "accelerator": "cpu",
+                "components": [
+                    {
+                        "component_id": "ocr_engine",
+                        "display_name": "OCR engine",
+                        "included_in_base": True,
+                        "desired_state": "ready",
+                        "actual_state": "ready",
+                        "drift_reason": "none",
+                        "repairable": False,
+                    }
+                ],
+            }
+        ),
+    )
+
+    inspection = client.inspect()
+
+    assert inspection.has_explicit_base_components
     assert inspection.base_ready
 
 

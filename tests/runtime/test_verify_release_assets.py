@@ -122,3 +122,20 @@ def test_exact_candidate_rejects_extra_unindexed_release_asset(tmp_path: Path) -
             require_index=False,
             exact=True,
         )
+
+
+@pytest.mark.parametrize("include_delta", [False, True])
+def test_exact_candidate_allows_zero_or_one_optional_delta(
+    tmp_path: Path, include_delta: bool
+) -> None:
+    (tmp_path / "app-full.nupkg").write_bytes(b"full")
+    if include_delta:
+        (tmp_path / "app-delta.nupkg").write_bytes(b"delta")
+
+    verify_release_assets(
+        tmp_path,
+        required=("app-full.nupkg",),
+        allow_one=("*-delta.nupkg",),
+        require_index=False,
+        exact=True,
+    )

@@ -375,6 +375,8 @@ def verify_portable_e2e(
     work_dir: Path,
     *,
     timeout: float = 180.0,
+    old_package: Path | None = None,
+    require_package_type: str | None = None,
 ) -> None:
     if os.name != "nt":
         raise RuntimeError("Velopack Portable E2E is Windows-only")
@@ -391,6 +393,10 @@ def verify_portable_e2e(
                 raise RuntimeError(f"unsafe Portable archive member: {member.filename}")
         archive.extractall(extracted)
     root = _portable_root(extracted)
+    if old_package is not None:
+        packages = root / "packages"
+        packages.mkdir()
+        shutil.copy2(old_package, packages / old_package.name)
     nonce = uuid.uuid4().hex
     expected = _write_state_markers(root, nonce)
     replaced_marker = root / "current" / f"old-content-{nonce}.marker"
@@ -431,7 +437,14 @@ def verify_portable_e2e(
     ):
         env.pop(name, None)
 
-    handler = partial(_QuietHandler, directory=str(new_feed))
+    requests: list[str] = []
+
+    class RecordingHandler(_QuietHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler interface
+            requests.append(self.path)
+            super().do_GET()
+
+    handler = partial(RecordingHandler, directory=str(new_feed))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -453,6 +466,19 @@ def verify_portable_e2e(
             thread.join(timeout=5)
     if evidence.get("installed_version") != target_version:
         raise RuntimeError(f"restarted app reported wrong version: {evidence}")
+    if require_package_type is not None and not any(
+        path.endswith(f"-{require_package_type}.nupkg") for path in requests
+    ):
+        raise RuntimeError(
+            f"Velopack did not request the required {require_package_type} package: "
+            f"{requests}"
+        )
+    if require_package_type == "delta" and any(
+        path.endswith(f"-{target_version}-full.nupkg") for path in requests
+    ):
+        raise RuntimeError(
+            f"Velopack requested the target full package after delta: {requests}"
+        )
     if replaced_marker.exists():
         raise RuntimeError("Velopack apply did not replace the old current directory")
     _assert_state_markers(root, expected)
@@ -501,6 +527,8 @@ def main() -> int:
     parser.add_argument("--target-version", required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--old-package", type=Path)
+    parser.add_argument("--require-package-type", choices=("full", "delta"))
     args = parser.parse_args()
     verify_portable_e2e(
         args.old_portable.resolve(strict=True),
@@ -508,6 +536,12 @@ def main() -> int:
         args.target_version,
         args.work_dir.resolve(),
         timeout=args.timeout,
+        old_package=(
+            args.old_package.resolve(strict=True)
+            if args.old_package is not None
+            else None
+        ),
+        require_package_type=args.require_package_type,
     )
     print("Velopack Portable two-version E2E passed")
     return 0

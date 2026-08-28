@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import json
 import os
 import shutil
 import threading
@@ -131,16 +132,28 @@ class HttpxFeedMaterializer:
         except ValueError as error:
             raise ValueError("Velopack feed is invalid JSON") from error
         assets = feed.get("Assets") if isinstance(feed, dict) else None
-        full = [
-            asset
-            for asset in assets or ()
-            if isinstance(asset, dict)
-            and asset.get("PackageId") == "VibeOCRClassic"
-            and asset.get("Type") == "Full"
+        full: list[tuple[tuple[int, int, int], dict[str, object]]] = []
+        for candidate_asset in assets or ():
+            if (
+                not isinstance(candidate_asset, dict)
+                or candidate_asset.get("PackageId") != "VibeOCRClassic"
+                or candidate_asset.get("Type") != "Full"
+            ):
+                continue
+            raw_version = candidate_asset.get("Version")
+            parts = raw_version.split(".") if isinstance(raw_version, str) else []
+            if len(parts) != 3 or not all(part.isdigit() for part in parts):
+                raise ValueError("Velopack full package version is invalid")
+            full.append((tuple(int(part) for part in parts), candidate_asset))
+        if not full:
+            raise ValueError("Velopack feed does not contain a full package")
+        latest = max(version for version, _asset in full)
+        selected = [
+            candidate_asset for version, candidate_asset in full if version == latest
         ]
-        if len(full) != 1:
-            raise ValueError("Velopack feed must select one full package")
-        asset = full[0]
+        if len(selected) != 1:
+            raise ValueError("Velopack feed has an ambiguous latest full package")
+        asset = selected[0]
         version = asset.get("Version")
         filename = asset.get("FileName")
         expected_hash = asset.get("SHA256")
@@ -160,7 +173,14 @@ class HttpxFeedMaterializer:
         if staging.exists():
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
-        (staging / "releases.win.json").write_bytes(response.content)
+        # 该 fallback 只预取当前 full。把本地 feed 同步收窄为 full-only，
+        # 避免启用 delta 后本地 UpdateManager 选择一个缓存中不存在的 delta。
+        local_feed = dict(feed)
+        local_feed["Assets"] = [asset]
+        (staging / "releases.win.json").write_text(
+            json.dumps(local_feed, separators=(",", ":")),
+            encoding="utf-8",
+        )
         if self._cache_dir.exists():
             shutil.rmtree(self._cache_dir)
         os.replace(staging, self._cache_dir)

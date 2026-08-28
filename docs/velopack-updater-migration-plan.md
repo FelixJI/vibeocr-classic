@@ -24,7 +24,7 @@ LocalAppData 或系统 Temp 保存产品状态。
 
 ## 运行态
 
-1. Portable 使用同一 Velopack `check/download/apply/restart` 流程；full nupkg 和 feed 是机器
+1. Portable 使用同一 Velopack `check/download/apply/restart` 流程；full/delta nupkg 和 feed 是机器
    更新资产，不是用户安装入口。
 2. 更新只替换 `current`，`RootAppDir/state` 原样保留；移动整个 Portable 根后重新解析新位置。
 3. 网络、校验、取消、空间或 installer 终态等待失败时保留当前版本并 fail closed。
@@ -34,6 +34,7 @@ LocalAppData 或系统 Temp 保存产品状态。
 正式候选精确包含：
 
 - `VibeOCRClassic-{version}-full.nupkg`
+- `VibeOCRClassic-{version}-delta.nupkg`（仅正式新版本候选；上一正式版到当前版单跳）
 - `VibeOCRClassic-win-Portable.zip`
 - `releases.win.json`
 - `component-lock.json`
@@ -41,8 +42,20 @@ LocalAppData 或系统 Temp 保存产品状态。
 - `SBOM.spdx.json`
 
 构建先验证 PyInstaller onedir 和 offline base Runtime，再以固定 Velopack CLI 生成真实旧、新
-两个版本。Portable E2E 从旧 ZIP 启动，通过 loopback HTTP feed 完成 check/download/apply，
+两个版本。新版本高于最新正式 Release 时，构建下载并校验上一 full 作为唯一 delta base；客户端
+最多使用一个 delta，无本地 base、跨版本或重建失败均由 Velopack 回退当前 full。Portable E2E
+分别覆盖 full fallback 与预置上一 full base 后的 delta 请求，通过 loopback HTTP feed 完成 check/download/apply，
 等待重启后的新版本写出证据，并验证 `current` 被替换、`state/{config,logs,cache,models,runtime}`
 保留；随后停止 feed、移动整个根并离线重启。静态 feed 或 mock 只用于单元契约，不能替代该 E2E。
+
+`vpk` 生成 delta 后会在中间 feed 带入历史 full；构建必须先验证它与计划 base 一致，再把正式
+`releases.win.json` 归一化为“当前 full + 当前 delta”。上一正式 full 不在当前 Release 重复发布或引用。
+这既保留新客户端的 delta 选择，也让迁移前 forward-proxy materializer 看到唯一 full 并安全降级。
+
+上线分为两个相邻 Release：迁移前已发布客户端的
+`MaximumDeltasBeforeFallback=-1`，因此首个包含本实现的能力版本即使发布合法 delta，现网旧客户端也会
+选择 full；该版本先建立 `MaximumDeltasBeforeFallback=1` 的客户端基线。再下一版开始，真实上一正式版
+客户端才会请求单跳 delta。构建中的合成旧版本 Portable E2E 用于证明候选代码的 full/delta 选择、应用与
+重启契约，不冒充迁移前公开版本会请求 delta 的证据；首个能力版本仍必须验证 full fallback。
 
 完整门禁以 `.ci/project.json` 的 quality、e2e、release build 与 release smoke 为准。

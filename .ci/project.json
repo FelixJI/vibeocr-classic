@@ -17,7 +17,7 @@
     "e2e": [["python", "scripts/verify_component_release_input.py", "--release-input", "build/automation/release-input"]],
     "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ReleaseInput", "build/automation/release-input", "-ArtifactsDir", "{artifacts_dir}"]],
     "release_smoke": [
-      ["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--exact", "--require", "component-lock.json", "--require", "frontend-protocol-lock.json", "--require", "SBOM.spdx.json", "--require", "VibeOCRClassic-v{version}-win-x64.zip", "--require", "releases.win.json", "--require-one", "VibeOCRClassic-*-full.nupkg"],
+      ["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--exact", "--require", "component-lock.json", "--require", "frontend-protocol-lock.json", "--require", "SBOM.spdx.json", "--require", "VibeOCRClassic-v{version}-win-x64.zip", "--require", "releases.win.json", "--require-one", "VibeOCRClassic-*-full.nupkg", "--allow-one", "VibeOCRClassic-*-delta.nupkg"],
       ["python", "scripts/verify_velopack_release.py", "{artifacts_dir}", "--version", "{version}", "--portable-name", "VibeOCRClassic-v{version}-win-x64.zip"]
     ]
   },
@@ -30,7 +30,7 @@
     ],
     "generated_commands": [],
     "identity_asset": "component-lock.json",
-    "required_assets": ["component-lock.json", "frontend-protocol-lock.json", "SBOM.spdx.json", "VibeOCRClassic-*-full.nupkg", "VibeOCRClassic-v{version}-win-x64.zip", "releases.win.json"],
+    "required_assets": ["component-lock.json", "frontend-protocol-lock.json", "SBOM.spdx.json", "VibeOCRClassic-*-full.nupkg", "VibeOCRClassic-*-delta.nupkg", "VibeOCRClassic-v{version}-win-x64.zip", "releases.win.json"],
     "mirrors": [
       {"name": "gitee", "url_env": "GITEE_URL", "user_env": "GITEE_USER", "token_env": "GITEE_TOKEN"},
       {"name": "cnb", "url_env": "CNB_URL", "token_env": "CNB_TOKEN", "user": "cnb"}

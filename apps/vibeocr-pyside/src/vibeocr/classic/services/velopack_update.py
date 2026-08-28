@@ -72,7 +72,9 @@ class _FeedMaterializer(Protocol):
 def _default_manager_factory(source: str) -> _VelopackManager:
     velopack = importlib.import_module("velopack")
 
-    options = velopack.UpdateOptions(False, -1, "win")
+    # latest Release 只发布上一正式版到当前版的一跳 delta；更老版本、
+    # 无本地 base 或重建失败由 Velopack 自动回退当前 full。
+    options = velopack.UpdateOptions(False, 1, "win")
     return velopack.UpdateManager(velopack.HttpSource(source), options)
 
 

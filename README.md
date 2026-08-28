@@ -104,7 +104,7 @@ uv run --no-sync python -m pytest
 
 正式资产包括：
 
-- 用户下载的 Velopack Portable，以及供内置更新器使用的 full nupkg 与 `releases.win.json`；
+- 用户下载的 Velopack Portable，以及供内置更新器使用的 full、相邻版本 delta nupkg 与 `releases.win.json`；
 - Backend component lock 与前端 Protocol lock；
 - build identity 与 SPDX SBOM。
 

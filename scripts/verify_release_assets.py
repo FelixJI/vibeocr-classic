@@ -27,6 +27,7 @@ def verify_release_assets(
     *,
     required: Iterable[str] = (),
     require_one: Iterable[str] = (),
+    allow_one: Iterable[str] = (),
     require_index: bool = True,
     exact: bool = False,
 ) -> tuple[str, ...]:
@@ -101,6 +102,15 @@ def verify_release_assets(
             )
         expected.update(matches)
 
+    for pattern in allow_one:
+        matches = sorted(name for name in actual if fnmatch.fnmatchcase(name, pattern))
+        if len(matches) > 1:
+            raise ReleaseAssetError(
+                f"optional pattern must match at most one asset: {pattern!r}; "
+                f"matches={matches}"
+            )
+        expected.update(matches)
+
     if exact and actual != expected:
         raise ReleaseAssetError(
             "exact asset set mismatch; "
@@ -117,6 +127,7 @@ def main() -> int:
     parser.add_argument("artifacts_dir", type=Path)
     parser.add_argument("--require", action="append", default=[])
     parser.add_argument("--require-one", action="append", default=[])
+    parser.add_argument("--allow-one", action="append", default=[])
     parser.add_argument("--no-checksum-index", action="store_true")
     parser.add_argument("--exact", action="store_true")
     args = parser.parse_args()
@@ -124,6 +135,7 @@ def main() -> int:
         args.artifacts_dir,
         required=args.require,
         require_one=args.require_one,
+        allow_one=args.allow_one,
         require_index=not args.no_checksum_index,
         exact=args.exact,
     ):

@@ -8,7 +8,10 @@ from vibeocr.classic.services.update_coordinator import (
     UpdateApplyStatus,
     UpdateCheckStatus,
 )
-from vibeocr.classic.services.velopack_update import VelopackUpdateCoordinator
+from vibeocr.classic.services.velopack_update import (
+    VelopackUpdateCoordinator,
+    _default_manager_factory,
+)
 from vibeocr.classic.services.update_transport import (
     build_update_source_candidates,
     resolve_update_source_candidates,
@@ -62,6 +65,35 @@ def _simulate_process_exit(coordinator: VelopackUpdateCoordinator) -> None:
     assert lease is not None
     lease.release()
     coordinator._apply_lease = None
+
+
+def test_default_manager_enables_only_one_delta(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeOptions:
+        def __init__(self, allow_downgrade, maximum_deltas, channel) -> None:
+            captured["options"] = (allow_downgrade, maximum_deltas, channel)
+
+    class FakeModule:
+        UpdateOptions = FakeOptions
+
+        @staticmethod
+        def HttpSource(source):
+            return source
+
+        @staticmethod
+        def UpdateManager(source, options):
+            captured["manager"] = (source, options)
+            return object()
+
+    monkeypatch.setattr(
+        "vibeocr.classic.services.velopack_update.importlib.import_module",
+        lambda _name: FakeModule,
+    )
+
+    _default_manager_factory("https://updates.invalid/")
+
+    assert captured["options"] == (False, 1, "win")
 
 
 def test_installed_version_reads_local_velopack_state_without_checking_feed():

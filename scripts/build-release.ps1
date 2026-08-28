@@ -179,15 +179,40 @@ $releaseNotes = Join-Path $velopackOutput 'release-notes.md'
   --changelog (Join-Path $root 'CHANGELOG.md') --version $Version `
   --output $releaseNotes
 if ($LASTEXITCODE -ne 0) { throw 'Release notes extraction failed' }
+$deltaPlanFile = Join-Path $build 'velopack-delta-plan.json'
+$deltaPrepareArgs = @(
+  '--repository', 'FelixJI/vibeocr-classic', '--pack-id', 'VibeOCRClassic',
+  '--target-version', $Version, '--output-dir', $velopackOutput,
+  '--plan-file', $deltaPlanFile
+)
+if ($env:AUTOMATION_SOURCE_SHA) {
+    $releaseTagCommit = (& git -C $root rev-list -n 1 "v$Version" 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $releaseTagCommit.Trim() -eq $env:AUTOMATION_SOURCE_SHA) {
+        $deltaPrepareArgs += '--reproduce-published-delta'
+    }
+}
+& $buildPython (Join-Path $root 'scripts/prepare_velopack_delta.py') @deltaPrepareArgs
+if ($LASTEXITCODE -ne 0) { throw 'Velopack delta base preparation failed' }
+$deltaPlan = Get-Content -LiteralPath $deltaPlanFile -Raw | ConvertFrom-Json
+$deltaMode = [string]$deltaPlan.delta_mode
 dnx --yes vpk@1.2.0 -- pack `
   --packId VibeOCRClassic --packVersion $Version --packDir $velopackProduct `
-  --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta none `
+  --mainExe VibeOCR.exe --channel win --runtime win-x64 --delta $deltaMode `
   --noInst `
   --releaseNotes $releaseNotes `
   --packAuthors FelixJI --packTitle VibeOCR `
   --icon (Join-Path $root 'resources/app_icon.ico') `
   --outputDir $velopackOutput
 if ($LASTEXITCODE -ne 0) { throw 'Velopack release build failed' }
+$normalizeFeedArgs = @(
+  '--feed', (Join-Path $velopackOutput 'releases.win.json'),
+  '--pack-id', 'VibeOCRClassic', '--target-version', $Version
+)
+if ($deltaPlan.base_version) {
+    $normalizeFeedArgs += @('--expected-base-version', [string]$deltaPlan.base_version)
+}
+& $buildPython (Join-Path $root 'scripts/normalize_velopack_feed.py') @normalizeFeedArgs
+if ($LASTEXITCODE -ne 0) { throw 'Velopack feed normalization failed' }
 & $buildPython (Join-Path $root 'scripts/verify_velopack_release.py') `
   $velopackOutput `
   --version $Version
@@ -205,8 +230,28 @@ if ($LASTEXITCODE -ne 0) { throw 'Velopack old-version E2E build failed' }
 & $buildPython (Join-Path $root 'scripts/verify_velopack_portable_e2e.py') `
   --old-portable (Join-Path $velopackOldOutput 'VibeOCRClassic-win-Portable.zip') `
   --new-feed $velopackOutput --target-version $Version `
+  --require-package-type full `
   --work-dir (Join-Path $build 'velopack-portable-e2e') --timeout 1200
 if ($LASTEXITCODE -ne 0) { throw 'Velopack Portable two-version E2E failed' }
+if ($deltaPlan.base_package) {
+    $deltaOldOutput = Join-Path $build 'velopack-delta-e2e-old'
+    New-Item -ItemType Directory -Path $deltaOldOutput -Force | Out-Null
+    dnx --yes vpk@1.2.0 -- pack `
+      --packId VibeOCRClassic --packVersion ([string]$deltaPlan.base_version) `
+      --packDir $velopackProduct --mainExe VibeOCR.exe --channel win `
+      --runtime win-x64 --delta none --noInst `
+      --packAuthors FelixJI --packTitle VibeOCR `
+      --icon (Join-Path $root 'resources/app_icon.ico') `
+      --outputDir $deltaOldOutput
+    if ($LASTEXITCODE -ne 0) { throw 'Velopack delta E2E old Portable build failed' }
+    & $buildPython (Join-Path $root 'scripts/verify_velopack_portable_e2e.py') `
+      --old-portable (Join-Path $deltaOldOutput 'VibeOCRClassic-win-Portable.zip') `
+      --old-package (Join-Path $velopackOutput ([string]$deltaPlan.base_package)) `
+      --new-feed $velopackOutput --target-version $Version `
+      --require-package-type delta `
+      --work-dir (Join-Path $build 'velopack-portable-delta-e2e') --timeout 1200
+    if ($LASTEXITCODE -ne 0) { throw 'Velopack Portable delta E2E failed' }
+}
 # Portable-only：用户可见交付只有 Portable.zip；NUPKG/feed 服务 Velopack
 # 自更新。两次 vpk pack 均以 --noInst 禁止生成多余的 Setup.exe。
 foreach ($name in @(
@@ -214,6 +259,10 @@ foreach ($name in @(
     'releases.win.json'
 )) {
     Copy-Item -LiteralPath (Join-Path $velopackOutput $name) -Destination $artifacts
+}
+$deltaPackage = Join-Path $velopackOutput "VibeOCRClassic-$Version-delta.nupkg"
+if (Test-Path -LiteralPath $deltaPackage -PathType Leaf) {
+    Copy-Item -LiteralPath $deltaPackage -Destination $artifacts
 }
 Copy-Item -LiteralPath (Join-Path $velopackOutput 'VibeOCRClassic-win-Portable.zip') `
   -Destination (Join-Path $artifacts "VibeOCRClassic-v$Version-win-x64.zip")

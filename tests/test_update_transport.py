@@ -76,12 +76,28 @@ def _https_release_server(
             "Assets": [
                 {
                     "PackageId": "VibeOCRClassic",
+                    "Version": "1.2.2",
+                    "Type": "Full",
+                    "FileName": "VibeOCRClassic-1.2.2-full.nupkg",
+                    "SHA256": "B" * 64,
+                    "Size": 456,
+                },
+                {
+                    "PackageId": "VibeOCRClassic",
                     "Version": "1.2.3",
                     "Type": "Full",
                     "FileName": "VibeOCRClassic-1.2.3-full.nupkg",
                     "SHA256": hashlib.sha256(package).hexdigest().upper(),
                     "Size": len(package),
-                }
+                },
+                {
+                    "PackageId": "VibeOCRClassic",
+                    "Version": "1.2.3",
+                    "Type": "Delta",
+                    "FileName": "VibeOCRClassic-1.2.3-delta.nupkg",
+                    "SHA256": "A" * 64,
+                    "Size": 123,
+                },
             ]
         }
     ).encode()
@@ -186,6 +202,12 @@ def test_materialized_source_uses_https_connect_for_feed_and_package(
                 assert not any("full.nupkg" in path for path in origin_requests)
                 asyncio.run(source.download(progress=progress.append))
                 assert source.base_url.startswith("http://127.0.0.1:")
+                local_feed = json.loads(
+                    (tmp_path / "materialized" / "releases.win.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                assert [asset["Type"] for asset in local_feed["Assets"]] == ["Full"]
                 materialized = (
                     tmp_path / "materialized" / "VibeOCRClassic-1.2.3-full.nupkg"
                 )

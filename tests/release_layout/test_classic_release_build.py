@@ -125,13 +125,18 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "prepare_velopack_input.py" in script
     assert "--packDir $velopackProduct" in script
     assert "--mainExe VibeOCR.exe" in script
-    assert script.count("--packTitle VibeOCR `") == 2
+    assert script.count("--packTitle VibeOCR `") == 3
     assert "--packTitle VibeOCRClassic" not in script
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "根目录的 `VibeOCR.exe`" in readme
     assert "--channel win" in script
     assert "--runtime win-x64" in script
-    assert "--delta none" in script
+    assert "prepare_velopack_delta.py" in script
+    assert "normalize_velopack_feed.py" in script
+    assert "--reproduce-published-delta" in script
+    assert "AUTOMATION_SOURCE_SHA" in script
+    assert "--delta $deltaMode" in script
+    assert "VibeOCRClassic-$Version-delta.nupkg" in script
     assert "verify_velopack_release.py" in script
     assert "python -m pip" not in script
     assert "uv venv --python" in script
@@ -139,12 +144,14 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "requirements-build.lock" in script
     assert script.index("uv venv --python") < script.index("& $buildPython")
     assert "updater.exe" not in script
-    assert script.count("dnx --yes vpk@1.2.0 -- pack") == 2
-    assert script.count("  --noInst `") == 2
+    assert script.count("dnx --yes vpk@1.2.0 -- pack") == 3
+    assert script.count("--noInst") == script.count("dnx --yes vpk@1.2.0 -- pack") + 1
     assert "--packVersion 0.0.1" in script
     assert "verify_velopack_portable_e2e.py" in script
     assert "--old-portable" in script
     assert "--new-feed $velopackOutput" in script
+    assert "--old-package" in script
+    assert "--require-package-type delta" in script
     # vpk 1.2.0 的 notes 选项名是 --releaseNotes（Option<FileInfo>，须存在）；
     # 传错名字（如 --notesFile）要到 CI release build 才暴露，这里锁死拼写，
     # 并要求正式 pack 前从 CHANGELOG.md 提取当前版本段落。
@@ -166,6 +173,7 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "client.ensure(install_component_ids=())" in entry_script
     assert '"process_id": os.getpid()' in entry_script
     assert "_wait_for_evidence_writer_exit(evidence" in e2e
+    assert "requested the target full package after delta" in e2e
     assert e2e.index("_wait_for_evidence_writer_exit(evidence") < e2e.index(
         "shutil.move"
     )
@@ -184,6 +192,7 @@ def test_release_contract_publishes_only_exact_velopack_assets() -> None:
         "frontend-protocol-lock.json",
         "SBOM.spdx.json",
         "VibeOCRClassic-*-full.nupkg",
+        "VibeOCRClassic-*-delta.nupkg",
         "VibeOCRClassic-v{version}-win-x64.zip",
         "releases.win.json",
     }
@@ -193,6 +202,7 @@ def test_release_contract_publishes_only_exact_velopack_assets() -> None:
     assert "--portable-name" in smoke[1]
     assert "VibeOCRClassic-v$Version-win-x64.zip" in build_script
     assert "--exact" in smoke[0]
+    assert "--allow-one" in smoke[0]
     assert "VibeOCRClassic-win-Setup.exe" not in " ".join(smoke[0])
 
 
@@ -240,6 +250,61 @@ def test_velopack_verifier_returns_only_publishable_exact_set(tmp_path: Path) ->
         canonical.name,
         "releases.win.json",
     }
+
+
+def test_velopack_verifier_binds_current_delta_and_rejects_historical_full(
+    tmp_path: Path,
+) -> None:
+    full = tmp_path / "VibeOCRClassic-1.2.3-full.nupkg"
+    delta = tmp_path / "VibeOCRClassic-1.2.3-delta.nupkg"
+    full.write_bytes(b"current full")
+    delta.write_bytes(b"current delta")
+    (tmp_path / "VibeOCRClassic-win-Portable.zip").write_bytes(b"portable")
+
+    def asset(path: Path, kind: str, version: str) -> dict[str, object]:
+        return {
+            "PackageId": "VibeOCRClassic",
+            "Version": version,
+            "Type": kind,
+            "FileName": path.name,
+            "SHA1": hashlib.sha1(path.read_bytes()).hexdigest().upper(),
+            "SHA256": hashlib.sha256(path.read_bytes()).hexdigest().upper(),
+            "Size": path.stat().st_size,
+        }
+
+    current_full = asset(full, "Full", "1.2.3")
+    current_full["NotesMarkdown"] = "## 1.2.3\n\n- notes"
+    previous = {
+        "PackageId": "VibeOCRClassic",
+        "Version": "1.2.2",
+        "Type": "Full",
+        "FileName": "VibeOCRClassic-1.2.2-full.nupkg",
+        "SHA1": "A" * 40,
+        "SHA256": "B" * 64,
+        "Size": 123,
+    }
+    (tmp_path / "releases.win.json").write_text(
+        json.dumps({"Assets": [current_full, asset(delta, "Delta", "1.2.3")]}),
+        encoding="utf-8",
+    )
+
+    publishable = verify_velopack_release(tmp_path, "1.2.3")
+
+    assert {path.name for path in publishable} == {
+        full.name,
+        delta.name,
+        "VibeOCRClassic-win-Portable.zip",
+        "releases.win.json",
+    }
+
+    (tmp_path / "releases.win.json").write_text(
+        json.dumps(
+            {"Assets": [current_full, asset(delta, "Delta", "1.2.3"), previous]}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="historical"):
+        verify_velopack_release(tmp_path, "1.2.3")
 
 
 def test_velopack_verifier_rejects_feed_not_bound_to_package(tmp_path: Path) -> None:

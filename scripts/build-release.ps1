@@ -186,7 +186,11 @@ $deltaPrepareArgs = @(
   '--plan-file', $deltaPlanFile
 )
 if ($env:AUTOMATION_SOURCE_SHA) {
-    $releaseTagCommit = (& git -C $root rev-list -n 1 "v$Version" 2>$null)
+    # automation/release PR 与合并后的 main CI 运行时目标版本的 tag 尚未创建。
+    # 必须用 rev-parse -q --verify 静默探测；禁止对原生命令做 stderr 重定向
+    # （如 2>$null）：Windows PowerShell 5.1 会把 stderr 包装成 ErrorRecord，
+    # 在 $ErrorActionPreference='Stop' 下直接终止脚本。
+    $releaseTagCommit = [string](& git -C $root rev-parse -q --verify "refs/tags/v${Version}^{commit}")
     if ($LASTEXITCODE -eq 0 -and $releaseTagCommit.Trim() -eq $env:AUTOMATION_SOURCE_SHA) {
         $deltaPrepareArgs += '--reproduce-published-delta'
     }

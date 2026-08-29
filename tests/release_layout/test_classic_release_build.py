@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -177,6 +178,115 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert e2e.index("_wait_for_evidence_writer_exit(evidence") < e2e.index(
         "shutil.move"
     )
+
+
+def test_release_tag_probe_tolerates_missing_tag_under_windows_powershell(
+    tmp_path: Path,
+) -> None:
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+
+    # 回归：automation/release PR 与合并后的 main CI 都会在目标版本 tag 尚未
+    # 创建时运行 release build。旧实现 `git rev-list ... 2>$null` 在 Windows
+    # PowerShell 5.1 下把原生命令 stderr 包装成 ErrorRecord，配合
+    # $ErrorActionPreference='Stop' 直接终止脚本；静默探测只允许
+    # rev-parse -q --verify + 退出码。
+    code_text = "\n".join(
+        line for line in script.splitlines() if not line.strip().startswith("#")
+    )
+    assert "rev-parse -q --verify" in code_text
+    assert "2>$null" not in code_text
+    assert "2>&1" not in code_text
+
+    powershell = shutil.which("powershell")
+    if powershell is None:
+        pytest.skip("CI 的 release lane 依赖 Windows PowerShell 5.1，本机不可用")
+
+    start = script.index("if ($env:AUTOMATION_SOURCE_SHA) {")
+    depth = 0
+    end = len(script)
+    for index, char in enumerate(script[start:], start):
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    block = script[start:end]
+    assert "'--reproduce-published-delta'" in block
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=probe@example.com",
+                "-c",
+                "user.name=probe",
+                *args,
+            ],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init")
+    git("commit", "--allow-empty", "-m", "init")
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git("tag", "v0.10.50")
+
+    def run_probe(version: str, source_sha: str) -> tuple[int, bool]:
+        probe = "\n".join(
+            [
+                "$ErrorActionPreference = 'Stop'",
+                f"$root = '{repo.as_posix()}'",
+                f"$Version = '{version}'",
+                "$deltaPrepareArgs = @()",
+                f"$env:AUTOMATION_SOURCE_SHA = '{source_sha}'",
+                block,
+                "if ($deltaPrepareArgs -contains '--reproduce-published-delta') "
+                "{ 'flag-added' } else { 'flag-skipped' }",
+            ]
+        )
+        probe_file = tmp_path / f"probe-{version}-{source_sha[:7]}.ps1"
+        # utf-8-sig BOM 让 Windows PowerShell 5.1 按 UTF-8 解码含中文注释的块。
+        probe_file.write_text(probe, encoding="utf-8-sig")
+        result = subprocess.run(
+            [
+                powershell,
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(probe_file),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode, "flag-added" in result.stdout
+
+    # tag 尚未创建（automation/release PR 的常态）：探测必须不终止且不加 flag。
+    exit_code, flag_added = run_probe("0.10.99", head)
+    assert exit_code == 0
+    assert flag_added is False
+
+    # source SHA 匹配稳定 tag：允许复现已发布 delta。
+    exit_code, flag_added = run_probe("0.10.50", head)
+    assert exit_code == 0
+    assert flag_added is True
+
+    # tag 存在但 SHA 不匹配：仍保持 full-only。
+    exit_code, flag_added = run_probe("0.10.50", "0" * 40)
+    assert exit_code == 0
+    assert flag_added is False
 
 
 def test_release_contract_publishes_only_exact_velopack_assets() -> None:

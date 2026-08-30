@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.11
+
+### Features
+
+- **update:** 支持相邻版本 Velopack 增量更新 (#75) (341913f)
+
+### Bug Fixes
+
+- **release:** 修复版本 tag 未创建时发布构建终止错误 (#77) (d63fa10)
+- **recognition:** 单次识别支持就地取消并转发后端取消命令 (#74) (79f2e6e)
+- **update:** 修复更新弹窗缺失更新日志与状态栏滞后 (#73) (8b788a3)
+
 ## 0.10.10
 
 ### Bug Fixes

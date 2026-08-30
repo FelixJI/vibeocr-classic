@@ -1,8 +1,9 @@
-"""设置页“推理后端”组件。
+"""设置页「推理后端」组件。
 
 物理 GPU 只决定选项是否可用；实际运行后端以 Runtime Installer ``inspect``
-返回的 accelerator 为权威。切换请求交给设置页控制器，在用户二次确认后通过
-可见、可取消的安装对话框执行。
+返回的 accelerator + 组件 desired_state 为权威，并区分三态：GPU profile /
+CPU profile / 仅基础 Runtime（未选择加速框架）。切换请求交给设置页控制器，
+在用户二次确认后通过可见、可取消的安装对话框执行。
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from PySide6.QtWidgets import (
 
 from vibeocr.classic.hardware_probe import detect_gpu_info
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
+from vibeocr.classic.runtime_status_messages import (
+    accelerator_framework,
+    cuda_requirement_label,
+    cuda_requirement_version,
+)
 from vibeocr.classic.ui import theme
 
 if TYPE_CHECKING:
@@ -34,6 +40,19 @@ if TYPE_CHECKING:
     from PySide6.QtGui import QCloseEvent
 
 logger = logging.getLogger(__name__)
+
+
+def _cuda_at_least(available: str, required: str) -> bool:
+    """比较两个 "major.minor" CUDA 版本；无法解析时视为不满足。"""
+
+    def _key(value: str) -> tuple[int, ...]:
+        try:
+            return tuple(int(part) for part in value.split("."))
+        except ValueError:
+            return ()
+
+    key_a, key_b = _key(available), _key(required)
+    return bool(key_a) and bool(key_b) and key_a >= key_b
 
 
 class _GpuDetectWorker(QThread):
@@ -68,17 +87,35 @@ class _GpuDetectWorker(QThread):
             return
         try:
             inspection = RuntimeInstallerClient(self._project_root).inspect()
-            runtime_ready = inspection.ready
-            runtime_accelerator = inspection.accelerator if runtime_ready else None
+            # base_ready 覆盖「仅基础 Runtime 已安装」：完整 profile 判定 ready
+            # 会把基础态误报成"尚未安装"。
+            runtime_installed = bool(
+                getattr(inspection, "base_ready", False)
+                or getattr(inspection, "ready", False)
+            )
+            runtime_accelerator = (
+                getattr(inspection, "accelerator", None) if runtime_installed else None
+            )
+            runtime_components = tuple(getattr(inspection, "components", ()) or ())
+            runtime_profile = (
+                getattr(inspection, "profile", "") if runtime_installed else ""
+            )
         except Exception:
             logger.exception("[BackendOptions] Runtime Installer 状态读取异常")
-            runtime_ready = False
+            runtime_installed = False
             runtime_accelerator = None
+            runtime_components = ()
+            runtime_profile = ""
         if self._cancelled.is_set():
             return
-        info["runtime_ready"] = runtime_ready
+        info["runtime_ready"] = runtime_installed
         info["runtime_accelerator"] = runtime_accelerator
-        info["runtime_has_gpu"] = runtime_accelerator == "nvidia_cuda"
+        info["runtime_profile"] = runtime_profile
+        info["runtime_components"] = runtime_components
+        # 与旧字段语义一致：是否实际安装了 GPU 框架（基础 Runtime 不算）。
+        info["runtime_has_gpu"] = (
+            accelerator_framework(runtime_accelerator, runtime_components) == "gpu"
+        )
         self.finished_info.emit(dict(info))
 
 
@@ -108,6 +145,8 @@ class BackendOptionsWidget(QWidget):
         self._project_root = project_root
         self._has_gpu = False
         self._current: str | None = None
+        self._runtime_installed = False
+        self._runtime_profile = ""
         self._change_in_progress = False
         self._detect_worker: _GpuDetectWorker | None = None
         self._detect_generation = 0
@@ -158,8 +197,8 @@ class BackendOptionsWidget(QWidget):
 
         # 提示文字
         self._hint_label = QLabel(
-            "GPU：通常需下载数 GB，识别更快，需兼容的 NVIDIA GPU\n"
-            "CPU：完整 profile 通常超过 1 GB；实际流量取决于已有缓存"
+            "GPU：需要 NVIDIA GPU，完整 profile（CUDA 12.6）通常需下载数 GB，识别更快\n"
+            "CPU：兼容性较广，完整 profile 通常超过 1 GB；两者均在基础 Runtime 之上安装"
         )
         self._hint_label.setWordWrap(True)
         group_layout.addWidget(self._hint_label)
@@ -181,6 +220,8 @@ class BackendOptionsWidget(QWidget):
 
     def _show_detecting_state(self) -> None:
         self._current = None
+        self._runtime_installed = False
+        self._runtime_profile = ""
         self._current_label.setText("当前后端：检测中...")
         self._hw_label.setText("硬件检测中...")
         self._status_label.setText("")
@@ -277,20 +318,29 @@ class BackendOptionsWidget(QWidget):
     def _apply_detected_state(self, info: dict[str, Any]) -> None:
         """后台 GPU 探测完成后，在主线程回填 _has_gpu 与硬件展示、启用控件。
 
-        ``_current`` 只来自 Runtime Installer 的已验证 accelerator。实时硬件探测
-        仅决定 GPU 选项是否可用和展示硬件信息，不能冒充实际安装 profile。
+        ``_current`` 只来自 Runtime Installer 的已验证 accelerator，并区分三态：
+        GPU profile / CPU profile / 仅基础 Runtime（未选择加速框架）。实时硬件
+        探测仅决定 GPU 选项是否可用和展示硬件信息，不能冒充实际安装 profile。
 
         Args:
-            info: ``detect_gpu_info()`` 返回的 dict
-                (has_gpu/name/vram_mb/cuda)
+            info: ``detect_gpu_info()`` 返回的 dict 加上 worker 附加的
+                runtime_ready / runtime_accelerator / runtime_profile /
+                runtime_components 字段
         """
         self._has_gpu = bool(info.get("has_gpu"))
-        runtime_ready = bool(info.get("runtime_ready"))
+        runtime_installed = bool(info.get("runtime_ready"))
         runtime_accelerator = info.get("runtime_accelerator")
-        if runtime_ready and runtime_accelerator in {"cpu", "nvidia_cuda"}:
-            self._current = "gpu" if runtime_accelerator == "nvidia_cuda" else "cpu"
-        else:
-            self._current = None
+        runtime_components = info.get("runtime_components") or ()
+        self._runtime_installed = runtime_installed and runtime_accelerator in {
+            "cpu",
+            "nvidia_cuda",
+        }
+        self._runtime_profile = str(info.get("runtime_profile") or "")
+        self._current = (
+            accelerator_framework(runtime_accelerator, runtime_components)
+            if self._runtime_installed
+            else None
+        )
 
         if not self._has_gpu:
             self._gpu_radio.setToolTip("未检测到 NVIDIA GPU")
@@ -301,24 +351,36 @@ class BackendOptionsWidget(QWidget):
             gpu_name = info.get("name") or "NVIDIA GPU"
             vram = info.get("vram_mb") or 0
             vram_str = f"{vram // 1024}GB" if vram >= 1024 else f"{vram}MB"
-            cuda = info.get("cuda")
-            cuda_str = f"CUDA {cuda}" if cuda else "CUDA 版本未知"
-            self._hw_label.setText(f"GPU：{gpu_name}（{vram_str}），{cuda_str}")
+            driver = info.get("driver_version") or ""
+            max_cuda = info.get("cuda")
+            hardware = f"GPU：{gpu_name}（{vram_str}）"
+            if driver:
+                hardware += f" · 驱动 {driver}"
+            if max_cuda:
+                hardware += f" · 最高支持 CUDA {max_cuda}"
+            requirement = cuda_requirement_label(self._runtime_profile)
+            if requirement:
+                if max_cuda:
+                    verdict = (
+                        "满足"
+                        if _cuda_at_least(
+                            max_cuda, cuda_requirement_version(self._runtime_profile)
+                        )
+                        else "低于要求"
+                    )
+                    hardware += f"；GPU profile 需要 {requirement}：{verdict}"
+                else:
+                    hardware += (
+                        f"；GPU profile 需要 {requirement}（本机驱动支持版本未知）"
+                    )
+            self._hw_label.setText(hardware)
 
         self._cpu_radio.setEnabled(not self._change_in_progress)
         self._gpu_radio.setEnabled(
             not self._change_in_progress and (self._has_gpu or self._current == "gpu")
         )
 
-        if self._current is None:
-            self._current_label.setText("当前后端：尚未安装")
-            self._status_label.setText(
-                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
-            )
-        else:
-            name = "GPU" if self._current == "gpu" else "CPU"
-            self._current_label.setText(f"当前后端：{name}")
-            self._status_label.setText("")
+        self._render_current_state()
 
         target = self._current or ("gpu" if self._has_gpu else "cpu")
         if target == "gpu" and self._gpu_radio.isEnabled():
@@ -328,6 +390,31 @@ class BackendOptionsWidget(QWidget):
 
         self._update_apply_state()
         self.gpu_capability_resolved.emit(self._current == "gpu")
+
+    def _render_current_state(self) -> None:
+        """按三态（未安装/基础 Runtime/已选择框架）渲染当前后端与提示。"""
+
+        if not self._runtime_installed:
+            self._current_label.setText("当前后端：尚未安装")
+            self._status_label.setText(
+                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
+            )
+            return
+        if self._current is None:
+            self._current_label.setText("当前后端：基础 Runtime（未选择加速框架）")
+            self._status_label.setText(
+                "基础 Runtime 已就绪（快速 OCR 可用）；安装完整 profile 后可启用"
+                "文档解析、表格、公式等高级能力。"
+            )
+            return
+        cuda = cuda_requirement_label(self._runtime_profile)
+        name = (
+            f"GPU（{cuda}）"
+            if self._current == "gpu" and cuda
+            else self._current.upper()
+        )
+        self._current_label.setText(f"当前后端：{name}")
+        self._status_label.setText("")
 
     def current_backend(self) -> str | None:
         return self._current
@@ -358,12 +445,8 @@ class BackendOptionsWidget(QWidget):
         if in_progress:
             target = "GPU" if self._gpu_radio.isChecked() else "CPU"
             self._status_label.setText(f"等待确认切换到 {target}…")
-        elif self._current is None:
-            self._status_label.setText(
-                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
-            )
         else:
-            self._status_label.setText("")
+            self._render_current_state()
         self._update_apply_state()
 
     def refresh_runtime_state(self) -> None:

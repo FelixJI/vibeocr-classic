@@ -120,9 +120,16 @@ def _make_widget(
         "has_gpu": has_gpu,
         "name": "NVIDIA GeForce RTX 4090" if has_gpu else "",
         "vram_mb": 24564 if has_gpu else 0,
-        "cuda": "cu126" if has_gpu else None,
+        "driver_version": "566.36" if has_gpu else "",
+        "cuda": "12.6" if has_gpu else None,
         "runtime_ready": runtime_backend is not None,
         "runtime_accelerator": runtime_accelerator,
+        "runtime_profile": {
+            "cpu": "win-x64-cpu",
+            "gpu": "win-x64-cu126",
+            None: "",
+        }[runtime_backend],
+        "runtime_components": (),
         "runtime_has_gpu": runtime_backend == "gpu",
     }
 
@@ -170,6 +177,66 @@ def test_uninstalled_runtime_requires_explicit_choice(_cleanup, qtbot, tmp_path)
     assert "确认后" in widget._status_label.text()
     assert widget._gpu_radio.isChecked()
     assert widget._apply_button.isEnabled()
+
+
+def test_base_only_runtime_is_distinguished_from_uninstalled(_cleanup, qtbot, tmp_path):
+    """基础 Runtime 已安装但未选择框架：不算"已选择 CPU"，也不算未安装。
+
+    回归：旧实现用全量 profile 判定 ready，基础态被误报成"尚未安装"，
+    与设置页 Runtime 状态区的显示互相矛盾。
+    """
+    from types import SimpleNamespace
+
+    from vibeocr.classic.widgets import backend_options_widget as bow
+
+    orig_worker = bow._GpuDetectWorker
+    detect_info = {
+        "has_gpu": True,
+        "name": "NVIDIA GeForce RTX 4090",
+        "vram_mb": 24564,
+        "driver_version": "566.36",
+        "cuda": "12.6",
+        "runtime_ready": True,
+        "runtime_accelerator": "cpu",
+        "runtime_profile": "win-x64-cpu",
+        "runtime_components": (
+            SimpleNamespace(component_id="rapidocr-base", desired_state="ready"),
+            SimpleNamespace(component_id="paddleocr-cpu", desired_state="not_required"),
+            SimpleNamespace(component_id="mineru-cpu", desired_state="not_required"),
+        ),
+        "runtime_has_gpu": False,
+    }
+    bow._GpuDetectWorker = _StubGpuDetectWorker
+    try:
+        widget = bow.BackendOptionsWidget(tmp_path)
+        assert widget._detect_worker is not None
+        widget._detect_worker.finished_info.emit(detect_info)
+        if not widget._detect_worker.isRunning():
+            widget._detect_worker.finished.emit()
+    finally:
+        bow._GpuDetectWorker = orig_worker
+    qtbot.addWidget(widget)
+
+    assert widget.current_backend() is None
+    assert widget._current_label.text() == "当前后端：基础 Runtime（未选择加速框架）"
+    assert "基础 Runtime 已就绪" in widget._status_label.text()
+    # 有 GPU 时仍推荐 GPU 单选，等待用户显式选择。
+    assert widget._gpu_radio.isChecked()
+    assert widget._apply_button.isEnabled()
+
+
+def test_gpu_profile_shows_cuda_requirement_and_driver_capability(
+    _cleanup, qtbot, tmp_path
+):
+    """GPU profile 显示绑定 CUDA 版本、驱动与"最高支持 CUDA"对照。"""
+    widget = _make_widget(tmp_path, has_gpu=True, runtime_backend="gpu")
+    qtbot.addWidget(widget)
+    assert widget.current_backend() == "gpu"
+    assert widget._current_label.text() == "当前后端：GPU（NVIDIA CUDA 12.6）"
+    hardware = widget._hw_label.text()
+    assert "驱动 566.36" in hardware
+    assert "最高支持 CUDA 12.6" in hardware
+    assert "需要 NVIDIA CUDA 12.6：满足" in hardware
 
 
 def test_apply_requests_visible_backend_change(_cleanup, qtbot, tmp_path):

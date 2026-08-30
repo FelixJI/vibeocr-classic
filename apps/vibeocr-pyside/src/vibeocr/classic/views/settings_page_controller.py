@@ -47,6 +47,11 @@ from vibeocr.classic.runtime_selection import (
     RuntimeSelectionError,
     parse_capability_catalogs,
 )
+from vibeocr.classic.runtime_status_messages import (
+    accelerator_display,
+    accelerator_framework,
+    cuda_requirement_label,
+)
 from vibeocr.classic.views.background_tasks import FunctionTask
 from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
 from vibeocr.runtime_contracts import (
@@ -127,6 +132,9 @@ class SettingsPageController:
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
         self._selection_catalog: RuntimeSelectionCatalog | None = None
         self._selection_accelerator: str | None = None
+        # component_id → actual_state；由 Runtime 状态快照回填，供可选能力树
+        # 显示真实安装状态（而不是恒显"未安装"）。
+        self._runtime_component_states: dict[str, str] = {}
         self._engine_combo_initialized = False
         self._source_combo_rows: dict[str, QComboBox] = {}
         self._source_combo_row_widgets: list[QWidget] = []
@@ -960,9 +968,10 @@ class SettingsPageController:
         （用户反馈"部分内容显示区域很矮/看不见"）。包一层 setWidgetResizable
         的 QScrollArea 后，垂直超出自动出滚动条，水平不滚动（宽度跟随窗口）。
 
-        所有子页（pageModelManagement / pageAppSettings / 截图选项 / PDF 选项）
-        统一处理。原页 widget 从 stacked 移除、用 scroll 替换占位，
-        索引与导航行（currentRowChanged→setCurrentIndex）保持一一对应。
+        所有子页（pageGeneral / pageRecognition / pageRuntime / pageResidency
+        静态页 + 截图选项 / PDF 选项动态页）统一处理。原页 widget 从 stacked
+        移除、用 scroll 替换占位，索引与导航行（currentRowChanged→setCurrentIndex）
+        保持一一对应。
         """
         from PySide6.QtCore import Qt
 
@@ -1268,13 +1277,13 @@ class SettingsPageController:
     def _refresh_machine_cache_operation(self) -> tuple[bool, str]:
         """通过稳定 Installer interface 验证完整 Runtime 绑定。"""
         inspection = self._runtime_installer.inspect()
-        accelerator = (
-            "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
+        accelerator = accelerator_display(
+            inspection.accelerator, inspection.profile, inspection.components
         )
         readiness = "已就绪" if inspection.ready else f"未就绪({inspection.status})"
         summary = (
             f"{readiness} · Backend {inspection.backend_version} · "
-            f"Protocol {inspection.protocol_version} · {accelerator} · "
+            f"Protocol {inspection.protocol_version} · 加速方案 {accelerator} · "
             f"integrity={inspection.integrity}"
         )
         return True, summary
@@ -1440,7 +1449,10 @@ class SettingsPageController:
         # 读当前后端作为补装后端，避免二次提示
         current_backend = self._runtime_backend_or_none()
         if current_backend is None:
-            self._show_settings_toast("正在检测推理后端，请稍后再试")
+            self._show_settings_toast(
+                "尚未确定推理后端（可能仅安装了基础 Runtime），"
+                "请先通过「选择并确保 Runtime profile」安装完整 profile"
+            )
             return
         self._open_install_dialog(missing_only=True, force_backend=current_backend)
 
@@ -1617,58 +1629,71 @@ class SettingsPageController:
         inspection = snapshot.get("inspection")
         runtime_status = snapshot.get("runtime_status")
 
-        if label:
-            if mode == "portable" and inspection is not None:
-                status = "已验证" if inspection.ready else "未就绪"
-                accelerator = (
-                    "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
+        if mode == "portable" and inspection is not None:
+            self._runtime_component_states = self._collect_component_states(
+                runtime_status, inspection
+            )
+            service_labels = {
+                "ready": "已就绪",
+                "degraded": "降级",
+                "maintenance": "维护中",
+            }
+            service = "未连接"
+            maintenance_text = ""
+            if runtime_status is not None:
+                service = service_labels.get(
+                    runtime_status.service_state.value,
+                    runtime_status.service_state.value,
                 )
-                service_labels = {
-                    "ready": "已就绪",
-                    "degraded": "降级",
-                    "maintenance": "维护中",
-                }
-                service = "未连接"
-                maintenance = ""
-                identity = ""
-                if runtime_status is not None:
-                    service = service_labels.get(
-                        runtime_status.service_state.value,
-                        runtime_status.service_state.value,
+                if runtime_status.maintenance is not None:
+                    maintenance_text = (
+                        f"{runtime_status.maintenance.phase.value}"
+                        f" · {runtime_status.maintenance.operation_state.value}"
                     )
-                    if runtime_status.maintenance is not None:
-                        maintenance = (
-                            "\n维护："
-                            f"{runtime_status.maintenance.phase.value} · "
-                            f"{runtime_status.maintenance.operation_state.value}"
-                        )
-                    source = getattr(runtime_status, "source", None)
-                    if source is not None:
-                        identity = (
-                            f"\nSource：{source.backend_source_sha[:12]}"
-                            f"\nRuntime manifest："
-                            f"{source.runtime_manifest_sha256[:12]}"
-                            f"\nProtocol manifest："
-                            f"{source.protocol_manifest_sha256[:12]}"
-                        )
-                elif getattr(inspection, "source", None) is not None:
-                    source = inspection.source
-                    identity = (
-                        f"\nSource：{source.backend_source_sha[:12]}"
-                        f"\nRuntime manifest：{source.runtime_manifest_sha256[:12]}"
-                    )
-                label.setText(
-                    f"Runtime：{status}\n"
-                    f"服务：{service}\n"
-                    f"加速方案：{accelerator}\n"
-                    f"Python：{inspection.python_version}\n"
-                    f"Backend：{inspection.backend_version}\n"
-                    f"Protocol：{inspection.protocol_version}\n"
-                    f"Manifest：{inspection.manifest_sha256[:12]}"
-                    f"{identity}"
-                    f"{maintenance}"
-                )
-            else:
+            source = getattr(runtime_status, "source", None)
+            if source is None:
+                source = getattr(inspection, "source", None)
+            accel_text = accelerator_display(
+                inspection.accelerator, inspection.profile, inspection.components
+            )
+            cuda_text = cuda_requirement_label(inspection.profile)
+            profile_value = (
+                f"{inspection.profile}（{cuda_text}）"
+                if cuda_text
+                else inspection.profile
+            )
+            status_text = "已验证" if inspection.ready else "未就绪"
+            runtime_value = (
+                status_text
+                if inspection.ready
+                else f"{status_text}（{inspection.status}）"
+            )
+            rows: list[tuple[str, str]] = [
+                ("Runtime", runtime_value),
+                ("服务", service),
+                ("加速方案", accel_text),
+                ("推理 profile", profile_value),
+                ("Python", inspection.python_version),
+                ("Backend", inspection.backend_version),
+                ("Protocol", inspection.protocol_version),
+                ("组件完整性", inspection.integrity),
+                ("Manifest", inspection.manifest_sha256[:12]),
+            ]
+            if maintenance_text:
+                rows.append(("维护", maintenance_text))
+            if source is not None:
+                rows.append(("Source SHA", source.backend_source_sha[:12]))
+                rows.append(("Runtime manifest", source.runtime_manifest_sha256[:12]))
+                protocol_sha = getattr(source, "protocol_manifest_sha256", None)
+                if protocol_sha:
+                    rows.append(("Protocol manifest", protocol_sha[:12]))
+            self._populate_runtime_status_tree(rows)
+            if label:
+                label.setText(f"Runtime：{status_text} · 服务：{service}")
+        else:
+            self._runtime_component_states = {}
+            self._populate_runtime_status_tree([])
+            if label:
                 label.setText("Runtime：未绑定")
 
         # 所有维护按钮都映射到 ensure/repair；不暴露逐包操作。
@@ -1689,12 +1714,51 @@ class SettingsPageController:
         # 填充依赖状态树（仅 portable 模式）
         if tree and mode == "portable":
             self._populate_deps_tree(tree, snapshot)
+            # 组件状态已刷新：可选能力树同步更新真实安装状态。
+            self._render_offline_features()
             if not getattr(self, "_deps_tree_signals_connected", False):
                 if btn_reinstall_sel:
                     btn_reinstall_sel.clicked.connect(self._on_reinstall_selected)
                 self._deps_tree_signals_connected = True
         elif tree:
             tree.clear()
+
+    @staticmethod
+    def _collect_component_states(runtime_status, inspection) -> dict[str, str]:
+        """合并 HTTP 快照与 Installer inspection 的组件安装状态。
+
+        HTTP 快照（getRuntimeStatus）反映 Supervisor 眼中的实时状态，优先；
+        缺失时回退 Installer inspection 的组件描述。两者都没有时不作声明，
+        由消费方显示"未知"而不是猜测。
+        """
+
+        states: dict[str, str] = {}
+        profile = getattr(runtime_status, "profile", None)
+        for component in getattr(profile, "components", ()) or ():
+            component_id = getattr(component, "component_id", None)
+            actual = getattr(component, "actual_state", None)
+            if isinstance(component_id, str) and isinstance(actual, str):
+                states[component_id] = actual
+        for component in getattr(inspection, "components", ()) or ():
+            component_id = getattr(component, "component_id", None)
+            actual = getattr(component, "actual_state", None)
+            if (
+                isinstance(component_id, str)
+                and isinstance(actual, str)
+                and component_id not in states
+            ):
+                states[component_id] = actual
+        return states
+
+    def _populate_runtime_status_tree(self, rows: list[tuple[str, str]]) -> None:
+        """把结构化 Runtime 状态逐行渲染到 treeRuntimeStatus。"""
+
+        tree = self._ui.findChild(QTreeWidget, "treeRuntimeStatus")
+        if tree is None:
+            return
+        tree.clear()
+        for name, value in rows:
+            tree.addTopLevelItem(QTreeWidgetItem([name, str(value)]))
 
     def _update_reinstall_selected_btn(
         self, tree: QTreeWidget, btn: QPushButton | None
@@ -1718,9 +1782,22 @@ class SettingsPageController:
         if inspection is None:
             return
         runtime_status = "✓ 已验证" if inspection.ready else f"⚠ {inspection.integrity}"
-        accelerator = (
-            "NVIDIA CUDA" if inspection.accelerator == "nvidia_cuda" else "CPU"
+        accel_text = accelerator_display(
+            inspection.accelerator, inspection.profile, inspection.components
         )
+        cuda_text = cuda_requirement_label(inspection.profile)
+        profile_value = (
+            f"{inspection.profile}（{cuda_text}）" if cuda_text else inspection.profile
+        )
+        framework = accelerator_framework(inspection.accelerator, inspection.components)
+        if framework is None:
+            profile_row = QTreeWidgetItem(
+                ["推理 profile", "未选择（仅基础 Runtime）", "—"]
+            )
+        else:
+            profile_row = QTreeWidgetItem(
+                [f"推理 profile · {accel_text}", "✓ 已选择", profile_value]
+            )
         tree.addTopLevelItem(
             QTreeWidgetItem(
                 ["Python 运行时", runtime_status, inspection.python_version]
@@ -1831,14 +1908,11 @@ class SettingsPageController:
         tree.addTopLevelItem(
             QTreeWidgetItem(["Protocol", "✓ 已绑定", inspection.protocol_version])
         )
-        tree.addTopLevelItem(
-            QTreeWidgetItem(
-                [f"{accelerator} 推理 profile", "✓ 已选择", inspection.profile]
-            )
-        )
+        tree.addTopLevelItem(profile_row)
         tree.setToolTip(
             "显示产品绑定的 Python、Backend、Protocol 与推理 profile。"
-            "组件状态区分 desired/actual，漂移项可由 Runtime Installer 修复。"
+            "组件状态区分 desired/actual，漂移项可由 Runtime Installer 修复；"
+            "仅安装基础 Runtime 时推理 profile 显示为未选择。"
         )
 
     @staticmethod
@@ -2045,7 +2119,7 @@ class SettingsPageController:
     }
 
     def _init_ocr_runtime_group(self) -> None:
-        """初始化 OCR 引擎与 Runtime 能力分组；catalog 数据等待 health。"""
+        """初始化「识别与引擎」页的默认引擎、模式可用性与下载源；catalog 等待 health。"""
 
         combo = self._ui.findChild(QComboBox, "comboOcrEngine")
         if combo is not None and not self._engine_combo_initialized:
@@ -2195,25 +2269,69 @@ class SettingsPageController:
             return
         self._render_engine_availability()
 
+    _MODE_FAMILY_LABELS = {
+        "text": "文本识别",
+        "document": "文档解析",
+        "specialized": "专项识别（表格 / 公式）",
+    }
+
+    @staticmethod
+    def _mode_unavailability_hint(entry) -> str:
+        """为未就绪模式生成说明列文本；就绪模式返回空串。"""
+
+        if entry.availability == ENGINE_AVAILABILITY_READY:
+            return ""
+        parts: list[str] = []
+        required = getattr(entry, "required_component", None)
+        if isinstance(required, str) and required:
+            parts.append(f"需安装组件 {required}")
+        if entry.reason_code:
+            parts.append(f"原因 {entry.reason_code}")
+        return "；".join(parts)
+
     def _render_engine_availability(self, notice: str | None = None) -> None:
+        """把各识别模式的可用性逐行渲染到 treeEngineAvailability。
+
+        旧实现把全部模式状态用"；"拼进单个 QLabel，多类目挤成一行难以阅读；
+        现按 family（文本/文档/专项）分组，每模式一行（显示名|状态|说明）。
+        通知/恢复类消息仍写入 labelOcrEngineStatus。
+        """
+
         catalog = self._selection_catalog
-        if catalog is None:
+        # 每次目录刷新都重置通知行，避免上一次的"尚未就绪"等操作提示残留。
+        self._set_engine_status(notice or "")
+        tree = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
+        if catalog is None or tree is None:
             return
-        parts = []
+        tree.clear()
         # 新目录优先：它同时投影 specialized/document 模式的本地文案和
         # 生命周期。旧 Backend 仅有 engine catalog 时由 facade 合成 text 模式。
         entries = catalog.modes or catalog.engines
+        by_family: dict[str, list] = {}
         for entry in entries:
-            label = ENGINE_AVAILABILITY_LABELS.get(
-                entry.availability, entry.availability
+            by_family.setdefault(getattr(entry, "family", "text"), []).append(entry)
+        for family in ("text", "document", "specialized"):
+            modes = by_family.get(family)
+            if not modes:
+                continue
+            group = QTreeWidgetItem(
+                [self._MODE_FAMILY_LABELS.get(family, family), "", ""]
             )
-            suffix = ""
-            if entry.reason_code:
-                suffix = f"（{entry.reason_code}）"
-            parts.append(f"{entry.display_name}：{label}{suffix}")
-        if parts:
-            detail = "；".join(parts)
-            self._set_engine_status(f"{notice}；{detail}" if notice else detail)
+            for entry in modes:
+                label = ENGINE_AVAILABILITY_LABELS.get(
+                    entry.availability, entry.availability
+                )
+                group.addChild(
+                    QTreeWidgetItem(
+                        [
+                            entry.display_name,
+                            label,
+                            self._mode_unavailability_hint(entry),
+                        ]
+                    )
+                )
+            group.setExpanded(True)
+            tree.addTopLevelItem(group)
 
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
@@ -2249,8 +2367,22 @@ class SettingsPageController:
         if status is not None:
             status.setText(f"下载源读取失败：{error}")
 
+    # 可选能力树状态列：actual_state → 展示文案。无状态证据时显示"未知"，
+    # 不能恒显"未安装"——GPU profile 等能力的组件可能已在 Backend 中就绪。
+    _COMPONENT_STATE_LABELS = {
+        "ready": "✓ 已安装",
+        "missing": "✗ 未安装",
+        "drifted": "⚠ 已漂移",
+        "unknown": "? 未知",
+        "not_required": "— 未启用",
+    }
+
     def _render_offline_features(self) -> None:
-        """按当前 accelerator 渲染可选能力勾选列表（catalog 驱动）。"""
+        """按当前 accelerator 渲染可选能力勾选列表（catalog 驱动）。
+
+        勾选框表达持久化的安装意图；状态列来自 Runtime 组件 actual_state，
+        在 Runtime 状态尚未读取时显示"未知"。
+        """
 
         tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
         catalog = self._selection_catalog
@@ -2272,8 +2404,13 @@ class SettingsPageController:
         tree.clear()
         for variant in variants:
             label = self._FEATURE_LABELS.get(variant.feature_id, variant.feature_id)
-            item = QTreeWidgetItem([label, "未安装"])
+            state = self._runtime_component_states.get(variant.component_id)
+            status_text = self._COMPONENT_STATE_LABELS.get(
+                state, "— 未知" if state is None else f"? {state}"
+            )
+            item = QTreeWidgetItem([label, status_text])
             item.setData(0, Qt.ItemDataRole.UserRole, variant.feature_id)
+            item.setToolTip(1, f"组件 {variant.component_id} 的实际安装状态")
             item.setCheckState(
                 0,
                 Qt.CheckState.Checked
@@ -2375,7 +2512,7 @@ class SettingsPageController:
     def _clear_source_combo_rows(self) -> None:
         """移除动态下载源行；行容器必须整行销毁，不能只移除内层 combo。"""
 
-        layout = self._ui.findChild(QVBoxLayout, "ocrRuntimeLayout")
+        layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
         for row in self._source_combo_row_widgets:
             if layout is not None:
                 layout.removeWidget(row)
@@ -2388,7 +2525,7 @@ class SettingsPageController:
         """按 Backend catalog 渲染每 kind 的下载源单选。"""
 
         label = self._ui.findChild(QLabel, "labelDownloadSource")
-        layout = self._ui.findChild(QVBoxLayout, "ocrRuntimeLayout")
+        layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
         catalog = self._selection_catalog
         if label is None or layout is None or catalog is None:
@@ -2421,6 +2558,12 @@ class SettingsPageController:
             combo = QComboBox(row)
             combo.setObjectName(f"comboDownloadSource_{kind}")
             combo.addItem("跟随 Backend 默认", None)
+            # 说明"默认"的语义：具体默认源由 Backend 内置决定，Classic 不猜测。
+            combo.setItemData(
+                0,
+                "不选择时由 Backend 使用其内置默认源",
+                Qt.ItemDataRole.ToolTipRole,
+            )
             for source in sources:
                 combo.addItem(source.source_id, source.source_id)
             selected = next(
@@ -2437,7 +2580,7 @@ class SettingsPageController:
             layout.insertWidget(insert_at + offset, row)
             self._source_combo_row_widgets.append(row)
             self._source_combo_rows[kind] = combo
-        note = "下载源：每类至多选择一个；未选择时跟随 Backend 默认"
+        note = "下载源：每类至多选择一个；不选择时使用 Backend 内置默认源"
         if unknown_kinds:
             note += f"；存在未支持的来源类型：{'、'.join(sorted(set(unknown_kinds)))}"
         label.setText(note)
@@ -2504,7 +2647,11 @@ class SettingsPageController:
         if status is not None:
             status.setText(
                 "正在保存下载源选择："
-                + ("、".join(source_ids) if source_ids else "使用 Backend 默认源")
+                + (
+                    "、".join(source_ids)
+                    if source_ids
+                    else "使用 Backend 内置默认源（未覆盖）"
+                )
             )
 
     def _on_settings_loaded(self, snapshot: object) -> None:
@@ -2521,8 +2668,11 @@ class SettingsPageController:
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
         if status is not None:
             status.setText(
-                "当前下载源："
-                + ("、".join(snapshot.download_source_ids) or "Backend 默认源")
+                "当前生效："
+                + (
+                    "、".join(snapshot.download_source_ids)
+                    or "Backend 内置默认源（未覆盖）"
+                )
             )
 
     def _refresh_selection_availability(self) -> None:

@@ -23,8 +23,51 @@ _EMPTY_GPU_INFO: dict[str, object] = {
     "has_gpu": False,
     "name": "",
     "vram_mb": 0,
+    "driver_version": "",
     "cuda": None,
 }
+
+# NVIDIA 官方「Windows 驱动最低版本 → CUDA」表（驱动向下兼容：满足某 CUDA 的
+# 最低驱动即支持该及以下所有版本）。用于 UI 展示「本机最高支持 CUDA x.y」；
+# 实际安装哪个 CUDA 变体仍由 Runtime Installer 按绑定 profile 决定。
+_DRIVER_MINIMUM_FOR_CUDA: tuple[tuple[int, int, str], ...] = (
+    (560, 76, "12.6"),
+    (555, 85, "12.5"),
+    (551, 61, "12.4"),
+    (545, 84, "12.3"),
+    (536, 40, "12.2"),
+    (531, 41, "12.1"),
+    (527, 41, "12.0"),
+    (520, 6, "11.8"),
+    (516, 94, "11.7"),
+    (511, 65, "11.6"),
+    (496, 4, "11.5"),
+    (471, 41, "11.4"),
+    (465, 89, "11.3"),
+    (460, 89, "11.2"),
+    (456, 81, "11.1"),
+    (451, 48, "11.0"),
+)
+
+
+def max_supported_cuda_from_driver(driver_version: str) -> str | None:
+    """按官方最低驱动表推导本机最高支持的 CUDA 版本（仅展示用途）。
+
+    无法解析或驱动过旧（低于 CUDA 11.0 门槛）时返回 ``None``。
+    """
+
+    parts = driver_version.strip().split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        major = int(parts[0])
+        minor = int(parts[1])
+    except ValueError:
+        return None
+    for min_major, min_minor, cuda in _DRIVER_MINIMUM_FOR_CUDA:
+        if (major, minor) >= (min_major, min_minor):
+            return cuda
+    return None
 
 
 def _stop_process(process: subprocess.Popen[str]) -> None:
@@ -113,11 +156,12 @@ def detect_gpu_info(
     if not parts or not parts[0]:
         return dict(_EMPTY_GPU_INFO)
     vram_match = re.search(r"(\d+)", parts[1]) if len(parts) > 1 else None
+    driver_version = parts[2] if len(parts) > 2 else ""
     return {
         "has_gpu": True,
         "name": parts[0],
         "vram_mb": int(vram_match.group(1)) if vram_match else 0,
-        # CUDA/Paddle wheel compatibility belongs to Runtime Installer. Classic
-        # does not infer a compatible runtime from the local driver version.
-        "cuda": None,
+        "driver_version": driver_version,
+        # 展示用途的最高支持版本；CUDA wheel 兼容仍由 Runtime Installer 决定。
+        "cuda": max_supported_cuda_from_driver(driver_version),
     }

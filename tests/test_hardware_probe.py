@@ -25,7 +25,9 @@ def test_detect_gpu_info_parses_first_nvidia_adapter(monkeypatch) -> None:
         "has_gpu": True,
         "name": "NVIDIA GeForce RTX 4090",
         "vram_mb": 24564,
-        "cuda": None,
+        "driver_version": "560.94",
+        # 560.94 ≥ CUDA 12.6 的最低 Windows 驱动 560.76
+        "cuda": "12.6",
     }
 
 
@@ -36,8 +38,22 @@ def test_detect_gpu_info_falls_back_to_cpu_when_query_fails(monkeypatch) -> None
         "has_gpu": False,
         "name": "",
         "vram_mb": 0,
+        "driver_version": "",
         "cuda": None,
     }
+
+
+def test_max_supported_cuda_from_driver_bounds() -> None:
+    # 官方最低驱动表：满足某档最低驱动即支持该档 CUDA。
+    assert hardware_probe.max_supported_cuda_from_driver("566.36") == "12.6"
+    assert hardware_probe.max_supported_cuda_from_driver("560.76") == "12.6"
+    assert hardware_probe.max_supported_cuda_from_driver("560.75") == "12.5"
+    assert hardware_probe.max_supported_cuda_from_driver("527.41") == "12.0"
+    assert hardware_probe.max_supported_cuda_from_driver("451.48") == "11.0"
+    assert hardware_probe.max_supported_cuda_from_driver("450.99") is None
+    # 无法解析的输入不猜测。
+    assert hardware_probe.max_supported_cuda_from_driver("") is None
+    assert hardware_probe.max_supported_cuda_from_driver("abc") is None
 
 
 def test_cancelled_probe_discards_late_result(monkeypatch) -> None:

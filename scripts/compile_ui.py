@@ -60,11 +60,13 @@ def compile_ui_file(ui_path: Path, output_path: Path) -> bool:
 
 def main():
     """编译所有 UI 文件"""
-    # 项目根目录：scripts/ 的上两级（scripts -> vibeocr 项目根）
+    # 项目根目录：scripts/ 的上一级（仓库根）；UI 位于 classic 应用源码树内
     project_root = Path(__file__).parent.parent
 
     # UI 文件目录
-    ui_dir = project_root / "src" / "vibeocr" / "ui"
+    ui_dir = (
+        project_root / "apps" / "vibeocr-pyside" / "src" / "vibeocr" / "classic" / "ui"
+    )
 
     # 输出目录 (相同目录)
     output_dir = ui_dir

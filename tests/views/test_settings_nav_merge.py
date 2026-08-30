@@ -1,11 +1,12 @@
-"""设置页导航合并回归测试
+"""设置页导航分类回归测试
 
 验证：
-- 空白「工具」导航页已删除
-- 「推理后端」不再是独立导航项，而是并入「应用设置」页的
-  「推理后端与依赖」分组（groupEnvMaintenance）内
+- 设置导航按职责拆分为四个静态页：通用 / 识别与引擎 / Runtime 与加速 / 模型驻留
+  （动态页「截图选项」「PDF 选项」由控制器追加），无空白「工具」页。
+- 「推理后端」不是独立导航项：BackendOptionsWidget 位于「Runtime 与加速」页的
+  Runtime 分组（groupEnvMaintenance）内。
 
-防止后续误改回拆分结构。
+防止后续误改回混排结构。
 """
 
 from unittest.mock import MagicMock, patch
@@ -67,20 +68,20 @@ def controller(qtbot, tmp_path):
     return ctrl, host
 
 
-def test_nav_has_no_tools_page(controller):
-    """静态导航项应只有「模型管理」「应用设置」两项，无空白「工具」"""
+def test_nav_static_pages_match_responsibility_split(controller):
+    """静态导航应为四页：通用 / 识别与引擎 / Runtime 与加速 / 模型驻留"""
     _ctrl, host = controller
     nav = host.findChild(QListWidget, "settingsNavList")
     assert nav is not None
     texts = [nav.item(i).text() for i in range(nav.count())]
-    # 静态两项 + 动态两项（截图选项 / PDF 选项），不应含「工具」
+    # 静态四项 + 动态两项（截图选项 / PDF 选项），不应含「工具」
     assert "工具" not in texts
-    assert "模型管理" in texts
-    assert "应用设置" in texts
+    assert texts[:4] == ["通用", "识别与引擎", "Runtime 与加速", "模型驻留"]
+    assert texts[4:] == ["截图选项", "PDF 选项"]
 
 
 def test_nav_has_no_separate_backend_item(controller):
-    """「推理后端」不应作为独立导航项存在（已并入分组）"""
+    """「推理后端」不应作为独立导航项存在（位于 Runtime 与加速页内）"""
     _ctrl, host = controller
     nav = host.findChild(QListWidget, "settingsNavList")
     texts = [nav.item(i).text() for i in range(nav.count())]
@@ -88,11 +89,11 @@ def test_nav_has_no_separate_backend_item(controller):
 
 
 def test_backend_widget_is_inside_env_group(controller):
-    """BackendOptionsWidget 应位于 groupEnvMaintenance（推理后端与依赖）内"""
+    """BackendOptionsWidget 应位于 groupEnvMaintenance（Runtime 与加速）内"""
     _ctrl, host = controller
     group = host.findChild(QGroupBox, "groupEnvMaintenance")
     assert group is not None
-    assert group.title() == "推理后端与依赖"
+    assert group.title() == "Runtime 与加速"
 
     container = host.findChild(QWidget, "backendOptionsContainer")
     assert container is not None, "backendOptionsContainer 应存在于分组内"
@@ -103,7 +104,7 @@ def test_backend_widget_is_inside_env_group(controller):
 
 
 def test_env_group_still_has_dependency_controls(controller):
-    """合并后分组内仍应保留依赖表格与三个重装按钮"""
+    """重排后 Runtime 页仍应保留依赖表格与维护按钮"""
     _ctrl, host = controller
     assert host.findChild(QPushButton, "btnReinstallPython") is not None
     assert host.findChild(QPushButton, "btnReinstallDeps") is not None

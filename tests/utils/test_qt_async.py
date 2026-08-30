@@ -328,3 +328,95 @@ class TestAwaitDialogFutureGuard:
             loop.run_until_complete(asyncio.wait_for(test(), timeout=2.0))
         finally:
             loop.close()
+
+
+class TestQasyncTimerDeliveryHardening:
+    """qasync 0.28 计时器投递加固的回归契约。
+
+    根因：qasync ``run_until_complete`` 收尾的 ``processEvents(AllEvents)``
+    及任何非 running 窗口的 Qt 事件泵，会在无 running loop 时恢复 asyncio
+    任务，``asyncio.sleep`` 抛 "no running event loop"；``close()`` 只置
+    ``_stopped`` 不 killTimer，悬空计时器向已 GC 的 ``_SimpleTimer`` 投递
+    timerEvent 造成原生访问冲突。加固后：恢复发生时补齐 running-loop 上下
+    文；stop 立即 kill 全部已武装计时器。
+    """
+
+    def test_timer_delivery_in_non_running_window_keeps_running_context(
+        self, qapp, qtbot
+    ):
+        """计时器在非 running 窗口到期时，任务应正常推进而非被误杀。"""
+        from PySide6.QtCore import QCoreApplication, QTimerEvent
+
+        from vibeocr.classic.utils.qt_async import create_qasync_event_loop
+
+        loop = create_qasync_event_loop(qapp)
+        try:
+            outcome: list[str] = []
+
+            async def poller():
+                # stdlib 正延迟 sleep 是最小复现：未加固时此处直接
+                # RuntimeError: no running event loop。
+                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.02)
+                outcome.append("done")
+
+            task = loop.create_task(poller())
+            loop.run_until_complete(asyncio.sleep(0))
+            assert not task.done()
+            timer_obj = loop._timer  # noqa: SLF001 - 加固 seam 的直接断言
+            callbacks = timer_obj._SimpleTimer__callbacks
+
+            # 在 loop 非 running 的窗口直投已到期计时器事件（等价于 qasync
+            # run_until_complete 收尾 processEvents 的投递，不依赖平台派发器）。
+            # qasync 下每跳 asyncio.sleep 需要两次投递：call_later 到期 +
+            # call_soon 唤醒，因此循环投递直到任务终态。
+            assert asyncio.events._get_running_loop() is None
+            for _ in range(8):
+                if not callbacks or task.done():
+                    break
+                timer_id = next(iter(callbacks))
+                QCoreApplication.sendEvent(timer_obj, QTimerEvent(timer_id))
+            assert asyncio.events._get_running_loop() is None
+
+            assert outcome == ["done"], "任务应完成而不是以 RuntimeError 失败"
+            assert task.done() and not task.cancelled()
+            assert task.exception() is None
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    def test_loop_close_kills_armed_timers(self, qapp):
+        """close 后不得残留已武装计时器（悬空 timerEvent 的原生崩溃根源）。"""
+        from PySide6.QtCore import QCoreApplication
+
+        from vibeocr.classic.utils.qt_async import create_qasync_event_loop
+
+        loop = create_qasync_event_loop(qapp)
+        fired: list[int] = []
+        loop.call_later(30, lambda: fired.append(1))
+        timer_obj = loop._timer  # noqa: SLF001 - 加固 seam 的直接断言
+        callbacks = getattr(timer_obj, "_SimpleTimer__callbacks")
+        assert callbacks, "call_later 应已武装计时器"
+
+        loop.close()
+        asyncio.set_event_loop(None)
+
+        assert not callbacks, "close 应 kill 并清空全部已武装计时器"
+        QCoreApplication.processEvents()
+        assert fired == []
+
+    def test_hardening_install_is_idempotent(self, qapp):
+        """重复创建 loop 不重复打补丁，也不影响计时器语义。"""
+        from vibeocr.classic.utils.qt_async import create_qasync_event_loop
+
+        loop_a = create_qasync_event_loop(qapp)
+        loop_b = create_qasync_event_loop(qapp)
+        try:
+            done: list[bool] = []
+            loop_b.call_later(0, lambda: done.append(True))
+            loop_b.run_until_complete(asyncio.sleep(0.02))
+            assert done == [True]
+        finally:
+            loop_a.close()
+            loop_b.close()
+            asyncio.set_event_loop(None)

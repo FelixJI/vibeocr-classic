@@ -56,6 +56,85 @@ def are_tracked_native_jobs_drained() -> bool:
         return not _native_futures
 
 
+# ---------------------------------------------------------------------------
+# qasync 0.28 计时器投递加固
+#
+# qasync._SimpleTimer 把全部 asyncio 回调（call_soon/call_later/call_soon_
+# threadsafe 汇入的队列）挂在 QObject 周期 QTimer 上，由任意 Qt 事件处理
+# 直接触发 ``handle._run()``。两个后果：
+#
+# 1. 非 running 窗口恢复协程：``run_until_complete`` 在 ``run_forever``
+#    退出后还有一次收尾 ``processEvents(AllEvents)``；此时
+#    ``asyncio.events._set_running_loop(None)`` 已执行，恰好到期的计时器
+#    仍会恢复任务，``asyncio.sleep``（stdlib 正延迟版本）立即抛
+#    ``RuntimeError: no running event loop``，把进行中的识别协程整个误杀
+#    （测试态高频触发，生产态 run_forever 常驻无此窗口）。
+# 2. 悬空计时器：``close() -> _SimpleTimer.stop()`` 只置 ``_stopped``
+#    标志，不 killTimer。已武装的周期 QTimer 会继续向可能已被 Python GC
+#    的 ``_SimpleTimer`` C++ 对象投递 timerEvent，表现为全量测试/CI 中的
+#    0xC0000005 原生访问冲突。
+#
+# 加固方式（进程内幂等，仅对 qasync 0.28.x 生效；内部结构变化时告警跳过）：
+# - ``timerEvent``：无 running loop 时，以 handle 自带的 loop 恢复
+#   running-loop 上下文后执行——投递时机不变，仅修复执行上下文；
+# - ``stop``：立即 kill 全部已武装计时器并清空回调队列，杜绝悬空投递。
+# ---------------------------------------------------------------------------
+
+_QASYNC_TIMER_HARDENING_INSTALLED = False
+
+
+def _install_qasync_timer_hardening() -> None:
+    global _QASYNC_TIMER_HARDENING_INSTALLED
+    if _QASYNC_TIMER_HARDENING_INSTALLED:
+        return
+    try:
+        import qasync
+
+        timer_cls = qasync._SimpleTimer  # noqa: SLF001 - 版本加固 seam
+        original_timer_event = timer_cls.timerEvent
+        original_stop = timer_cls.stop
+        # CPython 私有名改编会剥离类名的前导下划线（_SimpleTimer.__callbacks
+        # → _SimpleTimer__callbacks），不能直接用 __name__ 前拼下划线。
+        callbacks_attr = f"_{timer_cls.__name__.lstrip('_')}__callbacks"
+    except (ImportError, AttributeError):  # pragma: no cover - qasync 升级防御
+        logger.warning(
+            "qasync 内部结构与 0.28 加固补丁不匹配，跳过计时器投递加固", exc_info=True
+        )
+        _QASYNC_TIMER_HARDENING_INSTALLED = True
+        return
+
+    def hardened_timer_event(self, event):  # noqa: ANN001 - Qt virtual 签名
+        if self._stopped or asyncio.events._get_running_loop() is not None:
+            original_timer_event(self, event)
+            return
+        handle = getattr(self, callbacks_attr, {}).get(event.timerId())
+        loop = getattr(handle, "_loop", None)
+        if loop is None:
+            original_timer_event(self, event)
+            return
+        asyncio.events._set_running_loop(loop)
+        try:
+            original_timer_event(self, event)
+        finally:
+            asyncio.events._set_running_loop(None)
+
+    def hardened_stop(self):
+        original_stop(self)
+        callbacks = getattr(self, callbacks_attr, None)
+        if not callbacks:
+            return
+        for timer_id in tuple(callbacks):
+            try:
+                self.killTimer(timer_id)
+            except RuntimeError:  # pragma: no cover - 计时器已失效
+                pass
+        callbacks.clear()
+
+    timer_cls.timerEvent = hardened_timer_event  # type: ignore[assignment]
+    timer_cls.stop = hardened_stop  # type: ignore[assignment]
+    _QASYNC_TIMER_HARDENING_INSTALLED = True
+
+
 def _get_running_or_set_loop() -> asyncio.AbstractEventLoop:
     """获取当前线程的事件循环，必要时创建并设为当前循环。
 
@@ -108,6 +187,7 @@ def create_qasync_event_loop(app) -> asyncio.AbstractEventLoop:
 
     loop = qasync.QEventLoop(app)
     asyncio.set_event_loop(loop)
+    _install_qasync_timer_hardening()
     logger.debug("qasync 事件循环已创建")
     return loop
 

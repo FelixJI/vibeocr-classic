@@ -210,9 +210,11 @@ def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
         ready=True,
         status="ready",
         accelerator="nvidia_cuda",
+        profile="win-x64-cu126",
         backend_version="0.8.0",
         protocol_version="2.4.0",
         integrity="verified",
+        components=(),
     )
     cache_file = tmp_path / ".vibeocr" / "cache.json"
     cache_file.parent.mkdir(parents=True)
@@ -222,6 +224,6 @@ def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
 
     assert success is True
     assert summary == (
-        "已就绪 · Backend 0.8.0 · Protocol 2.4.0 · NVIDIA CUDA · integrity=verified"
+        "已就绪 · Backend 0.8.0 · Protocol 2.4.0 · 加速方案 GPU（NVIDIA CUDA 12.6） · integrity=verified"
     )
     assert cache_file.read_text(encoding="utf-8") == "owned-by-classic"

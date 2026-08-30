@@ -221,17 +221,29 @@ def test_runtime_maintenance_buttons_enabled_for_bound_product(controller, qtbot
 
 
 def test_env_status_label_shows_runtime_binding(controller, qtbot):
-    """labelEnvStatus 显示 accelerator、Backend 版本与 manifest 摘要。"""
+    """Runtime 状态表逐项显示加速方案、Backend 版本与 manifest 摘要。"""
     _ctrl, host = controller
-    from PySide6.QtWidgets import QLabel
 
     controller[0]._refresh_env_maintenance_state()
 
     label = host.findChild(QLabel, "labelEnvStatus")
-    qtbot.waitUntil(lambda: "Backend：0.7.0" in label.text(), timeout=3000)
-    text = label.text()
-    assert "CPU" in text
-    assert "已验证" in text
+    tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
+    # connect_signals 已触发一次刷新；等待最近一次刷新完成（label 离开
+    # "正在验证"态），再读取状态表，避免读到上一次的结果。
+    qtbot.waitUntil(lambda: label.text().startswith("Runtime："), timeout=3000)
+    rows = {
+        tree.topLevelItem(index).text(0): tree.topLevelItem(index).text(1)
+        for index in range(tree.topLevelItemCount())
+    }
+    assert rows["Runtime"] == "已验证"
+    assert rows["加速方案"] == "CPU"
+    assert rows["推理 profile"] == "win-x64-cpu"
+    assert rows["Backend"] == "0.7.0"
+    assert rows["Python"] == "3.13.12"
+    assert rows["Protocol"] == "2.1.0"
+    assert rows["Manifest"] == "a" * 12
+    # labelEnvStatus 只承载一行摘要；逐项数值在状态表内。
+    assert label.text() == "Runtime：已验证 · 服务：未连接"
 
 
 def test_install_missing_button_exists(controller):
@@ -246,7 +258,6 @@ def test_install_missing_button_exists(controller):
 def test_deps_status_tree_exists(controller):
     """依赖状态树（QTreeWidget）应在 UI 中可找到"""
     _ctrl, host = controller
-    from PySide6.QtWidgets import QTreeWidget
 
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
     assert tree is not None, "treeDepsStatus 应存在"
@@ -351,15 +362,16 @@ def test_http_runtime_status_overrides_component_state(controller):
 
     tree = host.findChild(QTreeWidget, "treeDepsStatus")
     assert tree.topLevelItem(1).child(0).text(1) == "… 安装中 · 缺失"
-    assert "服务：维护中" in host.findChild(QLabel, "labelEnvStatus").text()
-    assert "Source：aaaaaaaaaaaa" in host.findChild(QLabel, "labelEnvStatus").text()
-    assert (
-        "Runtime manifest：bbbbbbbbbbbb"
-        in host.findChild(QLabel, "labelEnvStatus").text()
-    )
-    assert (
-        "install_profile · running" in host.findChild(QLabel, "labelEnvStatus").text()
-    )
+    status_tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
+    rows = {
+        status_tree.topLevelItem(index).text(0): status_tree.topLevelItem(index).text(1)
+        for index in range(status_tree.topLevelItemCount())
+    }
+    assert rows["服务"] == "维护中"
+    assert rows["Source SHA"] == "a" * 12
+    assert rows["Runtime manifest"] == "b" * 12
+    assert rows["Protocol manifest"] == "c" * 12
+    assert rows["维护"] == "install_profile · running"
 
 
 def test_reinstall_selected_button_exists(controller):
@@ -465,7 +477,6 @@ def test_uninstalled_runtime_is_not_inferred_as_cpu(controller):
 def test_refresh_fills_bound_runtime_components(controller, qtbot):
     """设置页展示用户可理解的绑定组件，而非只显示 accelerator。"""
     ctrl, host = controller
-    from PySide6.QtWidgets import QTreeWidget
 
     ctrl._refresh_env_maintenance_state()
 
@@ -483,8 +494,39 @@ def test_refresh_fills_bound_runtime_components(controller, qtbot):
         "Python 运行时": ("✓ 已验证", "3.13.12"),
         "Backend Supervisor": ("✓ 已验证", "0.7.0"),
         "Protocol": ("✓ 已绑定", "2.1.0"),
-        "CPU 推理 profile": ("✓ 已选择", "win-x64-cpu"),
+        "推理 profile · CPU": ("✓ 已选择", "win-x64-cpu"),
     }
+
+
+def test_base_only_runtime_is_not_reported_as_cpu_profile(controller):
+    """仅基础 Runtime（高级组件全部 not_required）不能显示为"已选择 CPU 框架"。"""
+    ctrl, host = controller
+
+    inspection = ctrl._runtime_installer.inspect.return_value
+    inspection.accelerator = "cpu"
+    inspection.profile = "win-x64-cpu"
+    inspection.components = (
+        RuntimeComponentDescriptor(
+            "rapidocr-base", "快速 OCR", "3.7.0", desired_state="ready"
+        ),
+        RuntimeComponentDescriptor(
+            "paddleocr-cpu",
+            "PaddleOCR（CPU）",
+            None,
+            desired_state="not_required",
+        ),
+        RuntimeComponentDescriptor(
+            "mineru-cpu", "MinerU（CPU）", None, desired_state="not_required"
+        ),
+    )
+    tree = host.findChild(QTreeWidget, "treeDepsStatus")
+
+    ctrl._populate_deps_tree(tree, {"inspection": inspection})
+
+    profile_row = tree.topLevelItem(tree.topLevelItemCount() - 1)
+    assert profile_row.text(0) == "推理 profile"
+    assert profile_row.text(1) == "未选择（仅基础 Runtime）"
+    assert profile_row.text(2) == "—"
 
 
 def test_runtime_tree_uses_installer_inspect(controller, qtbot):
@@ -499,7 +541,6 @@ def test_runtime_tree_uses_installer_inspect(controller, qtbot):
 
 def test_runtime_tree_exposes_only_backend_functional_groups(controller, qtbot):
     ctrl, host = controller
-    from PySide6.QtWidgets import QTreeWidget
 
     ctrl._refresh_env_maintenance_state()
     tree = host.findChild(QTreeWidget, "treeDepsStatus")

@@ -262,13 +262,30 @@ def test_health_catalog_renders_engines_features_and_sources(
 
     controller._on_health_loaded(_health_payload())
 
-    status = host.findChild(QLabel, "labelOcrEngineStatus").text()
-    assert "快速 OCR（RapidOCR）：可用" in status
-    assert "通用 OCR（PaddleOCR）：需准备组件（component_missing）" in status
+    # 模式可用性逐行渲染在 treeEngineAvailability；旧实现的单行拼接已移除。
+    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
+    assert tree is not None
+    assert tree.topLevelItemCount() == 1  # 旧 engine catalog 只合成 text 家族
+    group = tree.topLevelItem(0)
+    assert group.text(0) == "文本识别"
+    assert group.childCount() == 3
+    rapid = group.child(0)
+    assert rapid.text(0) == "快速 OCR（RapidOCR）"
+    assert rapid.text(1) == "可用"
+    assert rapid.text(2) == ""
+    paddle = group.child(2)
+    assert paddle.text(0) == "通用 OCR（PaddleOCR）"
+    assert paddle.text(1) == "需准备组件"
+    assert "win-x64-cpu-document-parsing" in paddle.text(2)
+    assert "component_missing" in paddle.text(2)
+    # 通知行不再承载逐模式状态
+    assert host.findChild(QLabel, "labelOcrEngineStatus").text() == ""
 
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItemCount() == 1
     assert tree.topLevelItem(0).text(0).startswith("文档智能解析")
+    # Runtime 组件状态尚未回填时显示"未知"，不能恒显"未安装"
+    assert tree.topLevelItem(0).text(1) == "— 未知"
     assert tree.isEnabled()
 
     combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
@@ -280,6 +297,29 @@ def test_health_catalog_renders_engines_features_and_sources(
     ]
     assert combo.currentData() is None
     assert controller._resolve_download_source_ids() is None
+
+
+def test_offline_features_reflect_runtime_component_states(
+    selection_controller,
+) -> None:
+    """可选能力状态列来自 Runtime 组件 actual_state，而不是恒显未安装。"""
+    controller, host, _adapter, _config, _manager = selection_controller
+    controller._on_health_loaded(_health_payload())
+
+    controller._runtime_component_states = {"win-x64-cpu-document-parsing": "ready"}
+    controller._render_offline_features()
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    assert tree.topLevelItem(0).text(1) == "✓ 已安装"
+
+    controller._runtime_component_states = {"win-x64-cpu-document-parsing": "missing"}
+    controller._render_offline_features()
+    assert tree.topLevelItem(0).text(1) == "✗ 未安装"
+
+    controller._runtime_component_states = {
+        "win-x64-cpu-document-parsing": "not_required"
+    }
+    controller._render_offline_features()
+    assert tree.topLevelItem(0).text(1) == "— 未启用"
 
 
 def test_health_recovers_persisted_engine_when_interrupted_install_left_it_unavailable(
@@ -486,11 +526,14 @@ def test_model_registry_sources_are_editable_and_keep_unknown_selected_ids(
         "huggingface",
         "modelscope",
     ]
+    # endpoint 不入 UI：具体来源项不携带 tooltip；仅默认项说明"默认"语义。
     assert all(
         combo.itemData(index, Qt.ItemDataRole.ToolTipRole) is None
         for combo in (package_combo, registry_combo)
-        for index in range(combo.count())
+        for index in range(1, combo.count())
     )
+    default_tip = package_combo.itemData(0, Qt.ItemDataRole.ToolTipRole)
+    assert isinstance(default_tip, str) and "内置默认源" in default_tip
     assert "https://" not in host.findChild(QLabel, "labelDownloadSource").text()
     assert "endpoint" not in host.findChild(QLabel, "labelDownloadSource").text()
     # Settings 是全量 PUT：先读到现有快照再保存（C6 守卫语义）

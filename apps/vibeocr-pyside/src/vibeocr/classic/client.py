@@ -6,6 +6,8 @@ by the export/main-window code; ``get_backend_client`` was deleted because the
 v2 supervisor is the only backend.
 """
 
+import sys
+
 __all__ = [
     "get_output_filename",
     "get_unique_output_path",
@@ -42,19 +44,15 @@ def get_unique_output_path(output_path):
 def shutdown_backend_client():
     """Tear down process-wide background resources (pdf supervisor loop).
 
-    Called from ``pytest_sessionfinish`` and app shutdown hooks. Previously a
-    no-op, which left the ``pdf-supervisor-loop`` daemon thread running for the
-    whole pytest session and contributed to access-violation crashes when later
-    Qt tests created widgets in the restricted CI session.
-
-    The import is lazy *and* guarded: some CI jobs (e.g. the contracts gate)
-    run with a minimal dependency set that lacks ``httpx``, and
-    ``pdf_client`` imports it at module load. In that case we degrade to the
-    prior no-op rather than crashing session teardown.
+    Closing an unused client must remain a no-op. Importing ``pdf_client`` here
+    would create the dependency graph merely to tear it down and can perform
+    its first heavy import from an installer ``QThread``. Only a module already
+    loaded by a real PDF client can own a background loop that needs closing.
     """
-    try:
-        from vibeocr.classic.pdf_client import _shutdown_bg_loop
-    except ImportError:
+    pdf_client = sys.modules.get("vibeocr.classic.pdf_client")
+    if pdf_client is None:
         return
-    _shutdown_bg_loop()
+    shutdown = getattr(pdf_client, "_shutdown_bg_loop", None)
+    if shutdown is not None:
+        shutdown()
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.12
+
+### Bug Fixes
+
+- **async:** 加固 qasync 计时器投递消除偶发任务误杀与悬空计时器崩溃 (#79) (d6109a0)
+
 ## 0.10.11
 
 ### Features

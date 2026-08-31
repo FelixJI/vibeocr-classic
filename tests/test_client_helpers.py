@@ -147,21 +147,19 @@ def test_shutdown_backend_client_calls_bg_loop(monkeypatch):
     assert called["n"] == 1
 
 
-def test_shutdown_backend_client_import_error_is_noop(monkeypatch):
-    """pdf_client 不可 import 时回退 no-op（不抛）。
+def test_shutdown_backend_client_does_not_import_unloaded_pdf_client(monkeypatch):
+    """没有已创建的 PDF 后台资源时，关闭操作不得触发重型模块首次导入。"""
+    import sys
 
-    client.shutdown_backend_client 用 try/except ImportError 包裹 lazy import。
-    通过让 builtins.__import__ 对该模块抛 ModuleNotFoundError 来模拟缺失依赖。
-    """
+    monkeypatch.delitem(sys.modules, "vibeocr.classic.pdf_client", raising=False)
     real_import = __import__
 
-    def _fake_import(name, *args, **kwargs):
+    def _guarded_import(name, *args, **kwargs):
         if name == "vibeocr.classic.pdf_client":
-            raise ImportError("simulated missing httpx")
+            raise AssertionError("shutdown must not import an unloaded PDF client")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr("builtins.__import__", _fake_import)
-    # 不抛即通过
+    monkeypatch.setattr("builtins.__import__", _guarded_import)
     shutdown_backend_client()
 
 

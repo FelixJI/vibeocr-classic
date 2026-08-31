@@ -199,17 +199,17 @@
          </item>
          <item>
           <property name="text">
-           <string>识别与引擎</string>
+            <string>识别设置</string>
           </property>
          </item>
          <item>
           <property name="text">
-           <string>Runtime 与加速</string>
+            <string>运行时与组件</string>
           </property>
          </item>
          <item>
           <property name="text">
-           <string>模型驻留</string>
+            <string>模型缓存</string>
           </property>
          </item>
         </widget>
@@ -248,7 +248,7 @@
               <item>
                <widget class="QLabel" name="labelToolbarDesc">
                 <property name="text">
-                 <string>边缘工具栏：悬浮在屏幕边缘的快捷工具条，提供一键截图和呼出主窗口。可拖动到屏幕任意边缘，停靠后自动隐藏，鼠标靠近时弹出。</string>
+                  <string>在屏幕边缘提供截图和主窗口快捷入口，可拖动到任意边缘。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -398,75 +398,9 @@
             <number>16</number>
            </property>
            <item>
-            <widget class="QGroupBox" name="groupEngineDefault">
-             <property name="title">
-              <string>默认识别引擎</string>
-             </property>
-             <layout class="QVBoxLayout" name="engineDefaultLayout">
-              <property name="spacing">
-               <number>8</number>
-              </property>
-              <item>
-               <widget class="QLabel" name="labelEngineScope">
-                <property name="text">
-                 <string>仅设置文本识别（快速 OCR / Windows OCR / 通用 OCR）的全局默认引擎：截图、批量与 PDF 的文本识别在任务未单独指定时使用。文档解析、表格、公式等能力是独立管道，由各自入口选择，不受此项影响。</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="ocrEngineRow">
-                <property name="spacing">
-                 <number>8</number>
-                </property>
-                <item>
-                 <widget class="QLabel" name="labelOcrEngine">
-                  <property name="text">
-                   <string>默认引擎:</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QComboBox" name="comboOcrEngine">
-                  <property name="toolTip">
-                   <string>文本 OCR 管道的全局默认引擎；各识别任务可临时覆盖，不改变全局设置</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="ocrEngineRowSpacer">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>20</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <widget class="QLabel" name="labelOcrEngineStatus">
-                <property name="text">
-                 <string>引擎状态：等待 Runtime 就绪</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-           <item>
             <widget class="QGroupBox" name="groupEngineAvailability">
              <property name="title">
-              <string>识别模式可用性</string>
+               <string>当前可用的识别能力</string>
              </property>
              <layout class="QVBoxLayout" name="engineAvailabilityLayout">
               <property name="spacing">
@@ -475,7 +409,7 @@
               <item>
                <widget class="QLabel" name="labelEngineAvailabilityHint">
                 <property name="text">
-                 <string>按识别类型列出当前 Runtime 的可用状态；需准备组件的模式在对应入口使用时会引导安装。</string>
+                  <string>只读概览。随包工具无需安装；需要额外组件的能力可在下方选择安装。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -519,7 +453,7 @@
            <item>
             <widget class="QGroupBox" name="groupOfflineFeatures">
              <property name="title">
-              <string>可选组件能力</string>
+               <string>可选识别能力</string>
              </property>
              <layout class="QVBoxLayout" name="offlineFeaturesLayout">
               <property name="spacing">
@@ -528,7 +462,7 @@
               <item>
                <widget class="QLabel" name="labelOfflineFeaturesHint">
                 <property name="text">
-                 <string>勾选需要保留或补装的可选能力后点击安装；状态列显示组件在当前 Runtime 中的实际安装情况。</string>
+                  <string>仅列出需要额外下载的能力。勾选后点击安装，已有的随包能力不会出现在这里。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -574,7 +508,7 @@
            <item>
             <widget class="QGroupBox" name="groupDownloadSources">
              <property name="title">
-              <string>下载源</string>
+               <string>下载设置</string>
              </property>
              <layout class="QVBoxLayout" name="downloadSourcesLayout">
               <property name="spacing">
@@ -583,7 +517,7 @@
               <item>
                <widget class="QLabel" name="labelDownloadSource">
                 <property name="text">
-                 <string>下载源：每类至多选择一个；不选择时使用 Backend 内置默认源</string>
+                  <string>仅影响后续组件下载。每类可选一个；留空时使用 Runtime 默认源。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -645,7 +579,7 @@
            <item>
             <widget class="QGroupBox" name="groupEnvMaintenance">
              <property name="title">
-              <string>Runtime 与加速</string>
+               <string>运行时与组件</string>
              </property>
              <layout class="QVBoxLayout" name="envMaintenanceLayout">
               <property name="spacing">
@@ -711,7 +645,7 @@
               <item>
                <widget class="QTreeWidget" name="treeDepsStatus">
                 <property name="toolTip">
-                 <string>产品绑定的 Runtime 组件安装状态。点击顶层项左侧箭头展开子组件；状态区分期望与实际，漂移项可由维护按钮修复。</string>
+                  <string>当前运行时与组件状态。展开 Backend 可查看随包组件；异常项可用下方维护操作修复。</string>
                 </property>
                 <property name="editTriggers">
                  <set>QAbstractItemView::NoEditTriggers</set>

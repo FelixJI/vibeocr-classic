@@ -8,11 +8,15 @@
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
+from PySide6.QtCore import (
+    QCoreApplication,
+    QMetaObject,
+    QSize,
+    Qt,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -212,46 +216,6 @@ class Ui_MainWindowWidget(object):
         self.pageRecognitionLayout.setSpacing(12)
         self.pageRecognitionLayout.setObjectName("pageRecognitionLayout")
         self.pageRecognitionLayout.setContentsMargins(16, 16, 16, 16)
-        self.groupEngineDefault = QGroupBox(self.pageRecognition)
-        self.groupEngineDefault.setObjectName("groupEngineDefault")
-        self.engineDefaultLayout = QVBoxLayout(self.groupEngineDefault)
-        self.engineDefaultLayout.setSpacing(8)
-        self.engineDefaultLayout.setObjectName("engineDefaultLayout")
-        self.labelEngineScope = QLabel(self.groupEngineDefault)
-        self.labelEngineScope.setObjectName("labelEngineScope")
-        self.labelEngineScope.setWordWrap(True)
-
-        self.engineDefaultLayout.addWidget(self.labelEngineScope)
-
-        self.ocrEngineRow = QHBoxLayout()
-        self.ocrEngineRow.setSpacing(8)
-        self.ocrEngineRow.setObjectName("ocrEngineRow")
-        self.labelOcrEngine = QLabel(self.groupEngineDefault)
-        self.labelOcrEngine.setObjectName("labelOcrEngine")
-
-        self.ocrEngineRow.addWidget(self.labelOcrEngine)
-
-        self.comboOcrEngine = QComboBox(self.groupEngineDefault)
-        self.comboOcrEngine.setObjectName("comboOcrEngine")
-
-        self.ocrEngineRow.addWidget(self.comboOcrEngine)
-
-        self.ocrEngineRowSpacer = QSpacerItem(
-            40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
-
-        self.ocrEngineRow.addItem(self.ocrEngineRowSpacer)
-
-        self.engineDefaultLayout.addLayout(self.ocrEngineRow)
-
-        self.labelOcrEngineStatus = QLabel(self.groupEngineDefault)
-        self.labelOcrEngineStatus.setObjectName("labelOcrEngineStatus")
-        self.labelOcrEngineStatus.setWordWrap(True)
-
-        self.engineDefaultLayout.addWidget(self.labelOcrEngineStatus)
-
-        self.pageRecognitionLayout.addWidget(self.groupEngineDefault)
-
         self.groupEngineAvailability = QGroupBox(self.pageRecognition)
         self.groupEngineAvailability.setObjectName("groupEngineAvailability")
         self.engineAvailabilityLayout = QVBoxLayout(self.groupEngineAvailability)
@@ -688,19 +652,19 @@ class Ui_MainWindowWidget(object):
         ___qlistwidgetitem1 = self.settingsNavList.item(1)
         ___qlistwidgetitem1.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u8bc6\u522b\u4e0e\u5f15\u64ce", None
+                "MainWindowWidget", "\u8bc6\u522b\u8bbe\u7f6e", None
             )
         )
         ___qlistwidgetitem2 = self.settingsNavList.item(2)
         ___qlistwidgetitem2.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "Runtime \u4e0e\u52a0\u901f", None
+                "MainWindowWidget", "\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6", None
             )
         )
         ___qlistwidgetitem3 = self.settingsNavList.item(3)
         ___qlistwidgetitem3.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u6a21\u578b\u9a7b\u7559", None
+                "MainWindowWidget", "\u6a21\u578b\u7f13\u5b58", None
             )
         )
         self.settingsNavList.setSortingEnabled(__sortingEnabled)
@@ -711,7 +675,7 @@ class Ui_MainWindowWidget(object):
         self.labelToolbarDesc.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u8fb9\u7f18\u5de5\u5177\u680f\uff1a\u60ac\u6d6e\u5728\u5c4f\u5e55\u8fb9\u7f18\u7684\u5feb\u6377\u5de5\u5177\u6761\uff0c\u63d0\u4f9b\u4e00\u952e\u622a\u56fe\u548c\u547c\u51fa\u4e3b\u7a97\u53e3\u3002\u53ef\u62d6\u52a8\u5230\u5c4f\u5e55\u4efb\u610f\u8fb9\u7f18\uff0c\u505c\u9760\u540e\u81ea\u52a8\u9690\u85cf\uff0c\u9f20\u6807\u9760\u8fd1\u65f6\u5f39\u51fa\u3002",
+                "\u5728\u5c4f\u5e55\u8fb9\u7f18\u63d0\u4f9b\u622a\u56fe\u548c\u4e3b\u7a97\u53e3\u5feb\u6377\u5165\u53e3\uff0c\u53ef\u62d6\u52a8\u5230\u4efb\u610f\u8fb9\u7f18\u3002",
                 None,
             )
         )
@@ -781,48 +745,17 @@ class Ui_MainWindowWidget(object):
                 "MainWindowWidget", "\u5f00\u673a\u81ea\u542f\u52a8", None
             )
         )
-        self.groupEngineDefault.setTitle(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u9ed8\u8ba4\u8bc6\u522b\u5f15\u64ce", None
-            )
-        )
-        self.labelEngineScope.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u4ec5\u8bbe\u7f6e\u6587\u672c\u8bc6\u522b\uff08\u5feb\u901f OCR / Windows OCR / \u901a\u7528 OCR\uff09\u7684\u5168\u5c40\u9ed8\u8ba4\u5f15\u64ce\uff1a\u622a\u56fe\u3001\u6279\u91cf\u4e0e PDF \u7684\u6587\u672c\u8bc6\u522b\u5728\u4efb\u52a1\u672a\u5355\u72ec\u6307\u5b9a\u65f6\u4f7f\u7528\u3002\u6587\u6863\u89e3\u6790\u3001\u8868\u683c\u3001\u516c\u5f0f\u7b49\u80fd\u529b\u662f\u72ec\u7acb\u7ba1\u9053\uff0c\u7531\u5404\u81ea\u5165\u53e3\u9009\u62e9\uff0c\u4e0d\u53d7\u6b64\u9879\u5f71\u54cd\u3002",
-                None,
-            )
-        )
-        self.labelOcrEngine.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u9ed8\u8ba4\u5f15\u64ce:", None
-            )
-        )
-        # if QT_CONFIG(tooltip)
-        self.comboOcrEngine.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u6587\u672c OCR \u7ba1\u9053\u7684\u5168\u5c40\u9ed8\u8ba4\u5f15\u64ce\uff1b\u5404\u8bc6\u522b\u4efb\u52a1\u53ef\u4e34\u65f6\u8986\u76d6\uff0c\u4e0d\u6539\u53d8\u5168\u5c40\u8bbe\u7f6e",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.labelOcrEngineStatus.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u5f15\u64ce\u72b6\u6001\uff1a\u7b49\u5f85 Runtime \u5c31\u7eea",
-                None,
-            )
-        )
         self.groupEngineAvailability.setTitle(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u8bc6\u522b\u6a21\u5f0f\u53ef\u7528\u6027", None
+                "MainWindowWidget",
+                "\u5f53\u524d\u53ef\u7528\u7684\u8bc6\u522b\u80fd\u529b",
+                None,
             )
         )
         self.labelEngineAvailabilityHint.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u6309\u8bc6\u522b\u7c7b\u578b\u5217\u51fa\u5f53\u524d Runtime \u7684\u53ef\u7528\u72b6\u6001\uff1b\u9700\u51c6\u5907\u7ec4\u4ef6\u7684\u6a21\u5f0f\u5728\u5bf9\u5e94\u5165\u53e3\u4f7f\u7528\u65f6\u4f1a\u5f15\u5bfc\u5b89\u88c5\u3002",
+                "\u53ea\u8bfb\u6982\u89c8\u3002\u968f\u5305\u5de5\u5177\u65e0\u9700\u5b89\u88c5\uff1b\u9700\u8981\u989d\u5916\u7ec4\u4ef6\u7684\u80fd\u529b\u53ef\u5728\u4e0b\u65b9\u9009\u62e9\u5b89\u88c5\u3002",
                 None,
             )
         )
@@ -841,13 +774,13 @@ class Ui_MainWindowWidget(object):
         )
         self.groupOfflineFeatures.setTitle(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u53ef\u9009\u7ec4\u4ef6\u80fd\u529b", None
+                "MainWindowWidget", "\u53ef\u9009\u8bc6\u522b\u80fd\u529b", None
             )
         )
         self.labelOfflineFeaturesHint.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u52fe\u9009\u9700\u8981\u4fdd\u7559\u6216\u8865\u88c5\u7684\u53ef\u9009\u80fd\u529b\u540e\u70b9\u51fb\u5b89\u88c5\uff1b\u72b6\u6001\u5217\u663e\u793a\u7ec4\u4ef6\u5728\u5f53\u524d Runtime \u4e2d\u7684\u5b9e\u9645\u5b89\u88c5\u60c5\u51b5\u3002",
+                "\u4ec5\u5217\u51fa\u9700\u8981\u989d\u5916\u4e0b\u8f7d\u7684\u80fd\u529b\u3002\u52fe\u9009\u540e\u70b9\u51fb\u5b89\u88c5\uff0c\u5df2\u6709\u7684\u968f\u5305\u80fd\u529b\u4e0d\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
                 None,
             )
         )
@@ -867,12 +800,14 @@ class Ui_MainWindowWidget(object):
             )
         )
         self.groupDownloadSources.setTitle(
-            QCoreApplication.translate("MainWindowWidget", "\u4e0b\u8f7d\u6e90", None)
+            QCoreApplication.translate(
+                "MainWindowWidget", "\u4e0b\u8f7d\u8bbe\u7f6e", None
+            )
         )
         self.labelDownloadSource.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u4e0b\u8f7d\u6e90\uff1a\u6bcf\u7c7b\u81f3\u591a\u9009\u62e9\u4e00\u4e2a\uff1b\u4e0d\u9009\u62e9\u65f6\u4f7f\u7528 Backend \u5185\u7f6e\u9ed8\u8ba4\u6e90",
+                "\u4ec5\u5f71\u54cd\u540e\u7eed\u7ec4\u4ef6\u4e0b\u8f7d\u3002\u6bcf\u7c7b\u53ef\u9009\u4e00\u4e2a\uff1b\u7559\u7a7a\u65f6\u4f7f\u7528 Runtime \u9ed8\u8ba4\u6e90\u3002",
                 None,
             )
         )
@@ -884,7 +819,7 @@ class Ui_MainWindowWidget(object):
         self.labelDownloadSourceStatus.setText("")
         self.groupEnvMaintenance.setTitle(
             QCoreApplication.translate(
-                "MainWindowWidget", "Runtime \u4e0e\u52a0\u901f", None
+                "MainWindowWidget", "\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6", None
             )
         )
         ___qtreewidgetitem2 = self.treeRuntimeStatus.headerItem()
@@ -915,7 +850,7 @@ class Ui_MainWindowWidget(object):
         self.treeDepsStatus.setToolTip(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u4ea7\u54c1\u7ed1\u5b9a\u7684 Runtime \u7ec4\u4ef6\u5b89\u88c5\u72b6\u6001\u3002\u70b9\u51fb\u9876\u5c42\u9879\u5de6\u4fa7\u7bad\u5934\u5c55\u5f00\u5b50\u7ec4\u4ef6\uff1b\u72b6\u6001\u533a\u5206\u671f\u671b\u4e0e\u5b9e\u9645\uff0c\u6f02\u79fb\u9879\u53ef\u7531\u7ef4\u62a4\u6309\u94ae\u4fee\u590d\u3002",
+                "\u5f53\u524d\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6\u72b6\u6001\u3002\u5c55\u5f00 Backend \u53ef\u67e5\u770b\u968f\u5305\u7ec4\u4ef6\uff1b\u5f02\u5e38\u9879\u53ef\u7528\u4e0b\u65b9\u7ef4\u62a4\u64cd\u4f5c\u4fee\u590d\u3002",
                 None,
             )
         )

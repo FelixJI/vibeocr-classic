@@ -36,7 +36,6 @@ _VALID_ENGINE_AVAILABILITY = frozenset(
 # 未知 kind 保留在 catalog 中但不参与 UI 选择。
 EDITABLE_SOURCE_KINDS = frozenset({"package_index", "model_registry"})
 
-DEFAULT_ENGINE_ID = "rapidocr"
 VALID_ENGINE_IDS = frozenset({"rapidocr", "windows", "paddleocr"})
 
 # 显示文案属于 Classic 本地语义；Backend catalog 不携带产品文案。
@@ -707,42 +706,19 @@ def parse_capability_catalogs(
     )
 
 
-def resolve_engine_id(
-    override: str | None, default_engine: str | None = None
-) -> str | None:
+def resolve_engine_id(override: str | None) -> str | None:
     """Resolve the task engine without silently replacing unknown values.
 
-    Returns ``None`` (wire omission, Backend default) when neither the task
-    override nor the configured default is a known stable engine id.
+    Returns ``None`` (wire omission, Backend default) when the task override
+    is not a known stable engine id.
     """
 
-    for candidate in (override, default_engine):
-        if candidate is not None and candidate not in VALID_ENGINE_IDS:
-            continue
-        if candidate is not None:
-            return candidate
-    return None
-
-
-def normalize_stored_engine(value: object) -> tuple[str | None, bool]:
-    """Load a persisted engine value.
-
-    Returns ``(engine_id, requires_selection)``: missing values migrate to
-    the RapidOCR default; unknown legacy values are kept out of the effective
-    selection and flagged for explicit user re-selection.
-    """
-
-    if not isinstance(value, str) or not value:
-        return DEFAULT_ENGINE_ID, False
-    if value in VALID_ENGINE_IDS:
-        return value, False
-    return None, True
+    return override if override in VALID_ENGINE_IDS else None
 
 
 __all__ = [
     "COMPONENT_SELECTION_CAPABILITY",
     "DOWNLOAD_SOURCES_CAPABILITY",
-    "DEFAULT_ENGINE_ID",
     "EDITABLE_SOURCE_KINDS",
     "ENGINE_AVAILABILITY_LABELS",
     "ENGINE_AVAILABILITY_PREPARATION_REQUIRED",
@@ -760,7 +736,6 @@ __all__ = [
     "RuntimeSelectionCatalog",
     "RuntimeSelectionError",
     "VALID_ENGINE_IDS",
-    "normalize_stored_engine",
     "legacy_execution_projection",
     "execution_projection_for_mode",
     "supported_options_for_mode",

@@ -9,9 +9,7 @@ from vibeocr.classic.runtime_selection import (
     EDITABLE_SOURCE_KINDS,
     ENGINE_SELECTION_CAPABILITY,
     RECOGNITION_MODE_CAPABILITY,
-    DEFAULT_ENGINE_ID,
     RuntimeSelectionError,
-    normalize_stored_engine,
     parse_capability_catalogs,
     resolve_engine_id,
 )
@@ -482,15 +480,6 @@ def test_normalize_source_selection_omits_empty_and_validates() -> None:
 
 
 def test_resolve_engine_id_prefers_override_and_never_sends_unknown() -> None:
-    assert resolve_engine_id("windows", "paddleocr") == "windows"
-    assert resolve_engine_id(None, "paddleocr") == "paddleocr"
-    assert resolve_engine_id("legacy-unknown", "windows") == "windows"
-    assert resolve_engine_id("legacy-unknown", None) is None
-    assert resolve_engine_id(None, None) is None
-
-
-def test_normalize_stored_engine_migrates_default_and_flags_unknown() -> None:
-    assert normalize_stored_engine(None) == (DEFAULT_ENGINE_ID, False)
-    assert normalize_stored_engine("") == (DEFAULT_ENGINE_ID, False)
-    assert normalize_stored_engine("windows") == ("windows", False)
-    assert normalize_stored_engine("tesseract") == (None, True)
+    assert resolve_engine_id("windows") == "windows"
+    assert resolve_engine_id("legacy-unknown") is None
+    assert resolve_engine_id(None) is None

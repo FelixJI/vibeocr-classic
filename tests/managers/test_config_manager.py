@@ -219,29 +219,6 @@ def test_save_json_preserves_existing_file_when_data_is_not_serializable(cm, tmp
     assert json.loads(config.read_text(encoding="utf-8")) == {"theme": "light"}
 
 
-def test_ocr_engine_defaults_to_rapidocr_and_persists(cm):
-    """旧配置没有 engine 时按 RapidOCR 迁移；显式设置持久化。"""
-    assert cm.get_ocr_engine_selection() == ("rapidocr", False)
-    assert cm.get_ocr_engine() == "rapidocr"
-    assert cm.set_ocr_engine("windows")
-    assert cm.get_ocr_engine_selection() == ("windows", False)
-
-
-def test_ocr_engine_rejects_unknown_values_without_silent_replacement(cm):
-    """未知 engine id 拒绝保存；旧未知值标记需重选，不静默替换。"""
-    assert not cm.set_ocr_engine("tesseract")
-    assert cm.get_ocr_engine_selection() == ("rapidocr", False)
-
-    import json
-
-    (cm.config_dir / "app_settings.json").write_text(
-        json.dumps({"ocr_engine": "legacy-engine"}), encoding="utf-8"
-    )
-    assert cm.get_ocr_engine_selection() == (None, True)
-    # 未初始化 ConfigManager 的读取入口回退默认，请求 seam 对 None 省略字段
-    assert cm.get_ocr_engine() == "rapidocr"
-
-
 def test_offline_component_features_persist_per_accelerator(cm):
     """按 accelerator 保存勾选的离线能力；空列表清空该档位。"""
     assert cm.get_offline_component_features("cpu") == []

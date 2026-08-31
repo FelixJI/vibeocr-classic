@@ -57,7 +57,7 @@ class OCROptions:
     formula_recognition_batch_size: int = 1
     formula_recognition_model_name: str | None = None
     formula_recognition_model_dir: str | None = None
-    # 任务级引擎覆盖：None 表示沿用全局默认；仅纯文本 OCR pipeline 有效。
+    # 任务级引擎覆盖：None 表示使用 Backend 默认；仅纯文本 OCR pipeline 有效。
     engine: str | None = None
     # 用户识别模式只在 Classic 内持久化；当前正式 SDK 尚未接收此请求字段。
     recognition_mode: str | None = None
@@ -125,14 +125,11 @@ class OCROptions:
         data.update(updates)
         return OCROptions.from_dict(data)
 
-    def to_pipeline_selection(
-        self, default_engine: str | None = None
-    ) -> PipelineSelection:
+    def to_pipeline_selection(self) -> PipelineSelection:
         """投影到 Protocol PipelineSelection。
 
-        ``engine`` 只对纯文本 OCR pipeline 发送：任务 override 优先，其次
-        是全局默认 ``default_engine``；两者都不是稳定 engine id 时省略
-        字段，交给 Backend 默认。其他 pipeline 不携带 engine。
+        ``engine`` 只对纯文本 OCR pipeline 发送。任务没有显式指定稳定
+        engine id 时省略字段，交给 Backend 默认；其他 pipeline 不携带 engine。
         """
 
         pipeline = self.pipeline
@@ -147,7 +144,7 @@ class OCROptions:
 
         mode_id = self.recognition_mode
         if mode_id is None and pipeline is OCRPipeline.OCR:
-            mode_id = recognition_mode_for_engine(engine_override or default_engine)
+            mode_id = recognition_mode_for_engine(engine_override)
         if mode_id is not None:
             projection = execution_projection_for_mode(mode_id)
             if projection is None:
@@ -185,7 +182,7 @@ class OCROptions:
         if pipeline is OCRPipeline.OCR:
             from vibeocr.classic.runtime_selection import resolve_engine_id
 
-            resolved = resolve_engine_id(engine_override, default_engine)
+            resolved = resolve_engine_id(engine_override)
             if resolved is not None:
                 engine = OcrEngine(resolved)
         return PipelineSelection(pipeline.value, options=options, engine=engine)

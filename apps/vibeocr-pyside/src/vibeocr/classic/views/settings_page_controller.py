@@ -40,9 +40,6 @@ from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
     ENGINE_AVAILABILITY_LABELS,
     ENGINE_AVAILABILITY_READY,
-    ENGINE_DISPLAY_NAMES,
-    RECOGNITION_MODE_DISPLAY_NAMES,
-    VALID_ENGINE_IDS,
     RuntimeSelectionCatalog,
     RuntimeSelectionError,
     parse_capability_catalogs,
@@ -135,7 +132,7 @@ class SettingsPageController:
         # component_id → actual_state；由 Runtime 状态快照回填，供可选能力树
         # 显示真实安装状态（而不是恒显"未安装"）。
         self._runtime_component_states: dict[str, str] = {}
-        self._engine_combo_initialized = False
+        self._runtime_capabilities: set[str] = set()
         self._source_combo_rows: dict[str, QComboBox] = {}
         self._source_combo_row_widgets: list[QWidget] = []
         self._runtime_action = ""
@@ -2119,12 +2116,8 @@ class SettingsPageController:
     }
 
     def _init_ocr_runtime_group(self) -> None:
-        """初始化「识别与引擎」页的默认引擎、模式可用性与下载源；catalog 等待 health。"""
+        """初始化识别能力、可选组件与下载源；catalog 等待 health。"""
 
-        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
-        if combo is not None and not self._engine_combo_initialized:
-            self._engine_combo_initialized = True
-            combo.currentIndexChanged.connect(self._on_engine_selected)
         button = self._ui.findChild(QPushButton, "btnInstallOfflineFeatures")
         if button is not None:
             button.clicked.connect(self._on_install_offline_features)
@@ -2137,137 +2130,7 @@ class SettingsPageController:
             )
         except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
             self._selection_accelerator = None
-        self._populate_engine_combo()
         self._refresh_selection_availability()
-
-    def _populate_engine_combo(self) -> None:
-        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
-        if combo is None:
-            return
-        combo.blockSignals(True)
-        combo.clear()
-        for engine_id, mode_id in (
-            ("rapidocr", "rapid_text"),
-            ("windows", "windows_text"),
-            ("paddleocr", "paddle_text"),
-        ):
-            combo.addItem(
-                RECOGNITION_MODE_DISPLAY_NAMES.get(
-                    mode_id, ENGINE_DISPLAY_NAMES.get(engine_id, engine_id)
-                ),
-                engine_id,
-            )
-        engine_id: str | None = None
-        requires_selection = False
-        try:
-            from vibeocr.classic.managers.config_manager import ConfigManager
-
-            selection = ConfigManager.instance().get_ocr_engine_selection()
-            if isinstance(selection, tuple) and len(selection) == 2:
-                engine_id, requires_selection = selection
-        except RuntimeError:
-            engine_id = None
-        effective = engine_id or "rapidocr"
-        index = combo.findData(effective)
-        combo.setCurrentIndex(max(0, index))
-        combo.blockSignals(False)
-        if requires_selection:
-            self._set_engine_status("检测到未知的旧引擎配置，请重新选择识别引擎")
-
-    def _set_engine_status(self, text: str) -> None:
-        label = self._ui.findChild(QLabel, "labelOcrEngineStatus")
-        if label is not None:
-            label.setText(text)
-
-    def _select_engine_combo(self, engine_id: str) -> None:
-        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
-        if combo is None:
-            return
-        index = combo.findData(engine_id)
-        if index < 0:
-            return
-        combo.blockSignals(True)
-        combo.setCurrentIndex(index)
-        combo.blockSignals(False)
-
-    def _reconcile_engine_selection(self) -> str | None:
-        """让持久化选择服从当前 Runtime 的实时可用性。"""
-
-        catalog = self._selection_catalog
-        if catalog is None or not catalog.engines:
-            return None
-        try:
-            from vibeocr.classic.managers.config_manager import ConfigManager
-
-            config = ConfigManager.instance()
-            selected, requires_selection = config.get_ocr_engine_selection()
-        except RuntimeError:
-            return None
-        if requires_selection:
-            return "检测到未知的旧引擎配置，请重新选择识别引擎"
-        current = catalog.engine(selected) if selected is not None else None
-        if current is not None and current.availability == ENGINE_AVAILABILITY_READY:
-            return None
-        ready = [
-            entry
-            for entry in catalog.engines
-            if entry.availability == ENGINE_AVAILABILITY_READY
-        ]
-        fallback = next(
-            (entry for entry in ready if entry.engine_id == "rapidocr"),
-            next(
-                (entry for entry in ready if entry.included_in_base),
-                ready[0] if ready else None,
-            ),
-        )
-        if fallback is None:
-            return "当前 Runtime 没有可用的 OCR 引擎，请修复 Runtime"
-        if not config.set_ocr_engine(fallback.engine_id):
-            return "当前 OCR 引擎不可用，且自动恢复配置失败，请重新选择"
-        self._select_engine_combo(fallback.engine_id)
-        selected_name = ENGINE_DISPLAY_NAMES.get(selected or "", selected or "原选择")
-        message = f"{selected_name} 当前不可用，已自动切换到 {fallback.display_name}"
-        logger.warning("[OCR 引擎恢复] %s", message)
-        self._status_callback(message)
-        return message
-
-    def _on_engine_selected(self, index: int) -> None:
-        combo = self._ui.findChild(QComboBox, "comboOcrEngine")
-        if combo is None or index < 0:
-            return
-        engine_id = combo.itemData(index)
-        if not isinstance(engine_id, str) or engine_id not in VALID_ENGINE_IDS:
-            return
-        entry = (
-            self._selection_catalog.engine(engine_id)
-            if self._selection_catalog is not None
-            else None
-        )
-        if entry is not None and entry.availability != ENGINE_AVAILABILITY_READY:
-            try:
-                from vibeocr.classic.managers.config_manager import ConfigManager
-
-                selected, _requires_selection = (
-                    ConfigManager.instance().get_ocr_engine_selection()
-                )
-            except RuntimeError:
-                selected = None
-            if selected is not None:
-                self._select_engine_combo(selected)
-            reason = f"（{entry.reason_code}）" if entry.reason_code else ""
-            self._set_engine_status(
-                f"{entry.display_name} 尚未就绪{reason}，需先安装对应组件"
-            )
-            return
-        try:
-            from vibeocr.classic.managers.config_manager import ConfigManager
-
-            if not ConfigManager.instance().set_ocr_engine(engine_id):
-                self._set_engine_status(f"引擎 {engine_id} 不是有效选择，未保存")
-                return
-        except RuntimeError:
-            return
-        self._render_engine_availability()
 
     _MODE_FAMILY_LABELS = {
         "text": "文本识别",
@@ -2289,17 +2152,14 @@ class SettingsPageController:
             parts.append(f"原因 {entry.reason_code}")
         return "；".join(parts)
 
-    def _render_engine_availability(self, notice: str | None = None) -> None:
+    def _render_engine_availability(self) -> None:
         """把各识别模式的可用性逐行渲染到 treeEngineAvailability。
 
         旧实现把全部模式状态用"；"拼进单个 QLabel，多类目挤成一行难以阅读；
         现按 family（文本/文档/专项）分组，每模式一行（显示名|状态|说明）。
-        通知/恢复类消息仍写入 labelOcrEngineStatus。
         """
 
         catalog = self._selection_catalog
-        # 每次目录刷新都重置通知行，避免上一次的"尚未就绪"等操作提示残留。
-        self._set_engine_status(notice or "")
         tree = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
         if catalog is None or tree is None:
             return
@@ -2332,6 +2192,23 @@ class SettingsPageController:
                 )
             group.setExpanded(True)
             tree.addTopLevelItem(group)
+        bundled_group = QTreeWidgetItem(["随包工具", "", ""])
+        qr_available = "qrcode.v2" in self._runtime_capabilities
+        bundled_group.addChild(
+            QTreeWidgetItem(
+                [
+                    "二维码与条形码",
+                    "可用" if qr_available else "当前不可用",
+                    (
+                        "随基础 Runtime 提供；由二维码工具独立使用"
+                        if qr_available
+                        else "当前 Runtime 未提供；请在“运行时与组件”中修复或更新"
+                    ),
+                ]
+            )
+        )
+        bundled_group.setExpanded(True)
+        tree.addTopLevelItem(bundled_group)
 
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
@@ -2341,10 +2218,11 @@ class SettingsPageController:
             descriptors = []
         capabilities = health.get("capabilities")
         capabilities = set(capabilities) if isinstance(capabilities, list) else set()
+        self._runtime_capabilities = capabilities
         try:
             catalog = parse_capability_catalogs(descriptors)
         except RuntimeSelectionError as exc:
-            self._set_engine_status(f"Backend 选择目录无效：{exc}")
+            self._status_callback(f"Backend 选择目录无效：{exc}")
             return
         self._selection_catalog = catalog
         self._refresh_lifecycle_controls()
@@ -2353,8 +2231,7 @@ class SettingsPageController:
         set_active_recognition_catalog(catalog)
         if self._recognition_catalog_callback is not None:
             self._recognition_catalog_callback(catalog)
-        recovery_notice = self._reconcile_engine_selection()
-        self._render_engine_availability(recovery_notice)
+        self._render_engine_availability()
         self._render_offline_features()
         self._render_download_sources(capabilities)
         self._refresh_selection_availability()
@@ -2362,7 +2239,7 @@ class SettingsPageController:
     def _on_health_error(self, error: str) -> None:
         if self._closing:
             return
-        self._set_engine_status(f"引擎状态读取失败：{error}")
+        self._status_callback(f"识别能力读取失败：{error}")
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
         if status is not None:
             status.setText(f"下载源读取失败：{error}")
@@ -2686,13 +2563,6 @@ class SettingsPageController:
             tree.setEnabled(has_variants)
         if button is not None:
             button.setEnabled(has_variants)
-        if catalog is not None and not catalog.variants:
-            label = self._ui.findChild(QLabel, "labelOcrEngineStatus")
-            existing = label.text() if label is not None else ""
-            if not existing or existing.startswith("引擎状态"):
-                self._set_engine_status(
-                    "当前 Backend 未声明可选组件能力（不提供离线能力勾选）"
-                )
 
     def _on_residency_status(self, status: object) -> None:
         if self._closing or not isinstance(status, ResidencyStatus):

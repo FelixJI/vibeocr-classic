@@ -1,4 +1,9 @@
-"""InstallWorker cooperative cancellation through Runtime Installer."""
+"""InstallWorker cooperative cancellation through Runtime Installer.
+
+契约测试直接同步调用 ``worker.run()``，不起真实 QThread、不用
+``qtbot.waitSignal`` 嵌套事件循环；根因说明见
+test_install_worker_force_backend.py 模块 docstring。
+"""
 
 import threading
 from types import SimpleNamespace
@@ -6,6 +11,14 @@ from unittest.mock import patch
 
 from vibeocr.classic.runtime_installation import RuntimeProfileDescriptor
 from vibeocr.classic.widgets.install_dialog import InstallWorker
+
+
+def _run_worker_sync(worker: InstallWorker) -> list[tuple[bool, str]]:
+    """在当前线程同步执行 run() 并捕获 completed 信号参数。"""
+    completed: list[tuple[bool, str]] = []
+    worker.completed.connect(lambda *args: completed.append(args))
+    worker.run()
+    return completed
 
 
 def test_request_cancel_sets_cancel_event(qtbot, tmp_path):
@@ -27,9 +40,8 @@ def test_installer_receives_cancel_event(qtbot, tmp_path):
             profile="win-x64-cpu",
             runtime_id="digest/win-x64-cpu",
         )
-        with qtbot.waitSignal(worker.completed, timeout=5000):
-            worker.start()
-        assert worker.wait(1000)
+        completed = _run_worker_sync(worker)
+        assert completed and completed[-1][0] is True
 
     kwargs = client_class.return_value.ensure.call_args.kwargs
     assert isinstance(kwargs["cancel_event"], threading.Event)

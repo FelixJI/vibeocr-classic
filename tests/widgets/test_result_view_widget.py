@@ -4,6 +4,7 @@ import re
 import sys
 import time
 import types
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -562,6 +563,33 @@ class TestKaTeXLoading:
         assert katex_script_pos > inline_pos
 
 
+class _InlineScriptParser(HTMLParser):
+    """按 HTML 规范提取内联 <script> 文本（不含带 src 的外链脚本）。
+
+    用解析器替代正则过滤：大小写与属性形式均按规范处理，
+    规避 CodeQL "Bad HTML filtering regexp" 告警。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scripts: list[str] = []
+        self._current: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        # <script> 是 raw text 元素，标签体经由 handle_data 原样送达
+        if tag == "script" and not any(name == "src" for name, _ in attrs):
+            self._current = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "script" and self._current is not None:
+            self.scripts.append("".join(self._current))
+            self._current = None
+
+    def handle_data(self, data: str) -> None:
+        if self._current is not None:
+            self._current.append(data)
+
+
 class TestInlineJsSyntaxRegression:
     """回归测试：内联 <script> 必须是合法 JS，否则整个脚本不执行
     （表现为无法编辑 + 公式不渲染）。
@@ -575,9 +603,11 @@ class TestInlineJsSyntaxRegression:
         from pathlib import Path
 
         html = _build_full_html("<p>x</p>", Path("resources/katex"))
-        m = re.search(r"<script>(.*?)</script>", html, re.DOTALL)
-        assert m is not None, "应存在内联 <script>"
-        return m.group(1)
+        parser = _InlineScriptParser()
+        parser.feed(html)
+        parser.close()
+        assert parser.scripts, "应存在内联 <script>"
+        return parser.scripts[0]
 
     def test_no_raw_newline_in_single_quoted_js_strings(self):
         """JS 单引号字符串字面量内不得出现裸换行（会破坏整个脚本解析）。

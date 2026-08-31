@@ -5,6 +5,6 @@ from importlib.metadata import PackageNotFoundError, version
 try:
     __version__ = version("vibeocr-classic")
 except PackageNotFoundError:
-    __version__ = "0.10.12"  # x-release-please-version
+    __version__ = "0.10.13"  # x-release-please-version
 
 __all__ = ["__version__"]

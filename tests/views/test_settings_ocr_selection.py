@@ -73,6 +73,7 @@ def _health_payload(
     with_download_sources: bool = True,
     with_model_registry: bool = False,
     with_unknown_source: bool = False,
+    with_qrcode: bool = True,
 ) -> dict:
     descriptors = [
         {
@@ -131,6 +132,8 @@ def _health_payload(
         "ocr.engine-selection.v1",
         "runtime.component-selection.v1",
     ]
+    if with_qrcode:
+        capabilities.append("qrcode.v2")
     if with_download_sources:
         sources = [
             {
@@ -205,8 +208,6 @@ def selection_controller(qtbot, tmp_path, monkeypatch):
         "MinerU": 0,
         "PaddleOCR-VL": 300,
     }
-    config.get_ocr_engine_selection.return_value = ("rapidocr", False)
-    config.set_ocr_engine.return_value = True
     config.get_offline_component_features.return_value = []
     config.set_offline_component_features.return_value = True
     config.get_preload_pipelines.return_value = []
@@ -262,10 +263,12 @@ def test_health_catalog_renders_engines_features_and_sources(
 
     controller._on_health_loaded(_health_payload())
 
+    assert host.findChild(QWidget, "groupEngineDefault") is None
+
     # 模式可用性逐行渲染在 treeEngineAvailability；旧实现的单行拼接已移除。
     tree = host.findChild(QTreeWidget, "treeEngineAvailability")
     assert tree is not None
-    assert tree.topLevelItemCount() == 1  # 旧 engine catalog 只合成 text 家族
+    assert tree.topLevelItemCount() == 2  # text 家族 + 随包工具
     group = tree.topLevelItem(0)
     assert group.text(0) == "文本识别"
     assert group.childCount() == 3
@@ -278,8 +281,13 @@ def test_health_catalog_renders_engines_features_and_sources(
     assert paddle.text(1) == "需准备组件"
     assert "win-x64-cpu-document-parsing" in paddle.text(2)
     assert "component_missing" in paddle.text(2)
-    # 通知行不再承载逐模式状态
-    assert host.findChild(QLabel, "labelOcrEngineStatus").text() == ""
+    bundled = tree.topLevelItem(1)
+    assert bundled.text(0) == "随包工具"
+    assert bundled.childCount() == 1
+    qrcode = bundled.child(0)
+    assert qrcode.text(0) == "二维码与条形码"
+    assert qrcode.text(1) == "可用"
+    assert "由二维码工具独立使用" in qrcode.text(2)
 
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItemCount() == 1
@@ -297,6 +305,20 @@ def test_health_catalog_renders_engines_features_and_sources(
     ]
     assert combo.currentData() is None
     assert controller._resolve_download_source_ids() is None
+
+
+def test_health_marks_bundled_qrcode_unavailable_when_runtime_lacks_capability(
+    selection_controller,
+) -> None:
+    controller, host, _adapter, _config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload(with_qrcode=False))
+
+    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
+    bundled = tree.topLevelItem(1)
+    qrcode = bundled.child(0)
+    assert qrcode.text(1) == "当前不可用"
+    assert "运行时与组件" in qrcode.text(2)
 
 
 def test_offline_features_reflect_runtime_component_states(
@@ -322,28 +344,7 @@ def test_offline_features_reflect_runtime_component_states(
     assert tree.topLevelItem(0).text(1) == "— 未启用"
 
 
-def test_health_recovers_persisted_engine_when_interrupted_install_left_it_unavailable(
-    selection_controller,
-) -> None:
-    controller, host, _adapter, config, _manager = selection_controller
-    config.get_ocr_engine_selection.return_value = ("paddleocr", False)
-    controller._populate_engine_combo()
-    health = _health_payload()
-    paddle = health["capability_descriptors"][0]["ocr_engine_catalog"]["engines"][2]
-    paddle["availability"] = "unavailable"
-    paddle["reason_code"] = "engine_not_installed"
-
-    controller._on_health_loaded(health)
-
-    config.set_ocr_engine.assert_called_once_with("rapidocr")
-    combo = host.findChild(QComboBox, "comboOcrEngine")
-    assert combo.currentData() == "rapidocr"
-    assert (
-        "已自动切换到 RapidOCR" in host.findChild(QLabel, "labelOcrEngineStatus").text()
-    )
-
-
-def test_supervisor_ready_requests_health_for_engine_reconciliation(
+def test_supervisor_ready_requests_recognition_catalog(
     selection_controller,
 ) -> None:
     controller, _host, adapter, _config, _manager = selection_controller
@@ -351,22 +352,6 @@ def test_supervisor_ready_requests_health_for_engine_reconciliation(
     controller.on_supervisor_ready()
 
     assert adapter.fetch_health_calls == 1
-
-
-def test_non_ready_engine_cannot_be_persisted_again(
-    selection_controller,
-) -> None:
-    controller, host, _adapter, config, _manager = selection_controller
-    controller._on_health_loaded(_health_payload())
-    config.set_ocr_engine.reset_mock()
-    combo = host.findChild(QComboBox, "comboOcrEngine")
-    paddle_index = combo.findData("paddleocr")
-
-    combo.setCurrentIndex(paddle_index)
-
-    config.set_ocr_engine.assert_not_called()
-    assert combo.currentData() == "rapidocr"
-    assert "需先安装对应组件" in host.findChild(QLabel, "labelOcrEngineStatus").text()
 
 
 def test_missing_download_capability_disables_source_ui(selection_controller) -> None:
@@ -455,17 +440,6 @@ def test_install_offline_features_declined_does_not_install(
 
     assert started == []
     config.set_offline_component_features.assert_not_called()
-
-
-def test_engine_selection_persists_to_config(selection_controller) -> None:
-    controller, host, _adapter, config, _manager = selection_controller
-
-    combo = host.findChild(QComboBox, "comboOcrEngine")
-    index = next(i for i in range(combo.count()) if combo.itemData(i) == "windows")
-    # currentIndexChanged 已连接 _on_engine_selected；无需手动再调
-    combo.setCurrentIndex(index)
-
-    config.set_ocr_engine.assert_called_once_with("windows")
 
 
 def test_repeated_health_reload_does_not_accumulate_source_rows(

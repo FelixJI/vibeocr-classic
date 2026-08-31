@@ -1,9 +1,9 @@
 """设置页导航分类回归测试
 
 验证：
-- 设置导航按职责拆分为四个静态页：通用 / 识别与引擎 / Runtime 与加速 / 模型驻留
+- 设置导航按用户任务拆分为四个静态页：通用 / 识别设置 / 运行时与组件 / 模型缓存
   （动态页「截图选项」「PDF 选项」由控制器追加），无空白「工具」页。
-- 「推理后端」不是独立导航项：BackendOptionsWidget 位于「Runtime 与加速」页的
+- 「推理后端」不是独立导航项：BackendOptionsWidget 位于「运行时与组件」页的
   Runtime 分组（groupEnvMaintenance）内。
 
 防止后续误改回混排结构。
@@ -69,19 +69,19 @@ def controller(qtbot, tmp_path):
 
 
 def test_nav_static_pages_match_responsibility_split(controller):
-    """静态导航应为四页：通用 / 识别与引擎 / Runtime 与加速 / 模型驻留"""
+    """静态导航应按用户任务使用清晰、非实现导向的名称。"""
     _ctrl, host = controller
     nav = host.findChild(QListWidget, "settingsNavList")
     assert nav is not None
     texts = [nav.item(i).text() for i in range(nav.count())]
     # 静态四项 + 动态两项（截图选项 / PDF 选项），不应含「工具」
     assert "工具" not in texts
-    assert texts[:4] == ["通用", "识别与引擎", "Runtime 与加速", "模型驻留"]
+    assert texts[:4] == ["通用", "识别设置", "运行时与组件", "模型缓存"]
     assert texts[4:] == ["截图选项", "PDF 选项"]
 
 
 def test_nav_has_no_separate_backend_item(controller):
-    """「推理后端」不应作为独立导航项存在（位于 Runtime 与加速页内）"""
+    """「推理后端」不应作为独立导航项存在（位于运行时与组件页内）。"""
     _ctrl, host = controller
     nav = host.findChild(QListWidget, "settingsNavList")
     texts = [nav.item(i).text() for i in range(nav.count())]
@@ -93,7 +93,7 @@ def test_backend_widget_is_inside_env_group(controller):
     _ctrl, host = controller
     group = host.findChild(QGroupBox, "groupEnvMaintenance")
     assert group is not None
-    assert group.title() == "Runtime 与加速"
+    assert group.title() == "运行时与组件"
 
     container = host.findChild(QWidget, "backendOptionsContainer")
     assert container is not None, "backendOptionsContainer 应存在于分组内"

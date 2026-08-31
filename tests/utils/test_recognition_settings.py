@@ -138,22 +138,13 @@ def test_ocr_pipeline_selection_sends_task_engine_override() -> None:
     assert selection.to_payload()["engine"] == "windows"
 
 
-def test_ocr_pipeline_selection_uses_global_default_without_override() -> None:
-    selection = OCROptions(pipeline=OCRPipeline.OCR).to_pipeline_selection(
-        default_engine="paddleocr"
-    )
-
-    assert selection.engine is not None
-    assert selection.engine.value == "paddleocr"
-
-
 def test_ocr_pipeline_selection_consumes_recognition_mode_projection() -> None:
     """主界面与截图复用此 seam，wire 仍严格是 pipeline_id + engine。"""
 
     selection = OCROptions(
         pipeline=OCRPipeline.OCR,
         recognition_mode="windows_text",
-    ).to_pipeline_selection(default_engine="rapidocr")
+    ).to_pipeline_selection()
 
     assert selection.pipeline_id == "OCR"
     assert selection.engine is not None
@@ -275,7 +266,7 @@ def test_ocr_pipeline_selection_omits_engine_when_unresolved() -> None:
 
     unresolved_legacy = OCROptions(
         pipeline=OCRPipeline.OCR, engine="legacy-unknown"
-    ).to_pipeline_selection(default_engine="legacy-unknown")
+    ).to_pipeline_selection()
 
     assert unresolved_legacy.engine is None
     assert "engine" not in unresolved_legacy.to_payload()
@@ -289,7 +280,7 @@ def test_non_ocr_pipelines_never_send_engine() -> None:
     ):
         selection = OCROptions(
             pipeline=pipeline, engine="windows"
-        ).to_pipeline_selection(default_engine="paddleocr")
+        ).to_pipeline_selection()
 
         assert selection.engine is None
         assert "engine" not in selection.to_payload()

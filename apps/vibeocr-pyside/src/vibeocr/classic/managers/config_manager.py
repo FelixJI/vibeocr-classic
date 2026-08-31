@@ -263,37 +263,6 @@ class ConfigManager(QObject):
         data["log_level"] = normalized
         return self._save_json("app_settings.json", data)
 
-    def get_ocr_engine_selection(self) -> tuple[str | None, bool]:
-        """读取全局 OCR 引擎选择。
-
-        返回 ``(engine_id, requires_selection)``：旧配置没有 engine 时按
-        RapidOCR 默认迁移；未知旧值不静默替换，返回 ``None`` 并标记需要
-        用户显式重选（请求 seam 对 ``None`` 省略 engine 字段）。
-        """
-
-        from vibeocr.classic.runtime_selection import normalize_stored_engine
-
-        data = self._load_json("app_settings.json", {})
-        return normalize_stored_engine(data.get("ocr_engine"))
-
-    def get_ocr_engine(self) -> str:
-        """全局 OCR 引擎的有效值；未知旧值回退 Backend 默认（省略语义）。"""
-
-        engine_id, _requires_selection = self.get_ocr_engine_selection()
-        return engine_id or "rapidocr"
-
-    def set_ocr_engine(self, engine_id: str) -> bool:
-        """保存全局 OCR 引擎；仅接受稳定 engine id，未知值拒绝保存。"""
-
-        from vibeocr.classic.runtime_selection import VALID_ENGINE_IDS
-
-        normalized = str(engine_id)
-        if normalized not in VALID_ENGINE_IDS:
-            return False
-        data = self._load_json("app_settings.json", {})
-        data["ocr_engine"] = normalized
-        return self._save_json("app_settings.json", data)
-
     def get_offline_component_features(self, accelerator: str) -> list[str]:
         """按 accelerator 读取用户勾选的离线能力 feature id 集合。"""
 

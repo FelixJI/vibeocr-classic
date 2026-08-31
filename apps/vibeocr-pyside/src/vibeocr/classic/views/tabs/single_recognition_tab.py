@@ -688,7 +688,6 @@ class SingleRecognitionTab(BaseOcrTab):
                 self._call_backend_recognize, payload, pipeline_val
             )
 
-        from vibeocr.classic.pyside.settings_runtime import get_default_ocr_engine
         from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
         from vibeocr.classic.recognition_result import ocr_result_from_payload
 
@@ -699,9 +698,7 @@ class SingleRecognitionTab(BaseOcrTab):
         )
         entries = await get_supervisor_adapter().recognize(
             [("input", None, payload)],
-            pipeline=recognition_options.to_pipeline_selection(
-                default_engine=get_default_ocr_engine()
-            ),
+            pipeline=recognition_options.to_pipeline_selection(),
         )
         if not entries or entries[0].error_code:
             raise RuntimeError(entries[0].error_code if entries else "识别结果缺失")

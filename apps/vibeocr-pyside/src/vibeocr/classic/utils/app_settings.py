@@ -24,6 +24,7 @@ _DEFAULTS = {
     # 其它平台不读取，仅随配置文件持久化保持跨平台兼容。
     "autostart_migrated_to_lnk": False,
     "hide_delay_ms": 500,
+    "toolbar_peek_pixels": 3,
     "toolbar_pos": None,
 }
 
@@ -172,3 +173,11 @@ class AppSettings:
     @hide_delay_ms.setter
     def hide_delay_ms(self, value: int) -> None:
         self._data["hide_delay_ms"] = max(100, min(5000, value))
+
+    @property
+    def toolbar_peek_pixels(self) -> int:
+        return int(self._data.get("toolbar_peek_pixels", 3))
+
+    @toolbar_peek_pixels.setter
+    def toolbar_peek_pixels(self, value: int) -> None:
+        self._data["toolbar_peek_pixels"] = max(1, min(20, value))

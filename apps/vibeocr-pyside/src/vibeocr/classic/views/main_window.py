@@ -1734,6 +1734,7 @@ class MainWindow(QMainWindow):
         # 自动隐藏和延迟
         self._edge_toolbar.set_auto_hide(self._app_settings.auto_hide_toolbar)
         self._edge_toolbar.set_hide_delay(self._app_settings.hide_delay_ms)
+        self._edge_toolbar.set_peek_pixels(self._app_settings.toolbar_peek_pixels)
         # 更新设置页面复选框
         self._sync_app_settings_ui()
 
@@ -1744,6 +1745,7 @@ class MainWindow(QMainWindow):
         self._chk_tray = self.findChild(QCheckBox, "chkMinimizeToTray")
         self._chk_autostart = self.findChild(QCheckBox, "chkAutoStart")
         self._spin_hide_delay = self.findChild(QSpinBox, "spinHideDelay")
+        self._spin_peek_pixels = self.findChild(QSpinBox, "spinPeekPixels")
 
         if self._chk_show_toolbar:
             self._chk_show_toolbar.toggled.connect(self._on_show_toolbar_toggled)
@@ -1755,10 +1757,16 @@ class MainWindow(QMainWindow):
             self._chk_autostart.toggled.connect(self._on_autostart_toggled)
         if self._spin_hide_delay:
             self._spin_hide_delay.valueChanged.connect(self._on_hide_delay_changed)
+        if self._spin_peek_pixels:
+            self._spin_peek_pixels.valueChanged.connect(self._on_peek_pixels_changed)
 
         self._save_delay_timer = QTimer(self)
         self._save_delay_timer.setSingleShot(True)
         self._save_delay_timer.timeout.connect(self._do_save_hide_delay)
+
+        self._save_peek_timer = QTimer(self)
+        self._save_peek_timer.setSingleShot(True)
+        self._save_peek_timer.timeout.connect(self._do_save_peek_pixels)
 
         self._save_pos_timer = QTimer(self)
         self._save_pos_timer.setSingleShot(True)
@@ -1788,6 +1796,11 @@ class MainWindow(QMainWindow):
             self._spin_hide_delay.setValue(self._app_settings.hide_delay_ms)
             self._spin_hide_delay.setEnabled(show and auto_hide)
             self._spin_hide_delay.blockSignals(False)
+        if self._spin_peek_pixels:
+            self._spin_peek_pixels.blockSignals(True)
+            self._spin_peek_pixels.setValue(self._app_settings.toolbar_peek_pixels)
+            self._spin_peek_pixels.setEnabled(show and auto_hide)
+            self._spin_peek_pixels.blockSignals(False)
         if self._chk_tray:
             self._chk_tray.blockSignals(True)
             self._chk_tray.setChecked(self._app_settings.minimize_to_tray)
@@ -1806,6 +1819,8 @@ class MainWindow(QMainWindow):
         self._edge_toolbar.set_auto_hide(checked)
         if self._spin_hide_delay:
             self._spin_hide_delay.setEnabled(checked)
+        if self._spin_peek_pixels:
+            self._spin_peek_pixels.setEnabled(checked)
         show_toast(self, "保存成功")
         logging.debug(f"自动隐藏工具栏: {'启用' if checked else '禁用'}")
 
@@ -1823,6 +1838,23 @@ class MainWindow(QMainWindow):
             self._app_settings.save()
             show_toast(self, "保存成功")
             logging.debug(f"工具栏隐藏延迟: {self._app_settings.hide_delay_ms}ms")
+
+    @Slot(int)
+    def _on_peek_pixels_changed(self, value: int) -> None:
+        """隐藏时露出像素值改变（防抖保存）"""
+        if self._app_settings:
+            self._app_settings.toolbar_peek_pixels = value
+        self._edge_toolbar.set_peek_pixels(value)
+        self._save_peek_timer.start(300)
+
+    def _do_save_peek_pixels(self) -> None:
+        """防抖延迟后实际保存露出像素设置"""
+        if self._app_settings:
+            self._app_settings.save()
+            show_toast(self, "保存成功")
+            logging.debug(
+                f"工具栏隐藏时露出像素: {self._app_settings.toolbar_peek_pixels}px"
+            )
 
     @Slot(bool)
     def _on_show_toolbar_toggled(self, checked: bool) -> None:
@@ -1843,6 +1875,10 @@ class MainWindow(QMainWindow):
             self._chk_auto_hide.setEnabled(checked)
         if self._spin_hide_delay and self._app_settings:
             self._spin_hide_delay.setEnabled(
+                checked and self._app_settings.auto_hide_toolbar
+            )
+        if self._spin_peek_pixels and self._app_settings:
+            self._spin_peek_pixels.setEnabled(
                 checked and self._app_settings.auto_hide_toolbar
             )
         show_toast(self, "保存成功")

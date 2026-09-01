@@ -35,12 +35,16 @@ logger = logging.getLogger(__name__)
 
 # 靠边检测阈值（像素）
 _EDGE_THRESHOLD = 20
-# 隐藏后露出的像素宽度
+# 隐藏后默认露出的像素宽度（可经 set_peek_pixels 配置）
 _VISIBLE_STRIP = 3
+# 露出像素的合法范围
+_PEEK_MIN = 1
+_PEEK_MAX = 20
 # 动画持续时间（毫秒）
-_ANIM_DURATION = 80
-# 鼠标轮询间隔（毫秒）：仅在自动隐藏生效（启用 + 已停靠）时运行
-_POLL_INTERVAL_MS = 100
+_ANIM_DURATION = 50
+# 鼠标轮询间隔（毫秒）：压缩隐藏态下鼠标靠近边缘到触发展开的等待窗口；
+# 仅在自动隐藏生效（启用 + 已停靠）时运行
+_POLL_INTERVAL_MS = 50
 # 隐藏态揭示检测区外扩（像素）：覆盖露出的 3px 条并容忍快速掠边
 _REVEAL_MARGIN = 10
 # 可见态保持区外扩（像素）：指针离开该区才开始隐藏倒计时。
@@ -141,6 +145,7 @@ class EdgeToolbar(QWidget):
         self._is_hidden = False
         self._auto_hide_enabled = False
         self._hide_delay_ms = 500
+        self._peek_pixels = _VISIBLE_STRIP
         self._recognition_catalog = None
         self._mode_buttons: dict[str, QPushButton] = {}
 
@@ -149,7 +154,8 @@ class EdgeToolbar(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._slide_hide)
 
-        # 鼠标检测定时器（兜底：检测鼠标是否离开/接近边缘）
+        # 鼠标检测定时器（兜底：检测鼠标是否离开/接近边缘）；50ms 轮询压缩
+        # 隐藏态下鼠标靠近边缘到触发展开的等待窗口
         self._mouse_check_timer = QTimer(self)
         self._mouse_check_timer.setInterval(_POLL_INTERVAL_MS)
         self._mouse_check_timer.timeout.connect(self._check_mouse_position)
@@ -339,6 +345,25 @@ class EdgeToolbar(QWidget):
         """设置隐藏延迟（毫秒）"""
         self._hide_delay_ms = max(100, min(5000, delay_ms))
 
+    def set_peek_pixels(self, pixels: int) -> None:
+        """设置自动隐藏后仍露出屏幕边缘的像素宽度。
+
+        隐藏状态下调用会立即把工具栏移动到新的露出位置，使设置即时生效。
+        """
+        peek = max(_PEEK_MIN, min(_PEEK_MAX, pixels))
+        if peek == self._peek_pixels:
+            return
+        self._peek_pixels = peek
+        if not self._is_hidden:
+            return
+        screen = QApplication.screenAt(self.geometry().center())
+        if not screen:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        self._anim.stop()
+        self.setGeometry(self._hidden_geometry(screen.availableGeometry()))
+
     def set_initial_position(self) -> None:
         """将工具栏定位到主屏幕顶部居中"""
         screen = QApplication.primaryScreen()
@@ -411,6 +436,18 @@ class EdgeToolbar(QWidget):
         # 不应立即武装倒计时导致从指针下方缩回
         self._reconcile_hide_state()
 
+    def _hidden_geometry(self, screen_geo: QRect) -> QRect:
+        """计算当前停靠边下仅露出 _peek_pixels 像素的隐藏目标几何"""
+        geo = self.geometry()
+        target = QRect(geo)
+        if self._docked_side == EdgeSide.TOP:
+            target.moveTop(screen_geo.top() - geo.height() + self._peek_pixels)
+        elif self._docked_side == EdgeSide.LEFT:
+            target.moveLeft(screen_geo.left() - geo.width() + self._peek_pixels)
+        elif self._docked_side == EdgeSide.RIGHT:
+            target.moveLeft(screen_geo.right() - self._peek_pixels)
+        return target
+
     def _slide_hide(self) -> None:
         """将工具栏滑出屏幕边缘，仅露出几个像素"""
         if self._is_hidden or self._docked_side == EdgeSide.NONE or self._dragging:
@@ -426,13 +463,7 @@ class EdgeToolbar(QWidget):
         screen_geo = screen.availableGeometry()
         geo = self.geometry()
 
-        target = QRect(geo)
-        if self._docked_side == EdgeSide.TOP:
-            target.moveTop(screen_geo.top() - geo.height() + _VISIBLE_STRIP)
-        elif self._docked_side == EdgeSide.LEFT:
-            target.moveLeft(screen_geo.left() - geo.width() + _VISIBLE_STRIP)
-        elif self._docked_side == EdgeSide.RIGHT:
-            target.moveLeft(screen_geo.right() - _VISIBLE_STRIP)
+        target = self._hidden_geometry(screen_geo)
 
         self._anim.stop()
         self._anim.setStartValue(geo)

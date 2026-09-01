@@ -17,6 +17,7 @@ from PySide6.QtCore import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QFormLayout,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -164,13 +165,17 @@ class Ui_MainWindowWidget(object):
 
         self.toolbarSubLayout.addWidget(self.chkAutoHideToolbar)
 
-        self.hideDelayLayout = QHBoxLayout()
-        self.hideDelayLayout.setSpacing(8)
-        self.hideDelayLayout.setObjectName("hideDelayLayout")
+        self.toolbarFieldsForm = QFormLayout()
+        self.toolbarFieldsForm.setObjectName("toolbarFieldsForm")
+        self.toolbarFieldsForm.setLabelAlignment(
+            Qt.AlignRight | Qt.AlignTrailing | Qt.AlignVCenter
+        )
         self.labelHideDelay = QLabel(self.toolbarSubOptions)
         self.labelHideDelay.setObjectName("labelHideDelay")
 
-        self.hideDelayLayout.addWidget(self.labelHideDelay)
+        self.toolbarFieldsForm.setWidget(
+            0, QFormLayout.ItemRole.LabelRole, self.labelHideDelay
+        )
 
         self.spinHideDelay = QSpinBox(self.toolbarSubOptions)
         self.spinHideDelay.setObjectName("spinHideDelay")
@@ -179,15 +184,29 @@ class Ui_MainWindowWidget(object):
         self.spinHideDelay.setSingleStep(100)
         self.spinHideDelay.setValue(500)
 
-        self.hideDelayLayout.addWidget(self.spinHideDelay)
-
-        self.hideDelaySpacer = QSpacerItem(
-            40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        self.toolbarFieldsForm.setWidget(
+            0, QFormLayout.ItemRole.FieldRole, self.spinHideDelay
         )
 
-        self.hideDelayLayout.addItem(self.hideDelaySpacer)
+        self.labelPeekPixels = QLabel(self.toolbarSubOptions)
+        self.labelPeekPixels.setObjectName("labelPeekPixels")
 
-        self.toolbarSubLayout.addLayout(self.hideDelayLayout)
+        self.toolbarFieldsForm.setWidget(
+            1, QFormLayout.ItemRole.LabelRole, self.labelPeekPixels
+        )
+
+        self.spinPeekPixels = QSpinBox(self.toolbarSubOptions)
+        self.spinPeekPixels.setObjectName("spinPeekPixels")
+        self.spinPeekPixels.setMinimum(1)
+        self.spinPeekPixels.setMaximum(20)
+        self.spinPeekPixels.setSingleStep(1)
+        self.spinPeekPixels.setValue(3)
+
+        self.toolbarFieldsForm.setWidget(
+            1, QFormLayout.ItemRole.FieldRole, self.spinPeekPixels
+        )
+
+        self.toolbarSubLayout.addLayout(self.toolbarFieldsForm)
 
         self.appSettingsLayout.addWidget(self.toolbarSubOptions)
 
@@ -714,6 +733,23 @@ class Ui_MainWindowWidget(object):
         )
         self.spinHideDelay.setSuffix(
             QCoreApplication.translate("MainWindowWidget", " \u6beb\u79d2", None)
+        )
+        self.labelPeekPixels.setText(
+            QCoreApplication.translate(
+                "MainWindowWidget", "\u9690\u85cf\u65f6\u9732\u51fa:", None
+            )
+        )
+        # if QT_CONFIG(tooltip)
+        self.spinPeekPixels.setToolTip(
+            QCoreApplication.translate(
+                "MainWindowWidget",
+                "\u5de5\u5177\u680f\u81ea\u52a8\u9690\u85cf\u540e\u4ecd\u9732\u51fa\u5c4f\u5e55\u8fb9\u7f18\u7684\u50cf\u7d20\u5bbd\u5ea6\uff0c\u4fbf\u4e8e\u627e\u5230\u5e76\u5524\u51fa\u5de5\u5177\u680f",
+                None,
+            )
+        )
+        # endif // QT_CONFIG(tooltip)
+        self.spinPeekPixels.setSuffix(
+            QCoreApplication.translate("MainWindowWidget", " \u50cf\u7d20", None)
         )
         # if QT_CONFIG(tooltip)
         self.chkMinimizeToTray.setToolTip(

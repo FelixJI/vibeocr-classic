@@ -294,18 +294,18 @@
                   </widget>
                  </item>
                  <item>
-                  <layout class="QHBoxLayout" name="hideDelayLayout">
-                   <property name="spacing">
-                    <number>8</number>
+                  <layout class="QFormLayout" name="toolbarFieldsForm">
+                   <property name="labelAlignment">
+                    <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
                    </property>
-                   <item>
+                   <item row="0" column="0">
                     <widget class="QLabel" name="labelHideDelay">
                      <property name="text">
                       <string>隐藏延迟:</string>
                      </property>
                     </widget>
                    </item>
-                   <item>
+                   <item row="0" column="1">
                     <widget class="QSpinBox" name="spinHideDelay">
                      <property name="suffix">
                       <string> 毫秒</string>
@@ -324,18 +324,34 @@
                      </property>
                     </widget>
                    </item>
-                   <item>
-                    <spacer name="hideDelaySpacer">
-                     <property name="orientation">
-                      <enum>Qt::Horizontal</enum>
+                   <item row="1" column="0">
+                    <widget class="QLabel" name="labelPeekPixels">
+                     <property name="text">
+                      <string>隐藏时露出:</string>
                      </property>
-                     <property name="sizeHint" stdset="0">
-                      <size>
-                       <width>40</width>
-                       <height>20</height>
-                      </size>
+                    </widget>
+                   </item>
+                   <item row="1" column="1">
+                    <widget class="QSpinBox" name="spinPeekPixels">
+                     <property name="toolTip">
+                      <string>工具栏自动隐藏后仍露出屏幕边缘的像素宽度，便于找到并唤出工具栏</string>
                      </property>
-                    </spacer>
+                     <property name="suffix">
+                      <string> 像素</string>
+                     </property>
+                     <property name="minimum">
+                      <number>1</number>
+                     </property>
+                     <property name="maximum">
+                      <number>20</number>
+                     </property>
+                     <property name="singleStep">
+                      <number>1</number>
+                     </property>
+                     <property name="value">
+                      <number>3</number>
+                     </property>
+                    </widget>
                    </item>
                   </layout>
                  </item>

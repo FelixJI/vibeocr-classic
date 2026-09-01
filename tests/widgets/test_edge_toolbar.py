@@ -82,3 +82,62 @@ class TestEdgeToolbar:
 
         assert tb._is_hidden
         tb.close()
+
+
+class TestPeekPixels:
+    """隐藏时露出像素（_peek_pixels）的配置与即时生效。"""
+
+    def test_default_and_clamp(self, qapp):
+        tb = EdgeToolbar()
+        assert tb._peek_pixels == 3
+        tb.set_peek_pixels(0)
+        assert tb._peek_pixels == 1
+        tb.set_peek_pixels(99)
+        assert tb._peek_pixels == 20
+        tb.set_peek_pixels(8)
+        assert tb._peek_pixels == 8
+        tb.close()
+
+    def test_hidden_geometry_uses_peek_pixels(self, qapp):
+        tb = EdgeToolbar()
+        screen_geo = qapp.primaryScreen().availableGeometry()
+        tb.setGeometry(
+            QRect(
+                screen_geo.center().x() - tb.width() // 2,
+                screen_geo.top(),
+                tb.width(),
+                tb.height(),
+            )
+        )
+        tb._docked_side = EdgeSide.TOP
+        tb.set_peek_pixels(8)
+        hidden = tb._hidden_geometry(screen_geo)
+        assert hidden.top() == screen_geo.top() - tb.height() + 8
+        tb.close()
+
+    def test_set_peek_pixels_while_hidden_repositions_immediately(
+        self, qapp, monkeypatch
+    ):
+        """隐藏状态下修改露出像素必须立即移动到新位置，无需等待下一次隐藏。"""
+        screen = qapp.primaryScreen()
+        screen_geo = screen.availableGeometry()
+        monkeypatch.setattr(
+            toolbar_module.QApplication,
+            "screenAt",
+            staticmethod(lambda _geo: screen),
+        )
+        tb = EdgeToolbar()
+        tb._docked_side = EdgeSide.TOP
+        tb._is_hidden = True
+        tb.setGeometry(
+            QRect(
+                screen_geo.center().x() - tb.width() // 2,
+                screen_geo.top() - tb.height() + 3,
+                tb.width(),
+                tb.height(),
+            )
+        )
+
+        tb.set_peek_pixels(10)
+        assert tb.geometry().top() == screen_geo.top() - tb.height() + 10
+        tb.close()

@@ -27,6 +27,9 @@ class TestAppSettingsDefaults:
     def test_hide_delay_default(self, settings):
         assert settings.hide_delay_ms == 500
 
+    def test_toolbar_peek_pixels_default(self, settings):
+        assert settings.toolbar_peek_pixels == 3
+
     def test_toolbar_pos_default_none(self, settings):
         assert settings.toolbar_pos is None
 
@@ -56,6 +59,7 @@ class TestAppSettingsPersistence:
         s1.show_toolbar = False
         s1.auto_hide_toolbar = False
         s1.hide_delay_ms = 1000
+        s1.toolbar_peek_pixels = 8
         s1.toolbar_pos = {"x": 50, "y": 60}
         s1.save()
 
@@ -63,6 +67,7 @@ class TestAppSettingsPersistence:
         assert s2.show_toolbar is False
         assert s2.auto_hide_toolbar is False
         assert s2.hide_delay_ms == 1000
+        assert s2.toolbar_peek_pixels == 8
         assert s2.toolbar_pos == {"x": 50, "y": 60}
 
 
@@ -187,3 +192,10 @@ class TestAppSettingsPathModeEdgeCases:
         assert settings.hide_delay_ms == 100
         settings.hide_delay_ms = 99999
         assert settings.hide_delay_ms == 5000
+        # toolbar_peek_pixels 夹紧到 [1, 20]
+        settings.toolbar_peek_pixels = 8
+        assert settings.toolbar_peek_pixels == 8
+        settings.toolbar_peek_pixels = 0
+        assert settings.toolbar_peek_pixels == 1
+        settings.toolbar_peek_pixels = 99
+        assert settings.toolbar_peek_pixels == 20

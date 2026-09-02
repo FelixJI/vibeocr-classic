@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.15
+
+### Bug Fixes
+
+- **settings:** 修复识别设置能力树列宽截断与目录未达时的空树 (#88) (27e0a0d)
+- **qrcode:** 修正二维码生成契约并按 profile 区分基础 Runtime 显示 (#87) (b888faf)
+
 ## 0.10.14
 
 ### Features

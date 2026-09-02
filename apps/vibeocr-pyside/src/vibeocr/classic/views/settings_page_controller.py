@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -2130,7 +2131,32 @@ class SettingsPageController:
             )
         except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
             self._selection_accelerator = None
+        self._configure_selection_tree_headers()
+        # catalog 到达前先渲染占位行，避免空树被误读为没有任何识别能力。
+        self._render_engine_availability()
         self._refresh_selection_availability()
+
+    def _configure_selection_tree_headers(self) -> None:
+        """识别设置页两棵树的列宽与最小高度。
+
+        默认 QTreeWidget 各列约 100px，中文模式名（如“表格结构识别
+        （PaddleOCR）”）会被截断；说明列才应吃掉剩余宽度。同时给树一个
+        能容纳全部行的高度，避免在滚动页里被压扁导致行不可见。
+        """
+
+        availability = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
+        if availability is not None:
+            header = availability.header()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            availability.setMinimumHeight(320)
+        features = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
+        if features is not None:
+            header = features.header()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            features.setMinimumHeight(120)
 
     _MODE_FAMILY_LABELS = {
         "text": "文本识别",
@@ -2161,9 +2187,18 @@ class SettingsPageController:
 
         catalog = self._selection_catalog
         tree = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
-        if catalog is None or tree is None:
+        if tree is None:
             return
         tree.clear()
+        if catalog is None:
+            # 目录未到达（health 未返回或失败）时给出一行占位，避免树空着
+            # 被误读为“没有任何识别能力”。
+            tree.addTopLevelItem(
+                QTreeWidgetItem(
+                    ["等待 Backend 识别能力目录…", "", "连接就绪后自动填充"]
+                )
+            )
+            return
         # 新目录优先：它同时投影 specialized/document 模式的本地文案和
         # 生命周期。旧 Backend 仅有 engine catalog 时由 facade 合成 text 模式。
         entries = catalog.modes or catalog.engines

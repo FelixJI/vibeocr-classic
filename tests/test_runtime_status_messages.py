@@ -70,9 +70,30 @@ def test_base_only_runtime_is_distinguished_from_cpu_profile() -> None:
         ),
     )
     assert accelerator_framework("cpu", base_only) is None
-    assert accelerator_display("cpu", "win-x64-cpu", base_only) == (
+    assert accelerator_display("cpu", "win-x64-base", base_only) == (
         "基础 Runtime（未选择高级 OCR 框架）"
     )
+
+
+def test_profile_id_is_the_authoritative_framework_evidence() -> None:
+    """profile 与 accelerator 一一对应（backend runtime_manifest 是事实来源）。
+
+    Host 对 win-x64-base 也回报 accelerator=cpu；按 profile 判定后，
+    即使组件证据缺失（None）也不会把基础 Runtime 伪装成"已选择 CPU"。
+    """
+    assert accelerator_framework("cpu", None, "win-x64-base") is None
+    assert accelerator_framework("cpu", None, "win-x64-cpu") == "cpu"
+    assert accelerator_framework("cpu", None, "win-x64-cu126") == "gpu"
+    assert accelerator_display("cpu", "win-x64-base", None) == (
+        "基础 Runtime（未选择高级 OCR 框架）"
+    )
+    # profile 优先级高于 accelerator 字段与组件证据。
+    assert accelerator_framework("nvidia_cuda", (), "win-x64-base") is None
+
+
+def test_unknown_profile_falls_back_to_component_evidence() -> None:
+    # 未知 profile id：回退到 accelerator + 组件 desired_state 的启发式。
+    assert accelerator_framework("cpu", None, "win-x64-tpu") == "cpu"
 
 
 def test_missing_component_info_falls_back_to_binary_labels() -> None:

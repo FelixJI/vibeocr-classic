@@ -114,7 +114,10 @@ class _GpuDetectWorker(QThread):
         info["runtime_components"] = runtime_components
         # 与旧字段语义一致：是否实际安装了 GPU 框架（基础 Runtime 不算）。
         info["runtime_has_gpu"] = (
-            accelerator_framework(runtime_accelerator, runtime_components) == "gpu"
+            accelerator_framework(
+                runtime_accelerator, runtime_components, runtime_profile
+            )
+            == "gpu"
         )
         self.finished_info.emit(dict(info))
 
@@ -337,7 +340,9 @@ class BackendOptionsWidget(QWidget):
         }
         self._runtime_profile = str(info.get("runtime_profile") or "")
         self._current = (
-            accelerator_framework(runtime_accelerator, runtime_components)
+            accelerator_framework(
+                runtime_accelerator, runtime_components, self._runtime_profile
+            )
             if self._runtime_installed
             else None
         )

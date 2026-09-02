@@ -19,6 +19,15 @@ _PROFILE_CUDA_VERSIONS = {
 # 组件 desired_state 全为 not_required 即「仅基础 Runtime，用户未选择框架」。
 _ADVANCED_FRAMEWORK_PREFIXES = ("paddleocr-", "mineru-")
 
+# profile id 与 accelerator 一一对应（vibeocr-backend runtime_manifest 的
+# ACCELERATOR_TO_PLAN 单一事实来源）。win-x64-base 表示仅离线必备闭包、
+# 未选择高级 OCR 框架，Host 仍会回报 accelerator="cpu"，必须按 profile 区分。
+_PROFILE_FRAMEWORKS = {
+    "win-x64-base": None,
+    "win-x64-cpu": "cpu",
+    "win-x64-cu126": "gpu",
+}
+
 #: 未随 profile 携带 CUDA 变体信息时的兜底显示。
 _GENERIC_GPU_LABEL = "NVIDIA CUDA（版本未知）"
 
@@ -46,14 +55,19 @@ def _advanced_framework_desired_states(components: object) -> list[str] | None:
     return states or None
 
 
-def accelerator_framework(accelerator: object, components: object = None) -> str | None:
+def accelerator_framework(
+    accelerator: object, components: object = None, profile: object = None
+) -> str | None:
     """Classify the installed profile: ``"gpu"`` / ``"cpu"`` / ``None`` (base only).
 
-    Runtime Host 对仅安装基础 Runtime 的机器同样回报 ``accelerator="cpu"``，
+    优先按 profile id 判定（与 backend runtime_manifest 一一对应）；
+    未知 profile 时退回 accelerator + 组件 desired_state 的启发式：
+    Runtime Host 对仅安装基础 Runtime 的机器同样回报 ``accelerator="cpu"``
     但用户从未选择 CPU 框架；组件 desired_state 是区分两者的唯一证据。
-    组件信息缺失时保守回退为 ``"cpu"``（保持既有显示行为）。
     """
 
+    if isinstance(profile, str) and profile in _PROFILE_FRAMEWORKS:
+        return _PROFILE_FRAMEWORKS[profile]
     if accelerator == "nvidia_cuda":
         return "gpu"
     if accelerator != "cpu":
@@ -77,7 +91,7 @@ def accelerator_display(
             else f"GPU（{_GENERIC_GPU_LABEL}）"
         )
     if accelerator == "cpu":
-        if accelerator_framework("cpu", components) is None:
+        if accelerator_framework("cpu", components, profile) is None:
             return _BASE_RUNTIME_LABEL
         return "CPU"
     value = accelerator if isinstance(accelerator, str) else str(accelerator)

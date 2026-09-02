@@ -365,7 +365,7 @@ def test_offline_features_reflect_runtime_component_states(
         "win-x64-cpu-document-parsing": "not_required"
     }
     controller._render_offline_features()
-    assert tree.topLevelItem(0).text(1) == "— 未启用"
+    assert tree.topLevelItem(0).text(1) == "未随当前配置安装"
 
 
 def test_supervisor_ready_requests_recognition_catalog(

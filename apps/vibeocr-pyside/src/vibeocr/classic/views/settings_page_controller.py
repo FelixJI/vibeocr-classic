@@ -66,6 +66,10 @@ except ImportError:  # Protocol 2.0/2.1 compatibility: HTTP status arrived in 2.
 
 logger = logging.getLogger(__name__)
 
+# 高级 OCR 框架组件 id 前缀（paddleocr-*/mineru-*）。win-x64-base 闭包不包含
+# 它们；快照误报 missing 时按"未随当前配置安装"展示，不显示"缺失"。
+_ADVANCED_OCR_PREFIXES = ("paddleocr-", "mineru-")
+
 # QRunnable 运行期间的进程级强引用。窗口可先于慢 WMIC/PowerShell/RPC 完成销毁；
 # 保留 wrapper 到结果回调，避免 Qt 线程池仍持有 C++ runnable 时 Python 对象被回收。
 _BACKGROUND_TASKS: set[object] = set()
@@ -1761,12 +1765,14 @@ class SettingsPageController:
     def _update_reinstall_selected_btn(
         self, tree: QTreeWidget, btn: QPushButton | None
     ) -> None:
-        """根据依赖树选中状态更新"重装选中项"按钮的 enabled 和计数文本"""
+        """依赖树选择变化时保持"修复 Runtime"按钮可用（修复是全 profile 操作）。
+
+        按钮始终映射到完整 Runtime profile 的校验与修复，不随选中项变化重命名，
+        避免"重装选中项"与"修复 Runtime"两套语义在同一按钮上漂移。
+        """
         if btn is None:
             return
-        count = sum(1 for it in tree.selectedItems() if it.parent() is None)
-        btn.setEnabled(count > 0)
-        btn.setText(f"重装选中项 ({count})" if count > 0 else "重装选中项")
+        btn.setText("修复 Runtime")
 
     def _populate_deps_tree(
         self, tree: QTreeWidget, snapshot: dict | None = None
@@ -1787,7 +1793,10 @@ class SettingsPageController:
         profile_value = (
             f"{inspection.profile}（{cuda_text}）" if cuda_text else inspection.profile
         )
-        framework = accelerator_framework(inspection.accelerator, inspection.components)
+        framework = accelerator_framework(
+            inspection.accelerator, inspection.components, inspection.profile
+        )
+        base_profile = inspection.profile == "win-x64-base"
         if framework is None:
             profile_row = QTreeWidgetItem(
                 ["推理 profile", "未选择（仅基础 Runtime）", "—"]
@@ -1845,8 +1854,15 @@ class SettingsPageController:
                         "unexpected": "非预期组件",
                     }
                     status_text += f" · {drift_labels.get(drift_value, drift_value)}"
-                if desired_value == "not_required":
-                    status_text = "— 不需要"
+                if desired_value == "not_required" or (
+                    base_profile
+                    and str(getattr(component, "component_id", "")).startswith(
+                        _ADVANCED_OCR_PREFIXES
+                    )
+                ):
+                    # 未随当前 profile 安装是配置事实，不是安装损坏；
+                    # 仅当组件属于当前 profile 且校验发现文件缺失时才显示"✗ 缺失"。
+                    status_text = "未随当前配置安装"
                 version = (
                     getattr(component, "actual_version", None)
                     or component.version
@@ -1888,8 +1904,13 @@ class SettingsPageController:
                     component_status += (
                         f" · {drift_labels.get(drift_reason, drift_reason)}"
                     )
-                if desired_state == "not_required":
-                    component_status = "— 不需要"
+                if desired_state == "not_required" or (
+                    base_profile
+                    and str(getattr(component, "component_id", "")).startswith(
+                        _ADVANCED_OCR_PREFIXES
+                    )
+                ):
+                    component_status = "未随当前配置安装"
                 backend_item.addChild(
                     QTreeWidgetItem(
                         [
@@ -2286,7 +2307,7 @@ class SettingsPageController:
         "missing": "✗ 未安装",
         "drifted": "⚠ 已漂移",
         "unknown": "? 未知",
-        "not_required": "— 未启用",
+        "not_required": "未随当前配置安装",
     }
 
     def _render_offline_features(self) -> None:

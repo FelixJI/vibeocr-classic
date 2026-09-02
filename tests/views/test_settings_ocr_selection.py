@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -307,6 +308,29 @@ def test_health_catalog_renders_engines_features_and_sources(
     assert controller._resolve_download_source_ids() is None
 
 
+def test_engine_availability_tree_headers_and_placeholder(
+    selection_controller,
+) -> None:
+    """列宽自适应 + 目录未到达时的占位行，避免文字截断与空树误读。"""
+
+    controller, host, _adapter, _config, _manager = selection_controller
+
+    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
+    assert tree is not None
+    header = tree.header()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
+    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
+    assert tree.minimumHeight() >= 300
+
+    # catalog 到达前树不能是空的：显示一行占位，避免被误读为没有识别能力。
+    assert tree.topLevelItemCount() == 1
+    assert tree.topLevelItem(0).text(0) == "等待 Backend 识别能力目录…"
+
+    controller._on_health_loaded(_health_payload())
+    assert tree.topLevelItem(0).text(0) != "等待 Backend 识别能力目录…"
+
+
 def test_health_marks_bundled_qrcode_unavailable_when_runtime_lacks_capability(
     selection_controller,
 ) -> None:
@@ -341,7 +365,7 @@ def test_offline_features_reflect_runtime_component_states(
         "win-x64-cpu-document-parsing": "not_required"
     }
     controller._render_offline_features()
-    assert tree.topLevelItem(0).text(1) == "— 未启用"
+    assert tree.topLevelItem(0).text(1) == "未随当前配置安装"
 
 
 def test_supervisor_ready_requests_recognition_catalog(

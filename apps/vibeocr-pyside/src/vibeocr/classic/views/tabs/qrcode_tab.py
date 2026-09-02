@@ -274,6 +274,9 @@ class QrcodeTab(QWidget):
         self._uses_shared_backend = backend is None
         self._current_image: Image.Image | None = None
         self._logo_path: str | None = None
+        # QR 能力缓存：None = 尚未知（fail-open），True/False 来自 health capabilities。
+        self._qr_capability_state: bool | None = None
+        self._qr_capability_probe_sent = False
 
         # 子页预览状态（切换时保存/恢复）
         self._gen_preview_pixmap: QPixmap | None = None
@@ -713,17 +716,9 @@ class QrcodeTab(QWidget):
         ec_btn = self._ec_group.checkedButton()
         ec_val = ec_btn.property("ec_value") if ec_btn else "M"
 
-        # Map the UI format key to the RPC format + barcode_format fields.
-        if fmt_key == "qr":
-            rpc_format = "qrcode"
-            barcode_format = None
-        else:
-            rpc_format = "barcode"
-            barcode_format = fmt_key
-
-        options: dict = {"format": rpc_format}
-        if barcode_format is not None:
-            options["barcode_format"] = barcode_format
+        # Backend QrcodeService 契约：options["format"] 为 "qr" 或条形码类名
+        # （code128/code39/...）。wire 层 format 字段另行表达载体（qrcode/svg）。
+        options: dict = {"format": fmt_key}
         options["size"] = self._size_spin.value()
         options["error_correction"] = ec_val
         options["fg_color"] = self._fg_color
@@ -783,9 +778,9 @@ class QrcodeTab(QWidget):
         client = adapter.inference_sync_client
         if client is None:
             raise RuntimeError("supervisor utility client is unavailable")
-        fmt = "qrcode" if options.get("format", "qr") == "qr" else options.get("format", "qrcode")
+        # wire format 仅区分 svg 载体；位图（QR 与条形码）统一走 "qrcode"。
         return base64.b64decode(
-            client.generate_qrcode(text, fmt=fmt, options=options)
+            client.generate_qrcode(text, fmt="qrcode", options=options)
         )
 
     def _decode_via_supervisor(self, image_bytes: bytes):
@@ -866,6 +861,39 @@ class QrcodeTab(QWidget):
         png_bytes = self._call_backend_generate(text, options)
         return self._load_generated_image(png_bytes)
 
+    def _qr_capability_blocked(self) -> bool:
+        """Shared-backend 模式下按 health capabilities 拦截不可用的 QR 请求。
+
+        fail-open：能力未知（尚未取到 health）时不拦截，让请求携带更准确的
+        后端错误返回；明确缺失 qrcode.v2 时直接给出指引，避免撞 HTTP 500。
+        """
+        if self._backend is not None or self._qr_capability_state is not False:
+            return False
+        self._probe_qr_capability()
+        return True
+
+    def _probe_qr_capability(self) -> None:
+        """向 Supervisor 请求一次 health，刷新 QR 能力缓存（单次）。"""
+        if self._closing or self._qr_capability_probe_sent:
+            return
+        from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
+
+        adapter = get_supervisor_adapter()
+        if not adapter.is_started:
+            return
+        self._qr_capability_probe_sent = True
+        adapter.health_loaded.connect(self._on_health_loaded, Qt.ConnectionType.QueuedConnection)
+        adapter.fetch_health()
+
+    def _on_health_loaded(self, health: object) -> None:
+        if self._closing or not isinstance(health, dict):
+            return
+        capabilities = health.get("capabilities")
+        if isinstance(capabilities, list):
+            self._qr_capability_state = "qrcode.v2" in capabilities
+            if self._qr_capability_state:
+                self._schedule_refresh()
+
     def _refresh_preview(self) -> None:
         text = self._text_input.toPlainText().strip()
         generation = self._preview_generation
@@ -880,6 +908,13 @@ class QrcodeTab(QWidget):
             options = self._build_options()
         except Exception as exc:
             self._on_preview_error(generation, exc)
+            return
+
+        if self._qr_capability_blocked():
+            self._on_preview_error(
+                generation,
+                RuntimeError("当前 Runtime 未提供二维码能力（qrcode.v2），请先在“设置 → 运行时与组件”中修复 Runtime"),
+            )
             return
 
         from vibeocr.classic.utils.qt_async import get_async_runner
@@ -911,8 +946,10 @@ class QrcodeTab(QWidget):
         if self._closing or generation != self._preview_generation:
             return
         logger.error("生成预览失败: %s", exc, exc_info=exc)
+        detail = getattr(exc, "detail", None)
+        hint = f"（{detail.get('error')}）" if isinstance(detail, dict) and detail.get("error") else ""
         self._preview_label.setText(
-            f"<span style='color:{theme.Colors.danger};'>生成失败：{exc}</span>"
+            f"<span style='color:{theme.Colors.danger};'>生成失败：{exc}{hint}</span>"
         )
         self._current_image = None
         self._gen_preview_pixmap = None
@@ -925,7 +962,7 @@ class QrcodeTab(QWidget):
         from PySide6.QtWidgets import QFileDialog
 
         options = self._build_options()
-        is_qr = options["format"] == "qrcode"
+        is_qr = options["format"] == "qr"
 
         filters = "PNG (*.png);;JPG (*.jpg)"
         if is_qr and not options.get("logo_path"):

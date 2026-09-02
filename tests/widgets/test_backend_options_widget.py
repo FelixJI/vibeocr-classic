@@ -198,7 +198,7 @@ def test_base_only_runtime_is_distinguished_from_uninstalled(_cleanup, qtbot, tm
         "cuda": "12.6",
         "runtime_ready": True,
         "runtime_accelerator": "cpu",
-        "runtime_profile": "win-x64-cpu",
+        "runtime_profile": "win-x64-base",
         "runtime_components": (
             SimpleNamespace(component_id="rapidocr-base", desired_state="ready"),
             SimpleNamespace(component_id="paddleocr-cpu", desired_state="not_required"),

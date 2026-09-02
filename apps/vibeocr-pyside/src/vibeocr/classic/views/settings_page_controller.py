@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QMessageBox,
@@ -64,6 +65,10 @@ except ImportError:  # Protocol 2.0/2.1 compatibility: HTTP status arrived in 2.
     parse_runtime_status = None
 
 logger = logging.getLogger(__name__)
+
+# 高级 OCR 框架组件 id 前缀（paddleocr-*/mineru-*）。win-x64-base 闭包不包含
+# 它们；快照误报 missing 时按"未随当前配置安装"展示，不显示"缺失"。
+_ADVANCED_OCR_PREFIXES = ("paddleocr-", "mineru-")
 
 # QRunnable 运行期间的进程级强引用。窗口可先于慢 WMIC/PowerShell/RPC 完成销毁；
 # 保留 wrapper 到结果回调，避免 Qt 线程池仍持有 C++ runnable 时 Python 对象被回收。
@@ -1760,12 +1765,14 @@ class SettingsPageController:
     def _update_reinstall_selected_btn(
         self, tree: QTreeWidget, btn: QPushButton | None
     ) -> None:
-        """根据依赖树选中状态更新"重装选中项"按钮的 enabled 和计数文本"""
+        """依赖树选择变化时保持"修复 Runtime"按钮可用（修复是全 profile 操作）。
+
+        按钮始终映射到完整 Runtime profile 的校验与修复，不随选中项变化重命名，
+        避免"重装选中项"与"修复 Runtime"两套语义在同一按钮上漂移。
+        """
         if btn is None:
             return
-        count = sum(1 for it in tree.selectedItems() if it.parent() is None)
-        btn.setEnabled(count > 0)
-        btn.setText(f"重装选中项 ({count})" if count > 0 else "重装选中项")
+        btn.setText("修复 Runtime")
 
     def _populate_deps_tree(
         self, tree: QTreeWidget, snapshot: dict | None = None
@@ -1786,7 +1793,10 @@ class SettingsPageController:
         profile_value = (
             f"{inspection.profile}（{cuda_text}）" if cuda_text else inspection.profile
         )
-        framework = accelerator_framework(inspection.accelerator, inspection.components)
+        framework = accelerator_framework(
+            inspection.accelerator, inspection.components, inspection.profile
+        )
+        base_profile = inspection.profile == "win-x64-base"
         if framework is None:
             profile_row = QTreeWidgetItem(
                 ["推理 profile", "未选择（仅基础 Runtime）", "—"]
@@ -1844,8 +1854,15 @@ class SettingsPageController:
                         "unexpected": "非预期组件",
                     }
                     status_text += f" · {drift_labels.get(drift_value, drift_value)}"
-                if desired_value == "not_required":
-                    status_text = "— 不需要"
+                if desired_value == "not_required" or (
+                    base_profile
+                    and str(getattr(component, "component_id", "")).startswith(
+                        _ADVANCED_OCR_PREFIXES
+                    )
+                ):
+                    # 未随当前 profile 安装是配置事实，不是安装损坏；
+                    # 仅当组件属于当前 profile 且校验发现文件缺失时才显示"✗ 缺失"。
+                    status_text = "未随当前配置安装"
                 version = (
                     getattr(component, "actual_version", None)
                     or component.version
@@ -1887,8 +1904,13 @@ class SettingsPageController:
                     component_status += (
                         f" · {drift_labels.get(drift_reason, drift_reason)}"
                     )
-                if desired_state == "not_required":
-                    component_status = "— 不需要"
+                if desired_state == "not_required" or (
+                    base_profile
+                    and str(getattr(component, "component_id", "")).startswith(
+                        _ADVANCED_OCR_PREFIXES
+                    )
+                ):
+                    component_status = "未随当前配置安装"
                 backend_item.addChild(
                     QTreeWidgetItem(
                         [
@@ -2130,7 +2152,32 @@ class SettingsPageController:
             )
         except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
             self._selection_accelerator = None
+        self._configure_selection_tree_headers()
+        # catalog 到达前先渲染占位行，避免空树被误读为没有任何识别能力。
+        self._render_engine_availability()
         self._refresh_selection_availability()
+
+    def _configure_selection_tree_headers(self) -> None:
+        """识别设置页两棵树的列宽与最小高度。
+
+        默认 QTreeWidget 各列约 100px，中文模式名（如“表格结构识别
+        （PaddleOCR）”）会被截断；说明列才应吃掉剩余宽度。同时给树一个
+        能容纳全部行的高度，避免在滚动页里被压扁导致行不可见。
+        """
+
+        availability = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
+        if availability is not None:
+            header = availability.header()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            availability.setMinimumHeight(320)
+        features = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
+        if features is not None:
+            header = features.header()
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+            features.setMinimumHeight(120)
 
     _MODE_FAMILY_LABELS = {
         "text": "文本识别",
@@ -2161,9 +2208,18 @@ class SettingsPageController:
 
         catalog = self._selection_catalog
         tree = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
-        if catalog is None or tree is None:
+        if tree is None:
             return
         tree.clear()
+        if catalog is None:
+            # 目录未到达（health 未返回或失败）时给出一行占位，避免树空着
+            # 被误读为“没有任何识别能力”。
+            tree.addTopLevelItem(
+                QTreeWidgetItem(
+                    ["等待 Backend 识别能力目录…", "", "连接就绪后自动填充"]
+                )
+            )
+            return
         # 新目录优先：它同时投影 specialized/document 模式的本地文案和
         # 生命周期。旧 Backend 仅有 engine catalog 时由 facade 合成 text 模式。
         entries = catalog.modes or catalog.engines
@@ -2251,7 +2307,7 @@ class SettingsPageController:
         "missing": "✗ 未安装",
         "drifted": "⚠ 已漂移",
         "unknown": "? 未知",
-        "not_required": "— 未启用",
+        "not_required": "未随当前配置安装",
     }
 
     def _render_offline_features(self) -> None:

@@ -499,12 +499,16 @@ def test_refresh_fills_bound_runtime_components(controller, qtbot):
 
 
 def test_base_only_runtime_is_not_reported_as_cpu_profile(controller):
-    """仅基础 Runtime（高级组件全部 not_required）不能显示为"已选择 CPU 框架"。"""
+    """仅基础 Runtime 不能显示为"已选择 CPU 框架"。
+
+    profile id 是单一事实来源：win-x64-base 即基础闭包，即使 Host 回报
+    accelerator="cpu" 也不算选择了 CPU 框架。
+    """
     ctrl, host = controller
 
     inspection = ctrl._runtime_installer.inspect.return_value
     inspection.accelerator = "cpu"
-    inspection.profile = "win-x64-cpu"
+    inspection.profile = "win-x64-base"
     inspection.components = (
         RuntimeComponentDescriptor(
             "rapidocr-base", "快速 OCR", "3.7.0", desired_state="ready"

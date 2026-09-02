@@ -42,6 +42,15 @@ _PEEK_MIN = 1
 _PEEK_MAX = 20
 # 动画持续时间（毫秒）
 _ANIM_DURATION = 50
+# 鼠标轮询间隔（毫秒）：压缩隐藏态下鼠标靠近边缘到触发展开的等待窗口；
+# 仅在自动隐藏生效（启用 + 已停靠）时运行
+_POLL_INTERVAL_MS = 50
+# 隐藏态揭示检测区外扩（像素）：覆盖露出的 3px 条并容忍快速掠边
+_REVEAL_MARGIN = 10
+# 可见态保持区外扩（像素）：指针离开该区才开始隐藏倒计时。
+# 取值过大（早期为 30px）会把停靠边附近应用的标题/标签栏划入保持区，
+# 造成工具栏"久久不收回"
+_KEEP_MARGIN = 8
 
 
 class EdgeSide(Enum):
@@ -86,7 +95,12 @@ class _ButtonDragFilter(QObject):
                         self._toolbar._drag_pos = self._press_pos - self._toolbar.pos()
                         self._toolbar._dragging = True
                         self._toolbar.setCursor(Qt.CursorShape.ClosedHandCursor)
+                        # 拖拽期间不做自动隐藏，收敛掉已武装的倒计时
+                        self._toolbar._reconcile_hide_state()
                 if self._is_dragging and self._toolbar._drag_pos is not None:
+                    # 拖拽优先于未完成的滑入/滑出动画，避免动画每帧改写几何
+                    if self._toolbar._anim.state() == QPropertyAnimation.State.Running:
+                        self._toolbar._anim.stop()
                     self._toolbar.move(
                         me.globalPosition().toPoint() - self._toolbar._drag_pos
                     )
@@ -140,10 +154,10 @@ class EdgeToolbar(QWidget):
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self._slide_hide)
 
-        # 鼠标检测定时器（检测鼠标是否离开）；50ms 轮询压缩隐藏态下
-        # 鼠标靠近边缘到触发展开的等待窗口
+        # 鼠标检测定时器（兜底：检测鼠标是否离开/接近边缘）；50ms 轮询压缩
+        # 隐藏态下鼠标靠近边缘到触发展开的等待窗口
         self._mouse_check_timer = QTimer(self)
-        self._mouse_check_timer.setInterval(50)
+        self._mouse_check_timer.setInterval(_POLL_INTERVAL_MS)
         self._mouse_check_timer.timeout.connect(self._check_mouse_position)
 
         # 动画
@@ -322,9 +336,10 @@ class EdgeToolbar(QWidget):
             if self._is_hidden:
                 self._slide_show()
         else:
-            # 如果当前已靠边，启动隐藏检测
-            if self._docked_side != EdgeSide.NONE:
-                self._start_hide_countdown()
+            # 可见或隐藏都立即收敛定时器状态：可见时启动轮询兜底，
+            # 并按指针位置武装/解除倒计时（此前只武装倒计时不启动轮询，
+            # 一旦 enter 事件吞掉倒计时又收不到 leave，工具栏永久停留）
+            self._reconcile_hide_state()
 
     def set_hide_delay(self, delay_ms: int) -> None:
         """设置隐藏延迟（毫秒）"""
@@ -373,6 +388,9 @@ class EdgeToolbar(QWidget):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            # 拖拽优先于未完成的滑入/滑出动画，避免动画每帧改写几何
+            if self._anim.state() == QPropertyAnimation.State.Running:
+                self._anim.stop()
             self.move(event.globalPosition().toPoint() - self._drag_pos)
         super().mouseMoveEvent(event)
 
@@ -414,15 +432,9 @@ class EdgeToolbar(QWidget):
 
         if self._docked_side != EdgeSide.NONE:
             logger.debug(f"工具栏停靠于 {self._docked_side.name}")
-            if self._auto_hide_enabled:
-                self._start_hide_countdown()
-        else:
-            self._hide_timer.stop()
-            self._mouse_check_timer.stop()
-
-    def _start_hide_countdown(self) -> None:
-        """启动隐藏倒计时"""
-        self._hide_timer.start(self._hide_delay_ms)
+        # 拖拽落定后统一收敛定时器：松手时指针通常仍在工具栏上，
+        # 不应立即武装倒计时导致从指针下方缩回
+        self._reconcile_hide_state()
 
     def _hidden_geometry(self, screen_geo: QRect) -> QRect:
         """计算当前停靠边下仅露出 _peek_pixels 像素的隐藏目标几何"""
@@ -438,7 +450,11 @@ class EdgeToolbar(QWidget):
 
     def _slide_hide(self) -> None:
         """将工具栏滑出屏幕边缘，仅露出几个像素"""
-        if self._is_hidden or self._docked_side == EdgeSide.NONE:
+        if self._is_hidden or self._docked_side == EdgeSide.NONE or self._dragging:
+            return
+        # 倒计时到期的瞬间指针可能刚好停在工具栏附近（轮询尚来不及停表），
+        # 此时收回会从指针下方抽走窗口；跳过本轮，由轮询按指针位置重新武装
+        if self._pointer_in_keep_zone():
             return
 
         screen = QApplication.screenAt(self.geometry().center())
@@ -455,8 +471,7 @@ class EdgeToolbar(QWidget):
         self._anim.start()
         self._is_hidden = True
 
-        # 启动鼠标位置检查
-        self._mouse_check_timer.start()
+        self._reconcile_hide_state()
         logger.debug("工具栏已隐藏")
 
     def _slide_show(self) -> None:
@@ -483,47 +498,83 @@ class EdgeToolbar(QWidget):
         self._anim.setEndValue(target)
         self._anim.start()
         self._is_hidden = False
-        # 保持全局鼠标检测：检测区比窗口本身更大，鼠标可能只进入检测区便触发
-        # 展开，却从未真正进入 QWidget，因而不会收到 leaveEvent。此时若停止
-        # 检测，工具栏将永久停留在屏幕边缘。
-        if self._auto_hide_enabled:
-            self._mouse_check_timer.start()
-        else:
-            self._mouse_check_timer.stop()
+        # 取消隐藏期间武装的倒计时（隐藏态下 leaveEvent 等途径可武装），
+        # 否则刚展开就可能立即缩回
+        self._hide_timer.stop()
+        # 统一收敛定时器：自动隐藏生效则保持全局鼠标检测兜底（检测区比
+        # 窗口大，鼠标可能只进入检测区便触发展开、从未真正进入 QWidget，
+        # 收不到 leaveEvent；自动隐藏关闭则停止检测）
+        self._reconcile_hide_state()
         logger.debug("工具栏已显示")
 
+    def _pointer_in_keep_zone(self) -> bool:
+        """指针是否位于可见保持区（工具栏几何 + _KEEP_MARGIN）"""
+        return (
+            self.geometry()
+            .adjusted(-_KEEP_MARGIN, -_KEEP_MARGIN, _KEEP_MARGIN, _KEEP_MARGIN)
+            .contains(QCursor.pos())
+        )
+
+    def _pointer_in_reveal_zone(self) -> bool:
+        """指针是否位于隐藏态揭示区（隐藏几何 + _REVEAL_MARGIN）"""
+        return (
+            self.geometry()
+            .adjusted(-_REVEAL_MARGIN, -_REVEAL_MARGIN, _REVEAL_MARGIN, _REVEAL_MARGIN)
+            .contains(QCursor.pos())
+        )
+
+    def _reconcile_hide_state(self) -> None:
+        """按当前状态幂等收敛隐藏倒计时与鼠标轮询的启停。
+
+        定时器状态只由此方法决定；enter/leave 事件、轮询与各状态切换都
+        调用它收敛，事件丢失不再能造成"展开后永远不收回"。
+
+        Windows 无边框分层窗口被程序化移动（滑入动画）到静止指针下方时，
+        不保证补发 enter/leave；因此自动隐藏生效（启用 + 已停靠 + 非拖拽）
+        期间轮询常驻兜底，轮询发现指针离开保持区即重新武装倒计时。
+        """
+        auto_hide_active = (
+            self._auto_hide_enabled
+            and self._docked_side != EdgeSide.NONE
+            and not self._dragging
+        )
+        if not auto_hide_active:
+            self._hide_timer.stop()
+            self._mouse_check_timer.stop()
+            return
+        self._mouse_check_timer.start()
+        if self._is_hidden or self._pointer_in_keep_zone():
+            self._hide_timer.stop()
+        elif not self._hide_timer.isActive():
+            # 不能每轮无脑 start：轮询频率高于隐藏延迟时会不断推迟单次
+            # 计时器，导致永远无法触发隐藏
+            self._hide_timer.start(self._hide_delay_ms)
+
     def _check_mouse_position(self) -> None:
-        """定期检查鼠标位置，在鼠标靠近边缘时显示工具栏"""
-        cursor_pos = QCursor.pos()
-        geo = self.geometry()
-
-        # 扩大检测区域（包含工具栏完全展开后的区域 + 一些余量）
-        detect_rect = geo.adjusted(-10, -10, 10, 10)
-
-        if self._is_hidden:
-            # 隐藏状态：检测鼠标是否在工具栏附近（边缘检测区）
-            if detect_rect.contains(cursor_pos):
-                self._slide_show()
-        else:
-            # 显示状态：如果鼠标离开，重新启动隐藏倒计时
-            expanded_rect = geo.adjusted(-30, -30, 30, 30)
-            if expanded_rect.contains(cursor_pos):
-                self._hide_timer.stop()
-            elif self._auto_hide_enabled and self._docked_side != EdgeSide.NONE:
-                # 轮询频率高于隐藏延迟时，反复 start 会不断推迟单次计时器，
-                # 导致永远无法触发隐藏。
-                if not self._hide_timer.isActive():
-                    self._start_hide_countdown()
+        """轮询兜底：隐藏时在边缘揭示，可见时按指针位置收敛倒计时"""
+        if self._is_hidden and self._pointer_in_reveal_zone():
+            self._slide_show()
+        self._reconcile_hide_state()
 
     def enterEvent(self, event) -> None:
-        """鼠标进入时显示工具栏"""
+        """鼠标进入时立即展开/保持可见（低延迟加速器，轮询负责兜底）"""
         if self._is_hidden:
             self._slide_show()
-        self._hide_timer.stop()
+        self._reconcile_hide_state()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
-        """鼠标离开时启动隐藏倒计时"""
-        if self._auto_hide_enabled and self._docked_side != EdgeSide.NONE:
-            self._start_hide_countdown()
+        """鼠标离开时按指针位置武装隐藏倒计时"""
+        self._reconcile_hide_state()
         super().leaveEvent(event)
+
+    def showEvent(self, event) -> None:
+        """外部 show()（设置开关重新开启工具栏）后恢复定时器状态"""
+        super().showEvent(event)
+        self._reconcile_hide_state()
+
+    def hideEvent(self, event) -> None:
+        """外部 hide()（设置关闭工具栏）后停止全部定时器，避免不可见时持续轮询"""
+        super().hideEvent(event)
+        self._hide_timer.stop()
+        self._mouse_check_timer.stop()

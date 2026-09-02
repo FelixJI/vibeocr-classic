@@ -1,6 +1,6 @@
 [project]
 name = "vibeocr-classic"
-version = "0.10.13"
+version = "0.10.14"
 description = "VibeOCR PySide6 Classic desktop shell"
 requires-python = ">=3.13,<3.14"
 dependencies = [

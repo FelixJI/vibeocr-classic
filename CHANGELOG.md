@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.18
+
+### Bug Fixes
+
+- **settings:** 按 Host 组件 actual_state 识别基础 Runtime (#94) (82c7fcc)
+
 ## 0.10.17
 
 ### Bug Fixes

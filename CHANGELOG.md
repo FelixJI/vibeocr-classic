@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.16
+
+### Bug Fixes
+
+- **settings:** 修复可选能力安装后端切换与基础 Runtime 展示 (#90) (504dd80)
+
 ## 0.10.15
 
 ### Bug Fixes

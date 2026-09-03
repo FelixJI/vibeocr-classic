@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
 from vibeocr.classic.runtime_status_messages import (
     accelerator_display,
@@ -106,3 +108,53 @@ def test_missing_component_info_falls_back_to_binary_labels() -> None:
     # 非 GPU profile 无 CUDA 需求。
     assert cuda_requirement_label("win-x64-cpu") == ""
     assert cuda_requirement_label(None) == ""
+
+
+def test_host_plan_projection_with_missing_advanced_components_is_base() -> None:
+    """回归：Host inspect 对基础态也投影完整 plan profile。
+
+    backend 0.13.5 的 inspect 把 profile_id 恒报为 accelerator 的 plan
+    profile（win-x64-cpu）并把组件 desired_state 硬编码 "ready"；基础态的
+    唯一证据是高级框架组件 actual_state 全为 "missing"。旧实现按 profile
+    优先判定为 CPU，导致设置页显示"当前后端：CPU"且无法选中基础 Runtime。
+    """
+    host_base_payload = (
+        RuntimeComponentDescriptor(
+            "rapidocr-base",
+            "快速 OCR",
+            desired_state="ready",
+            actual_state="ready",
+        ),
+        RuntimeComponentDescriptor(
+            "paddleocr-cpu",
+            "PaddleOCR（CPU）",
+            desired_state="ready",
+            actual_state="missing",
+        ),
+        RuntimeComponentDescriptor(
+            "mineru-cpu",
+            "MinerU（CPU）",
+            desired_state="ready",
+            actual_state="missing",
+        ),
+    )
+    assert (
+        accelerator_framework(
+            "cpu", host_base_payload, "win-x64-cpu"
+        )
+        is None
+    )
+    assert accelerator_display(
+        "cpu", "win-x64-cpu", host_base_payload
+    ) == "基础 Runtime（未选择高级 OCR 框架）"
+
+    # 完整 CPU profile：高级组件实际就绪，仍按 profile 判定为 CPU。
+    host_full_payload = tuple(
+        replace(component, actual_state="ready")
+        if component.component_id != "rapidocr-base"
+        else component
+        for component in host_base_payload
+    )
+    assert (
+        accelerator_framework("cpu", host_full_payload, "win-x64-cpu") == "cpu"
+    )

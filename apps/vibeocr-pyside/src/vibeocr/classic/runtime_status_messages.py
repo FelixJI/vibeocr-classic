@@ -34,8 +34,12 @@ _GENERIC_GPU_LABEL = "NVIDIA CUDA（版本未知）"
 _BASE_RUNTIME_LABEL = "基础 Runtime（未选择高级 OCR 框架）"
 
 
-def _advanced_framework_desired_states(components: object) -> list[str] | None:
-    """Collect desired states of advanced-framework components; ``None`` if unknown."""
+def _advanced_framework_states(components: object) -> list[tuple[str, str]] | None:
+    """Collect (desired, actual) states of advanced-framework components.
+
+    ``None`` when unknown: no components supplied or none of them belong to
+    the advanced OCR frameworks.
+    """
 
     if components is None:
         return None
@@ -43,7 +47,7 @@ def _advanced_framework_desired_states(components: object) -> list[str] | None:
         items = list(components)
     except TypeError:
         return None
-    states: list[str] = []
+    states: list[tuple[str, str]] = []
     for component in items:
         component_id = getattr(component, "component_id", None)
         if not isinstance(component_id, str) or not component_id.startswith(
@@ -51,7 +55,13 @@ def _advanced_framework_desired_states(components: object) -> list[str] | None:
         ):
             continue
         desired = getattr(component, "desired_state", None)
-        states.append(desired if isinstance(desired, str) else "")
+        actual = getattr(component, "actual_state", None)
+        states.append(
+            (
+                desired if isinstance(desired, str) else "",
+                actual if isinstance(actual, str) else "",
+            )
+        )
     return states or None
 
 
@@ -61,21 +71,33 @@ def accelerator_framework(
     """Classify the installed profile: ``"gpu"`` / ``"cpu"`` / ``None`` (base only).
 
     优先按 profile id 判定（与 backend runtime_manifest 一一对应）；
-    未知 profile 时退回 accelerator + 组件 desired_state 的启发式：
-    Runtime Host 对仅安装基础 Runtime 的机器同样回报 ``accelerator="cpu"``
-    但用户从未选择 CPU 框架；组件 desired_state 是区分两者的唯一证据。
+    未知 profile 时退回组件状态启发式。Runtime Host 对仅安装基础 Runtime 的
+    机器同样回报 ``accelerator="cpu"`` 且 inspect 的 profile 投影恒为完整
+    plan profile（``win-x64-cpu``，组件 desired_state 硬编码 "ready"），
+    基础态的唯一证据在组件状态里：
+
+    - 本地合成的投影（``profile_descriptor(base_only)``）把未选高级框架的
+      组件标为 ``not_required``；
+    - Host inspect 对 base-only 的投影中，高级框架组件全部
+      ``actual_state="missing"``（漂移判定只覆盖已安装闭包，缺可选组件
+      不是漂移），而完整 CPU profile 至少有组件实际就绪。
     """
 
+    # 组件证据优先于 profile id：Host inspect 对基础态也投影完整 plan
+    # profile（win-x64-cpu），只有组件状态能识破这一投影。
+    states = _advanced_framework_states(components)
+    if states is not None and (
+        all(desired == "not_required" for desired, _actual in states)
+        or all(actual == "missing" for _desired, actual in states)
+    ):
+        return None
     if isinstance(profile, str) and profile in _PROFILE_FRAMEWORKS:
         return _PROFILE_FRAMEWORKS[profile]
     if accelerator == "nvidia_cuda":
         return "gpu"
     if accelerator != "cpu":
         return None
-    states = _advanced_framework_desired_states(components)
-    if states is None:
-        return "cpu"
-    return None if all(state == "not_required" for state in states) else "cpu"
+    return "cpu"
 
 
 def accelerator_display(

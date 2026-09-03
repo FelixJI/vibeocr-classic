@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.17
+
+### Bug Fixes
+
+- **settings:** 修复推理后端 GPU 选项缺失与基础 Runtime 误显示为 CPU (#92) (5894dc1)
+
 ## 0.10.16
 
 ### Bug Fixes

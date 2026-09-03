@@ -28,7 +28,7 @@ _EMPTY_GPU_INFO: dict[str, object] = {
 }
 
 # NVIDIA 官方「Windows 驱动最低版本 → CUDA」表（驱动向下兼容：满足某 CUDA 的
-# 最低驱动即支持该及以下所有版本）。用于 UI 展示「本机最高支持 CUDA x.y」；
+# 最低驱动即支持该及以下所有版本）。用于 UI 展示「本机驱动支持 CUDA x.y」（向下兼容，不声称“最高”）；
 # 实际安装哪个 CUDA 变体仍由 Runtime Installer 按绑定 profile 决定。
 _DRIVER_MINIMUM_FOR_CUDA: tuple[tuple[int, int, str], ...] = (
     (560, 76, "12.6"),
@@ -51,7 +51,7 @@ _DRIVER_MINIMUM_FOR_CUDA: tuple[tuple[int, int, str], ...] = (
 
 
 def max_supported_cuda_from_driver(driver_version: str) -> str | None:
-    """按官方最低驱动表推导本机最高支持的 CUDA 版本（仅展示用途）。
+    """按官方最低驱动表推导本机驱动支持的 CUDA 版本（仅展示用途）。
 
     无法解析或驱动过旧（低于 CUDA 11.0 门槛）时返回 ``None``。
     """
@@ -162,6 +162,6 @@ def detect_gpu_info(
         "name": parts[0],
         "vram_mb": int(vram_match.group(1)) if vram_match else 0,
         "driver_version": driver_version,
-        # 展示用途的最高支持版本；CUDA wheel 兼容仍由 Runtime Installer 决定。
+        # 展示用途的支持版本；CUDA wheel 兼容仍由 Runtime Installer 决定。
         "cuda": max_supported_cuda_from_driver(driver_version),
     }

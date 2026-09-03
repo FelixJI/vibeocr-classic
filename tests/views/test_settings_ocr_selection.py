@@ -74,7 +74,7 @@ def _health_payload(
     with_download_sources: bool = True,
     with_model_registry: bool = False,
     with_unknown_source: bool = False,
-    with_qrcode: bool = True,
+    with_gpu_variant: bool = False,
 ) -> dict:
     descriptors = [
         {
@@ -128,13 +128,20 @@ def _health_payload(
             },
         },
     ]
+    if with_gpu_variant:
+        variants = descriptors[1]["component_variant_catalog"]["variants"]
+        variants.append(
+            {
+                "feature_id": "document_parsing",
+                "accelerator": "nvidia_cuda",
+                "component_id": "win-x64-cu126-document-parsing",
+            }
+        )
     capabilities = [
         "ocr.recognition.v2",
         "ocr.engine-selection.v1",
         "runtime.component-selection.v1",
     ]
-    if with_qrcode:
-        capabilities.append("qrcode.v2")
     if with_download_sources:
         sources = [
             {
@@ -269,7 +276,7 @@ def test_health_catalog_renders_engines_features_and_sources(
     # 模式可用性逐行渲染在 treeEngineAvailability；旧实现的单行拼接已移除。
     tree = host.findChild(QTreeWidget, "treeEngineAvailability")
     assert tree is not None
-    assert tree.topLevelItemCount() == 2  # text 家族 + 随包工具
+    assert tree.topLevelItemCount() == 1  # text 家族
     group = tree.topLevelItem(0)
     assert group.text(0) == "文本识别"
     assert group.childCount() == 3
@@ -282,14 +289,6 @@ def test_health_catalog_renders_engines_features_and_sources(
     assert paddle.text(1) == "需准备组件"
     assert "win-x64-cpu-document-parsing" in paddle.text(2)
     assert "component_missing" in paddle.text(2)
-    bundled = tree.topLevelItem(1)
-    assert bundled.text(0) == "随包工具"
-    assert bundled.childCount() == 1
-    qrcode = bundled.child(0)
-    assert qrcode.text(0) == "二维码与条形码"
-    assert qrcode.text(1) == "可用"
-    assert "由二维码工具独立使用" in qrcode.text(2)
-
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItemCount() == 1
     assert tree.topLevelItem(0).text(0).startswith("文档智能解析")
@@ -329,20 +328,6 @@ def test_engine_availability_tree_headers_and_placeholder(
 
     controller._on_health_loaded(_health_payload())
     assert tree.topLevelItem(0).text(0) != "等待 Backend 识别能力目录…"
-
-
-def test_health_marks_bundled_qrcode_unavailable_when_runtime_lacks_capability(
-    selection_controller,
-) -> None:
-    controller, host, _adapter, _config, _manager = selection_controller
-
-    controller._on_health_loaded(_health_payload(with_qrcode=False))
-
-    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
-    bundled = tree.topLevelItem(1)
-    qrcode = bundled.child(0)
-    assert qrcode.text(1) == "当前不可用"
-    assert "运行时与组件" in qrcode.text(2)
 
 
 def test_offline_features_reflect_runtime_component_states(
@@ -436,8 +421,121 @@ def test_install_offline_features_maps_intent_after_confirmation(
         "cpu", ["document_parsing"]
     )
     assert captured["install_component_ids"] == ("win-x64-cpu-document-parsing",)
+    # 基础 Runtime 状态：即使目录只有 CPU 变体也按切换完整 profile 处理。
+    assert captured["force_backend"] == "cpu"
     # 没有显式选择时由 Backend 决定默认来源。
     assert captured["download_source_ids"] is None
+
+
+def test_install_offline_features_asks_accelerator_when_gpu_variant_exists(
+    selection_controller,
+) -> None:
+    """目录同时声明 CPU/GPU 组件时，安装前必须询问推理后端并按选择解析。"""
+
+    controller, host, _adapter, config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload(with_gpu_variant=True))
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    captured: dict[str, object] = {}
+
+    def _fake_show_install_dialog(**kwargs) -> None:
+        captured.update(kwargs)
+
+    controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
+
+    def _pick_gpu(self) -> object:
+        return next(
+            button for button in self.buttons() if "GPU" in button.text()
+        )
+
+    with (
+        patch.object(QMessageBox, "exec", lambda self: 0),
+        patch.object(QMessageBox, "clickedButton", _pick_gpu),
+        patch(
+            "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ) as question,
+    ):
+        controller._on_install_offline_features()
+
+    assert question.called
+    config.set_offline_component_features.assert_called_once_with(
+        "nvidia_cuda", ["document_parsing"]
+    )
+    assert captured["install_component_ids"] == ("win-x64-cu126-document-parsing",)
+    # 基础 Runtime 下选 GPU 必须切换到 GPU 完整 profile，而不是装 CPU 壳。
+    assert captured["force_backend"] == "gpu"
+
+
+def test_install_offline_features_skips_question_when_backend_selected(
+    selection_controller,
+) -> None:
+    """已选定 CPU/GPU 完整 profile 时直接沿用当前后端，不再弹询问。"""
+
+    controller, host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(current_backend=lambda: "cpu")
+
+    controller._on_health_loaded(_health_payload(with_gpu_variant=True))
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    captured: dict[str, object] = {}
+
+    def _fake_show_install_dialog(**kwargs) -> None:
+        captured.update(kwargs)
+
+    controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
+
+    with (
+        patch.object(QMessageBox, "exec", side_effect=AssertionError("不应询问")),
+        patch(
+            "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ) as question,
+    ):
+        controller._on_install_offline_features()
+
+    assert question.called
+    config.set_offline_component_features.assert_called_once_with(
+        "cpu", ["document_parsing"]
+    )
+    assert captured["install_component_ids"] == ("win-x64-cpu-document-parsing",)
+    # 已在后端上，无需切换。
+    assert captured["force_backend"] is None
+
+
+def test_install_offline_features_accelerator_cancel_aborts(
+    selection_controller,
+) -> None:
+    """后端选择对话框取消时不进入安装流程，也不落盘安装意图。"""
+
+    controller, host, _adapter, config, _manager = selection_controller
+
+    controller._on_health_loaded(_health_payload(with_gpu_variant=True))
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    started: list[str] = []
+
+    def _fail(**kwargs) -> None:
+        started.append("must-not-run")
+
+    controller._show_install_dialog = _fail  # type: ignore[method-assign]
+
+    with (
+        patch.object(QMessageBox, "exec", lambda self: 1),
+        patch.object(QMessageBox, "clickedButton", lambda self: None),
+        patch(
+            "vibeocr.classic.views.settings_page_controller.QMessageBox.question"
+        ) as question,
+    ):
+        controller._on_install_offline_features()
+
+    assert not question.called
+    assert started == []
+    config.set_offline_component_features.assert_not_called()
 
 
 def test_install_offline_features_declined_does_not_install(

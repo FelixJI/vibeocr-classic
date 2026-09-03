@@ -2248,24 +2248,6 @@ class SettingsPageController:
                 )
             group.setExpanded(True)
             tree.addTopLevelItem(group)
-        bundled_group = QTreeWidgetItem(["随包工具", "", ""])
-        qr_available = "qrcode.v2" in self._runtime_capabilities
-        bundled_group.addChild(
-            QTreeWidgetItem(
-                [
-                    "二维码与条形码",
-                    "可用" if qr_available else "当前不可用",
-                    (
-                        "随基础 Runtime 提供；由二维码工具独立使用"
-                        if qr_available
-                        else "当前 Runtime 未提供；请在“运行时与组件”中修复或更新"
-                    ),
-                ]
-            )
-        )
-        bundled_group.setExpanded(True)
-        tree.addTopLevelItem(bundled_group)
-
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
             return
@@ -2366,6 +2348,69 @@ class SettingsPageController:
                 features.append(feature_id)
         return tuple(features)
 
+    _ACCELERATOR_LABELS = {
+        "cpu": "CPU",
+        "nvidia_cuda": "GPU（NVIDIA CUDA）",
+    }
+
+    _ACCELERATOR_TO_BACKEND = {
+        "cpu": "cpu",
+        "nvidia_cuda": "gpu",
+    }
+
+    def _resolve_install_accelerator(self, features) -> tuple[str, bool] | None:
+        """确定可选能力安装目标；返回 (accelerator, 需切换 Runtime) 或 None。
+
+        已选定 CPU/GPU 完整 profile 时直接沿用当前后端，不再询问；仅当
+        当前是基础 Runtime（未选择加速框架）且目录声明多套加速方案时，
+        先询问用户并把所选后端作为完整 profile 切换目标，避免"顶着 CPU
+        的壳下载 GPU 组件"。None 表示用户取消或所选能力无可用后端。
+        """
+
+        catalog = self._selection_catalog
+        assert catalog is not None  # 调用方已校验
+        current_backend = self._runtime_backend_or_none()
+        current_accelerator = (
+            {"cpu": "cpu", "gpu": "nvidia_cuda"}.get(current_backend)
+            if current_backend
+            else None
+        )
+        candidates: list[str] = []
+        for accelerator in sorted({v.accelerator for v in catalog.variants}):
+            try:
+                catalog.component_ids_for_features(features, accelerator)
+            except RuntimeSelectionError:
+                continue
+            candidates.append(accelerator)
+        if not candidates:
+            return None
+        # 已选定完整 profile：直接沿用，不重复询问。
+        if current_accelerator in candidates:
+            return current_accelerator, False
+        if len(candidates) == 1:
+            return candidates[0], current_accelerator is None
+        dialog = QMessageBox()
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setWindowTitle("选择推理后端")
+        dialog.setText(
+            "当前 Runtime 尚未选择加速框架（基础 Runtime）。\n"
+            "所选可选能力提供 CPU 与 GPU 组件；请选择要切换的推理后端："
+        )
+        accelerator_by_button: dict[QMessageBox.QAbstractButton, str] = {}
+        for accelerator in candidates:
+            button = dialog.addButton(
+                self._ACCELERATOR_LABELS.get(accelerator, accelerator),
+                QMessageBox.ButtonRole.AcceptRole,
+            )
+            accelerator_by_button[button] = accelerator
+        dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.exec()
+        chosen = accelerator_by_button.get(dialog.clickedButton())
+        if chosen is None:
+            return None
+        # 基础态下任何选择都是切换到完整 profile。
+        return chosen, True
+
     def _on_install_offline_features(self) -> None:
         catalog = self._selection_catalog
         accelerator = self._selection_accelerator
@@ -2384,6 +2429,10 @@ class SettingsPageController:
                 "请先勾选需要安装的可选能力。",
             )
             return
+        resolved = self._resolve_install_accelerator(features)
+        if resolved is None:
+            return
+        accelerator, needs_backend_switch = resolved
         try:
             component_ids = catalog.component_ids_for_features(features, accelerator)
         except RuntimeSelectionError as exc:
@@ -2392,11 +2441,19 @@ class SettingsPageController:
         names = "、".join(
             self._FEATURE_LABELS.get(feature, feature) for feature in features
         )
+        accelerator_label = self._ACCELERATOR_LABELS.get(accelerator, accelerator)
+        if needs_backend_switch:
+            operation = (
+                f"当前为基础 Runtime，将切换到 {accelerator_label} 完整 profile，"
+                f"并安装：{names}。"
+            )
+        else:
+            operation = f"即将为 {accelerator_label} 后端在线下载并安装：{names}。"
         answer = QMessageBox.question(
             None,
             "安装可选组件",
             (
-                f"即将在线下载并安装：{names}。\n"
+                f"{operation}\n"
                 "下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2416,6 +2473,11 @@ class SettingsPageController:
             lambda: self._show_install_dialog(
                 install_component_ids=component_ids,
                 download_source_ids=source_ids,
+                force_backend=(
+                    self._ACCELERATOR_TO_BACKEND.get(accelerator)
+                    if needs_backend_switch
+                    else None
+                ),
             )
         )
 

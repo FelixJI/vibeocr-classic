@@ -292,6 +292,55 @@ def test_inspect_does_not_trust_locally_synthesized_base_membership(
     assert inspection.base_ready
 
 
+def test_inspect_reports_host_base_profile_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """回归：基础 Runtime 时 Host 回报 accelerator="cpu" 且 profile_id=win-x64-base。
+
+    旧实现按 accelerator 无条件反推 profile，把基础态误标成 win-x64-cpu，
+    设置页于是显示"当前后端：CPU"而不是"基础 Runtime"。
+    """
+    client = _bound_client(tmp_path)
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    manifest["profiles"] = {
+        "win-x64-base": {},
+        "win-x64-cpu": {},
+    }
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(
+            profile={
+                "profile_id": "win-x64-base",
+                "accelerator": "cpu",
+                "components": [
+                    {
+                        "component_id": "ocr_engine",
+                        "display_name": "OCR engine",
+                        "included_in_base": True,
+                        "desired_state": "ready",
+                        "actual_state": "ready",
+                        "drift_reason": "none",
+                        "repairable": False,
+                    }
+                ],
+            }
+        ),
+    )
+
+    inspection = client.inspect()
+
+    assert inspection.accelerator == "cpu"
+    assert inspection.profile == "win-x64-base"
+    from vibeocr.classic.runtime_status_messages import accelerator_framework
+
+    assert (
+        accelerator_framework(
+            inspection.accelerator, inspection.components, inspection.profile
+        )
+        is None
+    )
+
+
 def test_inspect_fallback_rejects_non_ready_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

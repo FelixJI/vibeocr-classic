@@ -1292,6 +1292,11 @@ class RuntimeInstallerClient:
                 if descriptor_value is not None
                 else self.profile_descriptor()
             )
+            if host_profile and isinstance(profiles.get(descriptor.profile_id), dict):
+                # Host 对基础态同样回报 accelerator="cpu"；实际安装范围以
+                # Host 回传的 profile_id 为准（win-x64-base），按 accelerator
+                # 反推会把基础态误标成完整 CPU profile。
+                profile = descriptor.profile_id
             return RuntimeInspection(
                 status=str(value["status"]),
                 runtime_root=str(value["runtime_root"]),

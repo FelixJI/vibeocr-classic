@@ -179,6 +179,14 @@ def test_uninstalled_runtime_requires_explicit_choice(_cleanup, qtbot, tmp_path)
     assert widget._apply_button.isEnabled()
 
 
+def test_gpu_radio_is_added_to_layout(_cleanup, qtbot, tmp_path):
+    """回归：GPU 单选按钮必须加入布局，否则设置页不显示 GPU 选项。"""
+    widget = _make_widget(tmp_path, has_gpu=True, runtime_backend="gpu")
+    qtbot.addWidget(widget)
+    assert widget._gpu_radio.parentWidget() is not None
+    assert widget._gpu_radio.isHidden() is False
+
+
 def test_base_only_runtime_is_distinguished_from_uninstalled(_cleanup, qtbot, tmp_path):
     """基础 Runtime 已安装但未选择框架：不算"已选择 CPU"，也不算未安装。
 

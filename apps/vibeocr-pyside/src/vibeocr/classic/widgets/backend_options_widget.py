@@ -200,6 +200,7 @@ class BackendOptionsWidget(QWidget):
         self._radio_group.addButton(self._gpu_radio)
         self._radio_group.addButton(self._cpu_radio)
         radio_layout.addWidget(self._base_radio)
+        radio_layout.addWidget(self._gpu_radio)
         radio_layout.addWidget(self._cpu_radio)
         radio_layout.addStretch()
         group_layout.addLayout(radio_layout)

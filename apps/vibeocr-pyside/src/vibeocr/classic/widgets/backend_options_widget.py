@@ -182,6 +182,10 @@ class BackendOptionsWidget(QWidget):
         # 单选（放进 QButtonGroup 确保互斥）
         self._radio_group = QButtonGroup(self)
         radio_layout = QHBoxLayout()
+        self._base_radio = QRadioButton("基础 Runtime")
+        self._base_radio.setToolTip(
+            "仅快速 OCR 等基础能力；选中它表示保持现状，不触发安装"
+        )
         self._gpu_radio = QRadioButton("GPU 加速（推荐）")
         self._gpu_radio.setToolTip(
             "通常需要下载数 GB 依赖，识别更快，需兼容的 NVIDIA GPU"
@@ -189,11 +193,13 @@ class BackendOptionsWidget(QWidget):
         self._cpu_radio = QRadioButton("CPU 模式")
         self._cpu_radio.setToolTip("完整文档解析 profile 通常超过 1 GB，兼容性较广")
         # 探测完成前禁用，避免基于未知硬件状态误操作后端切换。
+        self._base_radio.setEnabled(False)
         self._gpu_radio.setEnabled(False)
         self._cpu_radio.setEnabled(False)
+        self._radio_group.addButton(self._base_radio)
         self._radio_group.addButton(self._gpu_radio)
         self._radio_group.addButton(self._cpu_radio)
-        radio_layout.addWidget(self._gpu_radio)
+        radio_layout.addWidget(self._base_radio)
         radio_layout.addWidget(self._cpu_radio)
         radio_layout.addStretch()
         group_layout.addLayout(radio_layout)
@@ -228,6 +234,7 @@ class BackendOptionsWidget(QWidget):
         self._current_label.setText("当前后端：检测中...")
         self._hw_label.setText("硬件检测中...")
         self._status_label.setText("")
+        self._base_radio.setEnabled(False)
         self._gpu_radio.setEnabled(False)
         self._cpu_radio.setEnabled(False)
         self._apply_button.setEnabled(False)
@@ -362,7 +369,9 @@ class BackendOptionsWidget(QWidget):
             if driver:
                 hardware += f" · 驱动 {driver}"
             if max_cuda:
-                hardware += f" · 最高支持 CUDA {max_cuda}"
+                # 保守表述：驱动向下兼容，满足该版本即满足其下所有版本；
+                # 对照表封顶 12.6，不能声称这是本机的"最高"支持版本。
+                hardware += f" · 支持 CUDA {max_cuda}"
             requirement = cuda_requirement_label(self._runtime_profile)
             if requirement:
                 if max_cuda:
@@ -384,14 +393,25 @@ class BackendOptionsWidget(QWidget):
         self._gpu_radio.setEnabled(
             not self._change_in_progress and (self._has_gpu or self._current == "gpu")
         )
+        # 基础 Runtime 单选只在它就是当前状态时可用（作为撤销误选的锚点）；
+        # 已安装完整 profile 后不支持切回基础态，因此禁用。
+        base_is_current = self._runtime_installed and self._current is None
+        self._base_radio.setEnabled(
+            not self._change_in_progress and base_is_current
+        )
 
         self._render_current_state()
 
-        target = self._current or ("gpu" if self._has_gpu else "cpu")
-        if target == "gpu" and self._gpu_radio.isEnabled():
-            self._gpu_radio.setChecked(True)
+        if base_is_current:
+            # 基础态如实展示为"基础 Runtime"选中，而不是默认勾 CPU/GPU
+            # 让用户误以为已选择某个加速框架。
+            self._base_radio.setChecked(True)
         else:
-            self._cpu_radio.setChecked(True)
+            target = self._current or ("gpu" if self._has_gpu else "cpu")
+            if target == "gpu" and self._gpu_radio.isEnabled():
+                self._gpu_radio.setChecked(True)
+            else:
+                self._cpu_radio.setChecked(True)
 
         self._update_apply_state()
         self.gpu_capability_resolved.emit(self._current == "gpu")
@@ -428,7 +448,13 @@ class BackendOptionsWidget(QWidget):
         """当前单选目标是否需要安装或切换。"""
         if self._change_in_progress:
             return False
-        target = "gpu" if self._gpu_radio.isChecked() else "cpu"
+        if self._gpu_radio.isChecked():
+            target = "gpu"
+        elif self._cpu_radio.isChecked():
+            target = "cpu"
+        else:
+            # 基础 Runtime：保持现状，无切换请求可发。
+            return False
         return target != self._current
 
     def _update_apply_state(self) -> None:
@@ -447,6 +473,9 @@ class BackendOptionsWidget(QWidget):
             not in_progress and (self._has_gpu or self._current == "gpu")
         )
         self._cpu_radio.setEnabled(not in_progress)
+        self._base_radio.setEnabled(
+            not in_progress and self._runtime_installed and self._current is None
+        )
         if in_progress:
             target = "GPU" if self._gpu_radio.isChecked() else "CPU"
             self._status_label.setText(f"等待确认切换到 {target}…")

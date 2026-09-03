@@ -220,22 +220,29 @@ def test_base_only_runtime_is_distinguished_from_uninstalled(_cleanup, qtbot, tm
     assert widget.current_backend() is None
     assert widget._current_label.text() == "当前后端：基础 Runtime（未选择加速框架）"
     assert "基础 Runtime 已就绪" in widget._status_label.text()
-    # 有 GPU 时仍推荐 GPU 单选，等待用户显式选择。
-    assert widget._gpu_radio.isChecked()
+    # 基础态如实选中"基础 Runtime"单选，而不是默认勾 GPU/CPU 冒充已选择。
+    assert widget._base_radio.isChecked()
+    assert widget._base_radio.isEnabled()
+    assert not widget._gpu_radio.isChecked()
+    assert not widget._cpu_radio.isChecked()
+    # 保持现状无可切换，用户显式选择 CPU/GPU 后才可应用。
+    assert not widget._apply_button.isEnabled()
+    widget._gpu_radio.setChecked(True)
     assert widget._apply_button.isEnabled()
 
 
 def test_gpu_profile_shows_cuda_requirement_and_driver_capability(
     _cleanup, qtbot, tmp_path
 ):
-    """GPU profile 显示绑定 CUDA 版本、驱动与"最高支持 CUDA"对照。"""
+    """GPU profile 显示绑定 CUDA 版本、驱动与"支持 CUDA"对照。"""
     widget = _make_widget(tmp_path, has_gpu=True, runtime_backend="gpu")
     qtbot.addWidget(widget)
     assert widget.current_backend() == "gpu"
     assert widget._current_label.text() == "当前后端：GPU（NVIDIA CUDA 12.6）"
     hardware = widget._hw_label.text()
     assert "驱动 566.36" in hardware
-    assert "最高支持 CUDA 12.6" in hardware
+    assert "支持 CUDA 12.6" in hardware
+    assert "最高支持" not in hardware
     assert "需要 NVIDIA CUDA 12.6：满足" in hardware
 
 

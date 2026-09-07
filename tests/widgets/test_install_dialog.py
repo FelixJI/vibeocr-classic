@@ -15,6 +15,7 @@ from vibeocr.classic.widgets.install_dialog import (
     InstallDialog,
     InstallWorker,
     build_maintenance_detail,
+    component_state_label,
 )
 from vibeocr.classic.runtime_installation import (
     RuntimeComponentDescriptor,
@@ -548,6 +549,129 @@ class TestCloseEventAndShutdown:
         with patch.object(InstallDialog, "close") as mock_close:
             dlg.request_shutdown()
         mock_close.assert_called_once()
+
+
+class TestComponentClosureLabels:
+    """部分勾选安装时按请求/有效闭包区分可选组件行文案。
+
+    仅勾选 PaddleOCR 时，MinerU 不能显示为与勾选组件相同的“等待中”；
+    在 Backend 回报 effective 闭包前标“未选择”，回报后如实标注随闭包安装。
+    """
+
+    @staticmethod
+    def _profile() -> RuntimeProfileDescriptor:
+        return RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "rapidocr-base", "RapidOCR", included_in_base=True
+                ),
+                RuntimeComponentDescriptor(
+                    "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+                ),
+                RuntimeComponentDescriptor(
+                    "mineru-cpu", "MinerU", desired_state="ready"
+                ),
+            ),
+        )
+
+    def test_unselected_component_labels_by_requested_and_effective(self):
+        paddle = RuntimeComponentDescriptor(
+            "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+        )
+        mineru = RuntimeComponentDescriptor(
+            "mineru-cpu", "MinerU", desired_state="ready"
+        )
+        assert (
+            component_state_label(
+                paddle, requested_component_ids=frozenset({"paddleocr-cpu"})
+            )
+            == "等待中"
+        )
+        assert (
+            component_state_label(
+                mineru, requested_component_ids=frozenset({"paddleocr-cpu"})
+            )
+            == "未选择"
+        )
+        assert (
+            component_state_label(
+                mineru,
+                requested_component_ids=frozenset({"paddleocr-cpu"}),
+                effective_component_ids=frozenset({"paddleocr-cpu", "mineru-cpu"}),
+            )
+            == "随闭包一并安装"
+        )
+
+    def test_dialog_rows_flip_from_not_selected_to_closure(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path, install_component_ids=("paddleocr-cpu",))
+        dlg._on_profile(self._profile())
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "等待中"
+        assert dlg._component_items["mineru-cpu"].text(1) == "未选择"
+        assert dlg._component_items["rapidocr-base"].text(1) == "随包提供"
+
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=1,
+                operation="ensure",
+                operation_state="running",
+                phase="validate_binding",
+                profile_id="win-x64-cpu",
+                updated_at="2026-09-07T00:38:50Z",
+                effective_component_ids=(
+                    "rapidocr-base",
+                    "paddleocr-cpu",
+                    "mineru-cpu",
+                ),
+            )
+        )
+
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "等待中"
+        assert dlg._component_items["mineru-cpu"].text(1) == "随闭包一并安装"
+
+    def test_finished_marks_only_effective_rows_ready(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path, install_component_ids=("paddleocr-cpu",))
+        dlg._on_profile(
+            RuntimeProfileDescriptor(
+                "win-x64-cpu",
+                "cpu",
+                (
+                    RuntimeComponentDescriptor(
+                        "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+                    ),
+                    RuntimeComponentDescriptor(
+                        "mineru-cpu", "MinerU", desired_state="ready"
+                    ),
+                ),
+            )
+        )
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=1,
+                operation="ensure",
+                operation_state="running",
+                phase="validate_binding",
+                profile_id="win-x64-cpu",
+                updated_at="2026-09-07T00:38:50Z",
+                effective_component_ids=("paddleocr-cpu",),
+            )
+        )
+        dlg._on_finished(True, "Runtime cpu 已验证")
+
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "已就绪"
+        # effective 闭包未包含 MinerU：成功完成时不得伪称已就绪
+        assert dlg._component_items["mineru-cpu"].text(1) == "未选择"
+
+    def test_repair_dialog_keeps_legacy_row_labels(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path)  # repair：install_component_ids 为 None
+        dlg._on_profile(self._profile())
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "等待中"
+        assert dlg._component_items["mineru-cpu"].text(1) == "等待中"
 
 
 class TestLog:

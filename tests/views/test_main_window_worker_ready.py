@@ -48,6 +48,30 @@ class _RapidReadyWindow:
         self._start_install = MagicMock()
 
 
+class _SupervisorGateWindow(_RapidReadyWindow):
+    """依赖已就绪但 Supervisor 处于非 ready 状态的截图入口测试载体。"""
+
+    def __init__(
+        self,
+        *,
+        is_invalidating: bool = False,
+        is_starting: bool = False,
+        holds_runtime_process: bool = False,
+        maintenance_active: bool = False,
+    ) -> None:
+        super().__init__()
+        self._subprocess_manager = SimpleNamespace(
+            is_ready=False,
+            is_invalidating=is_invalidating,
+            is_starting=is_starting,
+            holds_runtime_process=holds_runtime_process,
+        )
+        self._settings_controller = SimpleNamespace(
+            is_maintenance_active=maintenance_active
+        )
+        self._start_supervisor = MagicMock()
+
+
 class _ShortcutWindow:
     _start_fresh_overlay_capture = MainWindow._start_fresh_overlay_capture
 
@@ -102,6 +126,68 @@ def test_rapid_screenshot_is_available_after_supervisor_handshake_without_downlo
     message_box.information.assert_not_called()
     message_box.question.assert_not_called()
     window._start_install.assert_not_called()
+
+
+def test_silently_stopped_supervisor_is_restarted_from_screenshot_gate() -> None:
+    """Supervisor 静默停止（如切换 Runtime 被取消后无人重启）时主动拉起。
+
+    回归：旧逻辑只看 is_ready，把“已停止”误报为“正在启动并等待就绪
+    握手”，截图入口被永久阻塞。
+    """
+    window = _SupervisorGateWindow()
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is False
+
+    window._start_supervisor.assert_called_once_with()
+    message_box.warning.assert_not_called()
+    status = message_box.information.call_args.args
+    assert "正在重新启动" in status[2]
+
+
+def test_starting_supervisor_keeps_handshake_wait_message() -> None:
+    """正在启动时保留“等待就绪握手”提示，且不重复触发启动。"""
+    window = _SupervisorGateWindow(is_starting=True)
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is False
+
+    window._start_supervisor.assert_not_called()
+    assert "等待就绪握手" in message_box.information.call_args.args[2]
+
+
+def test_invalidating_supervisor_reports_maintenance_pause() -> None:
+    """正在停止 Supervisor 准备维护时提示维护文案，不自动重启。"""
+    window = _SupervisorGateWindow(is_invalidating=True)
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is False
+
+    window._start_supervisor.assert_not_called()
+    assert "Runtime 维护" in message_box.information.call_args.args[2]
+
+
+def test_open_install_dialog_blocks_automatic_supervisor_restart() -> None:
+    """维护对话框打开期间不能自动重启 Supervisor（避免抢占文件锁）。"""
+    window = _SupervisorGateWindow(maintenance_active=True)
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is False
+
+    window._start_supervisor.assert_not_called()
+    assert "正在安装或更新 Runtime" in message_box.information.call_args.args[2]
+
+
+def test_unclean_runtime_ownership_warns_without_restart() -> None:
+    """失效失败仍持有进程 owner 时只警告，不自动重启（防旧进程泄漏）。"""
+    window = _SupervisorGateWindow(holds_runtime_process=True)
+
+    with patch("vibeocr.classic.views.main_window.QMessageBox") as message_box:
+        assert window._check_ocr_ready() is False
+
+    window._start_supervisor.assert_not_called()
+    message_box.information.assert_not_called()
+    assert "未能安全停止" in message_box.warning.call_args.args[2]
 
 
 def test_unavailable_screenshot_shortcut_never_creates_overlay() -> None:

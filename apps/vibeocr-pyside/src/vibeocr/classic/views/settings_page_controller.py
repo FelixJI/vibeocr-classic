@@ -100,6 +100,7 @@ class SettingsPageController:
         ocr_ready_callback: Callable[[], bool],
         subprocess_manager,
         install_succeeded_callback: Callable[[], None] | None = None,
+        install_abandoned_callback: Callable[[], None] | None = None,
         gpu_capability_callback: Callable[[bool], None] | None = None,
         recognition_catalog_callback: Callable[[RuntimeSelectionCatalog], None]
         | None = None,
@@ -124,6 +125,13 @@ class SettingsPageController:
         # 的回调，使设置页安装成功后与首启路径行为一致（检测完成回调里自动
         # 设 _ocr_ready + 启动 Worker）。
         self._install_succeeded_callback = install_succeeded_callback
+        # 维护对话框以取消/失败结束时联动恢复 Supervisor（由 MainWindow 提供）。
+        # 回归：切换 Runtime 等维护操作会先停止 Supervisor；旧逻辑在安装被
+        # 取消或失败后只刷新表格，无人重启 Supervisor，截图入口永远停在
+        # “正在启动并等待就绪握手”的误导提示。现由 MainWindow 传入一个触发
+        # dependency_manager.check_dependencies 的回调：磁盘 Runtime 完好则
+        # 检测完成回调自动重启 Supervisor，损坏则回到安装引导。
+        self._install_abandoned_callback = install_abandoned_callback
         self._gpu_capability_callback = gpu_capability_callback
         self._recognition_catalog_callback = recognition_catalog_callback
         self._runtime_has_gpu: bool | None = None
@@ -166,6 +174,18 @@ class SettingsPageController:
         # 控制器不是 QObject，独立测试/嵌入场景可能不会显式调用 shutdown；
         # 宿主 widget 销毁时先冻结后台回调，避免迟到结果访问已释放的 Qt 对象。
         ui.destroyed.connect(self.request_shutdown)
+
+    @property
+    def is_maintenance_active(self) -> bool:
+        """维护是否正在进行：正在停止 Supervisor 或维护对话框仍打开。
+
+        供 MainWindow 区分“Supervisor 停止是因为维护正在进行”，避免在
+        安装期间自动重启 Supervisor 抢占 Runtime 文件锁。
+        """
+
+        return self._pending_maintenance_dialog is not None or bool(
+            self._active_dialogs
+        )
 
     def request_shutdown(self) -> None:
         """Release background workers owned by settings-page widgets.
@@ -1383,6 +1403,10 @@ class SettingsPageController:
             # 成功路径由 install_succeeded 刷新一次；取消/失败才在这里刷新。
             if _result != 1:
                 self._refresh_env_maintenance_state()
+                # 维护已先停止 Supervisor；未成功结束则联动 MainWindow
+                # 重新检测并恢复 Supervisor，不能停在“已停止”状态。
+                if self._install_abandoned_callback is not None:
+                    self._install_abandoned_callback()
             # 移除引用，允许对话框被回收（用户也可再次打开新的）
             try:
                 self._active_dialogs.remove(dialog)
@@ -1515,6 +1539,10 @@ class SettingsPageController:
 
         def _on_finished(_result: int) -> None:
             self.refresh_runtime_state()
+            if _result != 1 and self._install_abandoned_callback is not None:
+                # 维护已先停止 Supervisor；取消/失败（done(0) 或直接关闭）
+                # 时联动 MainWindow 重新检测并恢复 Supervisor。
+                self._install_abandoned_callback()
             try:
                 self._active_dialogs.remove(dialog)
             except ValueError:

@@ -136,8 +136,25 @@ class SubprocessManager(QObject):
         return self._is_ready
 
     @property
+    def is_starting(self) -> bool:
+        return self._start_task is not None
+
+    @property
     def is_invalidating(self) -> bool:
         return self._invalidation_job is not None
+
+    @property
+    def holds_runtime_process(self) -> bool:
+        """是否仍持有未确认退出的 Supervisor 进程。
+
+        失效（维护准备）失败时进程 owner 保留在本 manager 以便重试失效，
+        此时不能直接重新启动，否则旧进程会泄漏。
+        """
+
+        if self._supervisor_process is not None:
+            return True
+        task = self._start_task
+        return task is not None and task.supervisor_proc is not None
 
     def start_supervisor(self) -> None:
         if self._application_shutdown_requested:

@@ -663,6 +663,7 @@ class MainWindow(QMainWindow):
             # 检测完成回调（_on_dependency_check_finished）自动设 _ocr_ready、
             # 启动子进程 Worker，与首启路径行为一致。
             install_succeeded_callback=self._on_settings_install_succeeded,
+            install_abandoned_callback=self._on_settings_install_abandoned,
             gpu_capability_callback=self._on_gpu_capability_resolved,
             recognition_catalog_callback=self._on_recognition_catalog_loaded,
             defer_machine_cache_status=True,
@@ -711,6 +712,19 @@ class MainWindow(QMainWindow):
             return
         logging.info("[设置安装] 依赖安装成功，重新检测以联动截图功能")
         # reset 确保重入安全（若上一次检测仍在进行，避免 _is_checking 短路）
+        self._dependency_manager.check_dependencies()
+
+    def _on_settings_install_abandoned(self) -> None:
+        """设置页维护对话框以取消/失败结束后的联动恢复。
+
+        切换 Runtime 等维护操作会先停止 Supervisor；安装未成功结束时
+        磁盘 Runtime 通常仍是原状态。复用依赖检测链恢复——完好则检测
+        完成回调自动重启 Supervisor，损坏则回到安装引导——避免截图
+        入口永远停留在“正在启动并等待就绪握手”的误导提示。
+        """
+        if self._closing:
+            return
+        logging.info("[设置安装] 安装未成功结束，重新检测依赖以恢复 Supervisor")
         self._dependency_manager.check_dependencies()
 
     def _try_load_cache(self) -> None:
@@ -1138,16 +1152,58 @@ class MainWindow(QMainWindow):
                 self._start_install()
             return False
 
-        # 依赖已就绪，但 Supervisor 尚未完成就绪握手 —— 拦截截图。
+        # 依赖已就绪，但 Supervisor 尚未就绪 —— 按实际状态区分拦截文案。
         # 模型预加载不参与本条件；Supervisor 可接单后即允许按需识别。
-        if not self._subprocess_manager.is_ready:
+        manager = self._subprocess_manager
+        if manager.is_ready:
+            return True
+        if manager.is_invalidating:
+            QMessageBox.information(
+                self,
+                "Supervisor 维护中",
+                "OCR Supervisor 正在停止以准备 Runtime 维护，请稍候再试。",
+            )
+            return False
+        if manager.is_starting:
             QMessageBox.information(
                 self,
                 "Supervisor 启动中",
                 "OCR Supervisor 子进程正在启动并等待就绪握手，请稍候再试。",
             )
             return False
-        return True
+        settings_controller = getattr(self, "_settings_controller", None)
+        if (
+            settings_controller is not None
+            and settings_controller.is_maintenance_active
+        ):
+            # 维护对话框（安装/重装）打开期间不能重启 Supervisor，
+            # 否则会抢占正在写入的 Runtime 文件锁。
+            QMessageBox.information(
+                self,
+                "Runtime 维护中",
+                "正在安装或更新 Runtime，完成后 OCR 会自动恢复，请稍候再试。",
+            )
+            return False
+        if manager.holds_runtime_process:
+            # 失效失败后进程 owner 仍在 manager 手中，自动重启会让旧进程
+            # 泄漏；引导用户重试维护或重启应用。
+            QMessageBox.warning(
+                self,
+                "Supervisor 状态异常",
+                "OCR Supervisor 未能安全停止，无法自动恢复。\n\n"
+                "请在设置页重试切换 Runtime，或重启应用后再使用截图识别。",
+            )
+            return False
+        # Supervisor 已静默停止（例如切换 Runtime 被取消或失败后无人重启）：
+        # 主动重新拉起，恢复 OCR 可用，而不是停留在“等待握手”的误导提示。
+        logging.info("[MainWindow] Supervisor 已停止，重新启动以恢复 OCR")
+        self._start_supervisor()
+        QMessageBox.information(
+            self,
+            "Supervisor 已停止",
+            "OCR Supervisor 已停止，正在重新启动，请稍候后再试。",
+        )
+        return False
 
     @Slot()
     def _on_screenshot(self) -> None:

@@ -114,6 +114,29 @@ def test_start_is_idempotent_when_ready_or_starting(
     manager._thread_pool.start.assert_not_called()
 
 
+def test_state_properties_track_starting_and_unclean_ownership(
+    manager: SubprocessManager,
+) -> None:
+    assert manager.is_starting is False
+    assert manager.holds_runtime_process is False
+
+    task = SupervisorStartTask("python")
+    manager._start_task = task
+    assert manager.is_starting is True
+    assert manager.holds_runtime_process is False
+
+    task.supervisor_proc = Mock()
+    assert manager.holds_runtime_process is True
+
+    manager._start_task = None
+    manager._supervisor_process = Mock()
+    assert manager.is_starting is False
+    assert manager.holds_runtime_process is True
+
+    manager._supervisor_process = None
+    assert manager.holds_runtime_process is False
+
+
 def test_worker_start_keeps_qt_event_loop_responsive(
     manager: SubprocessManager, qapp, qtbot, monkeypatch
 ) -> None:

@@ -54,9 +54,20 @@ _MAINTENANCE_MIN_EMIT_INTERVAL_SECONDS = 0.5
 
 
 def component_state_label(
-    component: RuntimeComponentDescriptor, *, completed: bool = False
+    component: RuntimeComponentDescriptor,
+    *,
+    completed: bool = False,
+    requested_component_ids: frozenset[str] = frozenset(),
+    effective_component_ids: frozenset[str] = frozenset(),
 ) -> str:
-    """Project the Runtime descriptor truth without implying every row downloads."""
+    """Project the Runtime descriptor truth without implying every row downloads.
+
+    ``requested_component_ids`` 是用户本次勾选的组件；未勾选的可选组件是否
+    被安装由 Backend 解析的依赖闭包决定（当前 Backend 的 Paddle/MinerU 共用
+    一个 full lock，勾选任一个都会实际安装另一个）。Classic 不预猜闭包，
+    在 maintenance 事件回报 ``effective_component_ids`` 前先标“未选择”，
+    回报后如实标注“随闭包一并安装”。
+    """
 
     if component.desired_state == "not_required":
         return "不需要"
@@ -64,6 +75,13 @@ def component_state_label(
         return "已就绪"
     if component.included_in_base:
         return "随包提供"
+    if (
+        requested_component_ids
+        and component.component_id not in requested_component_ids
+    ):
+        if component.component_id in effective_component_ids:
+            return "随闭包一并安装"
+        return "未选择"
     return {
         "missing": "缺失",
         "drifted": "需修复",
@@ -396,6 +414,10 @@ class InstallDialog(QDialog):
         self._maintenance_callback = maintenance_callback
         self._install_component_ids = install_component_ids
         self._download_source_ids = download_source_ids
+        # 用户本次勾选的可选组件与 Backend 回报的实际安装闭包；用于区分
+        # “待安装”与“未选择/随闭包一并安装”两类行文案。
+        self._requested_install_ids = frozenset(install_component_ids or ())
+        self._effective_install_ids: frozenset[str] = frozenset()
         self._component_items: dict[str, QTreeWidgetItem] = {}
         self._component_descriptors: dict[str, RuntimeComponentDescriptor] = {}
         self._last_maintenance_summary: str | None = None
@@ -532,7 +554,11 @@ class InstallDialog(QDialog):
             item = QTreeWidgetItem(
                 [
                     component.display_name,
-                    component_state_label(component),
+                    component_state_label(
+                        component,
+                        requested_component_ids=self._requested_install_ids,
+                        effective_component_ids=self._effective_install_ids,
+                    ),
                     component.actual_version or component.version or "—",
                 ]
             )
@@ -550,6 +576,7 @@ class InstallDialog(QDialog):
         else:
             self._progress_bar.setRange(0, 0)
         self._stage_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        self._sync_closure_rows(update)
 
         if update.component_id:
             item = self._component_items.get(update.component_id)
@@ -572,6 +599,34 @@ class InstallDialog(QDialog):
                 self._maintenance_callback(summary)
             self._last_maintenance_summary = summary
 
+    def _sync_closure_rows(self, update: RuntimeMaintenanceUpdate) -> None:
+        """按 Backend 回报的 effective 闭包更新未勾选可选组件的行文案。
+
+        只刷新“未选择/随闭包一并安装”类行；已勾选组件的行文案由各组件
+        自身的 maintenance 事件驱动，不能被整体刷新覆盖。
+        """
+
+        effective = frozenset(update.effective_component_ids)
+        if not self._requested_install_ids or effective == self._effective_install_ids:
+            return
+        self._effective_install_ids = effective
+        for component_id, component in self._component_descriptors.items():
+            if (
+                component_id in self._requested_install_ids
+                or component.included_in_base
+            ):
+                continue
+            item = self._component_items.get(component_id)
+            if item is not None:
+                item.setText(
+                    1,
+                    component_state_label(
+                        component,
+                        requested_component_ids=self._requested_install_ids,
+                        effective_component_ids=effective,
+                    ),
+                )
+
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
@@ -581,7 +636,21 @@ class InstallDialog(QDialog):
         if success:
             for component_id, item in self._component_items.items():
                 component = self._component_descriptors[component_id]
-                item.setText(1, component_state_label(component, completed=True))
+                # 未勾选且不在 effective 闭包内的可选组件没有被安装，不能
+                # 标“已就绪”；effective 未回报时保守沿用旧的完成语义。
+                completed = (
+                    not self._effective_install_ids
+                    or component_id in self._effective_install_ids
+                )
+                item.setText(
+                    1,
+                    component_state_label(
+                        component,
+                        completed=completed,
+                        requested_component_ids=self._requested_install_ids,
+                        effective_component_ids=self._effective_install_ids,
+                    ),
+                )
             self._title_label.setText("安装成功!")
             # 单包/批量重装时 message 是具体结果（如"scipy 安装成功"/"已重装 3 个依赖包"），
             # 优先用它，避免笼统的"OCR依赖安装完成"（用户报告"单包却提示全部安装完毕"）。

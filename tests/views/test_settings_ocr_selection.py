@@ -105,7 +105,7 @@ def _health_payload(
                         "availability": "preparation_required",
                         "included_in_base": False,
                         "reason_code": "component_missing",
-                        "required_component": "win-x64-cpu-document-parsing",
+                        "required_component": "mineru-cpu",
                     },
                 ]
             },
@@ -120,9 +120,9 @@ def _health_payload(
             "component_variant_catalog": {
                 "variants": [
                     {
-                        "feature_id": "document_parsing",
+                        "feature_id": "mineru",
                         "accelerator": "cpu",
-                        "component_id": "win-x64-cpu-document-parsing",
+                        "component_id": "mineru-cpu",
                     },
                 ]
             },
@@ -132,9 +132,9 @@ def _health_payload(
         variants = descriptors[1]["component_variant_catalog"]["variants"]
         variants.append(
             {
-                "feature_id": "document_parsing",
+                "feature_id": "mineru",
                 "accelerator": "nvidia_cuda",
-                "component_id": "win-x64-cu126-document-parsing",
+                "component_id": "mineru-cuda",
             }
         )
     capabilities = [
@@ -287,11 +287,11 @@ def test_health_catalog_renders_engines_features_and_sources(
     paddle = group.child(2)
     assert paddle.text(0) == "通用 OCR（PaddleOCR）"
     assert paddle.text(1) == "需准备组件"
-    assert "win-x64-cpu-document-parsing" in paddle.text(2)
+    assert "mineru-cpu" in paddle.text(2)
     assert "component_missing" in paddle.text(2)
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItemCount() == 1
-    assert tree.topLevelItem(0).text(0).startswith("文档智能解析")
+    assert tree.topLevelItem(0).text(0).startswith("MinerU 文档解析")
     # Runtime 组件状态尚未回填时显示"未知"，不能恒显"未安装"
     assert tree.topLevelItem(0).text(1) == "— 未知"
     assert tree.isEnabled()
@@ -337,17 +337,17 @@ def test_offline_features_reflect_runtime_component_states(
     controller, host, _adapter, _config, _manager = selection_controller
     controller._on_health_loaded(_health_payload())
 
-    controller._runtime_component_states = {"win-x64-cpu-document-parsing": "ready"}
+    controller._runtime_component_states = {"mineru-cpu": "ready"}
     controller._render_offline_features()
     tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
     assert tree.topLevelItem(0).text(1) == "✓ 已安装"
 
-    controller._runtime_component_states = {"win-x64-cpu-document-parsing": "missing"}
+    controller._runtime_component_states = {"mineru-cpu": "missing"}
     controller._render_offline_features()
     assert tree.topLevelItem(0).text(1) == "✗ 未安装"
 
     controller._runtime_component_states = {
-        "win-x64-cpu-document-parsing": "not_required"
+        "mineru-cpu": "not_required"
     }
     controller._render_offline_features()
     assert tree.topLevelItem(0).text(1) == "未随当前配置安装"
@@ -418,9 +418,9 @@ def test_install_offline_features_maps_intent_after_confirmation(
 
     assert question.called
     config.set_offline_component_features.assert_called_once_with(
-        "cpu", ["document_parsing"]
+        "cpu", ["mineru"]
     )
-    assert captured["install_component_ids"] == ("win-x64-cpu-document-parsing",)
+    assert captured["install_component_ids"] == ("mineru-cpu",)
     # 基础 Runtime 状态：即使目录只有 CPU 变体也按切换完整 profile 处理。
     assert captured["force_backend"] == "cpu"
     # 没有显式选择时由 Backend 决定默认来源。
@@ -462,9 +462,9 @@ def test_install_offline_features_asks_accelerator_when_gpu_variant_exists(
 
     assert question.called
     config.set_offline_component_features.assert_called_once_with(
-        "nvidia_cuda", ["document_parsing"]
+        "nvidia_cuda", ["mineru"]
     )
-    assert captured["install_component_ids"] == ("win-x64-cu126-document-parsing",)
+    assert captured["install_component_ids"] == ("mineru-cuda",)
     # 基础 Runtime 下选 GPU 必须切换到 GPU 完整 profile，而不是装 CPU 壳。
     assert captured["force_backend"] == "gpu"
 
@@ -499,9 +499,9 @@ def test_install_offline_features_skips_question_when_backend_selected(
 
     assert question.called
     config.set_offline_component_features.assert_called_once_with(
-        "cpu", ["document_parsing"]
+        "cpu", ["mineru"]
     )
-    assert captured["install_component_ids"] == ("win-x64-cpu-document-parsing",)
+    assert captured["install_component_ids"] == ("mineru-cpu",)
     # 已在后端上，无需切换。
     assert captured["force_backend"] is None
 

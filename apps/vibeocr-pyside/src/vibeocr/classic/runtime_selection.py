@@ -36,6 +36,24 @@ _VALID_ENGINE_AVAILABILITY = frozenset(
 # 未知 kind 保留在 catalog 中但不参与 UI 选择。
 EDITABLE_SOURCE_KINDS = frozenset({"package_index", "model_registry"})
 
+# 可选能力 feature 的历史迁移：2.7 持久化的 ``document_parsing`` 在 2.8
+# catalog 里对应 ``mineru``。旧持久化选择必须在消费前迁移，否则会被当作
+# 当前 Backend 未声明的能力而 fail closed。
+LEGACY_FEATURE_MIGRATIONS: Mapping[str, str] = {
+    "document_parsing": "mineru",
+}
+
+
+def migrate_legacy_feature_ids(feature_ids: Iterable[str]) -> tuple[str, ...]:
+    """把历史持久化的 feature id 迁移到当前 catalog 语义。"""
+    migrated: list[str] = []
+    for feature_id in feature_ids:
+        resolved = LEGACY_FEATURE_MIGRATIONS.get(feature_id, feature_id)
+        if resolved not in migrated:
+            migrated.append(resolved)
+    return tuple(migrated)
+
+
 VALID_ENGINE_IDS = frozenset({"rapidocr", "windows", "paddleocr"})
 
 # 显示文案属于 Classic 本地语义；Backend catalog 不携带产品文案。
@@ -730,6 +748,7 @@ __all__ = [
     "RECOGNITION_MODE_DISPLAY_NAMES",
     "ComponentVariantEntry",
     "DownloadSourceEntry",
+    "LEGACY_FEATURE_MIGRATIONS",
     "OcrEngineEntry",
     "RecognitionModeEntry",
     "RecognitionModeLifecycle",
@@ -737,6 +756,7 @@ __all__ = [
     "RuntimeSelectionError",
     "VALID_ENGINE_IDS",
     "legacy_execution_projection",
+    "migrate_legacy_feature_ids",
     "execution_projection_for_mode",
     "supported_options_for_mode",
     "parse_capability_catalogs",

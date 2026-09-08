@@ -43,6 +43,7 @@ from vibeocr.classic.runtime_selection import (
     ENGINE_AVAILABILITY_READY,
     RuntimeSelectionCatalog,
     RuntimeSelectionError,
+    migrate_legacy_feature_ids,
     parse_capability_catalogs,
 )
 from vibeocr.classic.runtime_status_messages import (
@@ -2156,7 +2157,8 @@ class SettingsPageController:
     # ----------------------------------------------------------------
 
     _FEATURE_LABELS = {
-        "document_parsing": "文档智能解析（MinerU）",
+        "paddleocr": "PaddleOCR 引擎",
+        "mineru": "MinerU 文档解析",
         "gpu_runtime": "GPU 运行时",
     }
 
@@ -2340,7 +2342,9 @@ class SettingsPageController:
             from vibeocr.classic.managers.config_manager import ConfigManager
 
             selected = set(
-                ConfigManager.instance().get_offline_component_features(accelerator)
+                migrate_legacy_feature_ids(
+                    ConfigManager.instance().get_offline_component_features(accelerator)
+                )
             )
         except RuntimeError:
             selected = set()

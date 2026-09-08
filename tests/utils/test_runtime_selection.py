@@ -10,6 +10,7 @@ from vibeocr.classic.runtime_selection import (
     ENGINE_SELECTION_CAPABILITY,
     RECOGNITION_MODE_CAPABILITY,
     RuntimeSelectionError,
+    migrate_legacy_feature_ids,
     parse_capability_catalogs,
     resolve_engine_id,
 )
@@ -483,3 +484,14 @@ def test_resolve_engine_id_prefers_override_and_never_sends_unknown() -> None:
     assert resolve_engine_id("windows") == "windows"
     assert resolve_engine_id("legacy-unknown") is None
     assert resolve_engine_id(None) is None
+
+
+def test_migrate_legacy_feature_ids_maps_2_7_document_parsing() -> None:
+    """2.7 持久化的 document_parsing 必须迁移为 2.8 catalog 的 mineru。"""
+    assert migrate_legacy_feature_ids(
+        ["document_parsing", "gpu_runtime", "document_parsing"]
+    ) == ("mineru", "gpu_runtime")
+    assert migrate_legacy_feature_ids(["mineru", "paddleocr"]) == (
+        "mineru",
+        "paddleocr",
+    )

@@ -122,10 +122,10 @@ class BackendChoiceDialog(QDialog):
         choice_layout.addWidget(self._cpu_radio)
 
         self._hint_label = QLabel(
-            "首次初始化只解压安装包内置的 Base Runtime（RapidOCR、PDF、"
-            "二维码等），不会下载完整 CPU/GPU 扩展。\n"
-            "此处选择后续扩展使用的加速方案；文档解析等可选组件及下载源，"
-            "可在设置中按需选择。"
+            "首次初始化只解压安装包内置的基础 Runtime（RapidOCR 基础识别"
+            "与必要环境），不会下载 PaddleOCR、MinerU 等扩展。\n"
+            "此处选择后续扩展使用的加速方案；PaddleOCR、MinerU 等可选能力"
+            "及下载源，可在设置中按需选择。"
         )
         self._hint_label.setWordWrap(True)
         choice_layout.addWidget(self._hint_label)

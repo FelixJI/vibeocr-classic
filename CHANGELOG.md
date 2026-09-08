@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.19
+
+### Bug Fixes
+
+- **ocr:** 切换 Runtime 取消或失败后自动恢复 Supervisor (#97) (361bdaa)
+- **install:** 安装对话框按请求与有效闭包区分可选组件文案 (#96) (55c24ba)
+
 ## 0.10.18
 
 ### Bug Fixes

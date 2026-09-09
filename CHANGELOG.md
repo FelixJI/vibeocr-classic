@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.20
+
+### Features
+
+- **settings:** 可选能力按引擎展示并迁移旧持久化 feature (#99) (1c59a57)
+
 ## 0.10.19
 
 ### Bug Fixes

@@ -461,3 +461,43 @@ def test_success_marks_all_components_ready(_cleanup, qtbot, tmp_path):
 
     assert dlg._component_items["runtime_base"].text(1) == "已就绪"
     assert dlg._component_items["ocr_engine"].text(1) == "已就绪"
+
+
+def test_maintenance_detail_note_renders_and_sticks(_cleanup, qtbot, tmp_path):
+    """子进程状态行明细渲染进阶段文案，并在心跳间隔内粘性保留。"""
+    dlg = _make_dialog(tmp_path, qtbot, has_gpu=False)
+    qtbot.addWidget(dlg)
+
+    dlg._on_maintenance(
+        _maintenance(
+            phase="install_profile",
+            fallback_message="Downloading torch-2.7.0 (2.5 GB)",
+        )
+    )
+    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+
+    # 后续心跳不携带 fallback_message：同阶段内不闪回
+    dlg._on_maintenance(_maintenance(phase="install_profile"))
+    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+
+    # QTimer 重渲染同样保留明细
+    dlg._refresh_stage_label()
+    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+
+    # 进入新阶段后旧明细不再适用
+    dlg._on_maintenance(_maintenance(phase="verify_runtime"))
+    assert "Downloading torch-2.7.0 (2.5 GB)" not in dlg._progress_label.text()
+
+
+def test_finished_clears_stage_refresh_state(_cleanup, qtbot, tmp_path):
+    """完成后停表并清空重渲染状态，最终文案不被 QTimer 覆盖。"""
+    dlg = _make_dialog(tmp_path, qtbot, has_gpu=False)
+    qtbot.addWidget(dlg)
+    dlg._on_maintenance(_maintenance(fallback_message="Collecting numpy"))
+
+    dlg._on_finished(True, "Runtime cpu 已验证")
+
+    assert dlg._last_maintenance_update is None
+    final_text = dlg._progress_label.text()
+    dlg._refresh_stage_label()
+    assert dlg._progress_label.text() == final_text

@@ -96,6 +96,7 @@ class RuntimeMaintenanceUpdate:
     progress_unit: str | None = None
     estimated_remaining_seconds: float | None = None
     message_code: str | None = None
+    fallback_message: str | None = None
     requested_component_ids: tuple[str, ...] = ()
     effective_component_ids: tuple[str, ...] = ()
     requested_download_source_ids: tuple[str, ...] = ()
@@ -355,6 +356,11 @@ def _maintenance_update(
     message_code = wire.get("message_code")
     if not isinstance(event_type, str) or not isinstance(message_code, str):
         raise RuntimeInstallerClientError("Runtime maintenance 事件字段无效")
+    fallback_message = wire.get("fallback_message")
+    if fallback_message is not None and (
+        not isinstance(fallback_message, str) or not fallback_message
+    ):
+        raise RuntimeInstallerClientError("Runtime maintenance fallback_message 无效")
     return RuntimeMaintenanceUpdate(
         event_type=event_type,
         operation_id=str(snapshot["operation_id"]),
@@ -374,6 +380,7 @@ def _maintenance_update(
             else None
         ),
         message_code=message_code,
+        fallback_message=fallback_message,
         requested_component_ids=tuple(requested),
         effective_component_ids=tuple(effective),
         requested_download_source_ids=tuple(requested_sources),

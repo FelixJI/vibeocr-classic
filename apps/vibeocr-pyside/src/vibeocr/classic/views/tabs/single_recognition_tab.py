@@ -765,13 +765,30 @@ class SingleRecognitionTab(BaseOcrTab):
             if self._closing:
                 return
             logger.error(f"OCR 识别失败: {exc}", exc_info=exc)
-            self._on_ocr_error(
-                str(exc) + self._first_use_suffix(pipeline_val, str(exc))
-            )
+            message = self._recognition_error_message(exc)
+            if message is None:
+                message = str(exc) + self._first_use_suffix(pipeline_val, str(exc))
+            self._on_ocr_error(message)
         finally:
             self._recognize_task = None
             self._set_processing(False)
             self._refresh_start_btn_enabled()
+
+    @staticmethod
+    def _recognition_error_message(exc: Exception) -> str | None:
+        """把协议 typed 错误映射为可操作的中文文案；未映射返回 None。
+
+        已映射错误自带修复指引，不再叠加通用的“下载模型”首用提示，
+        避免把组件缺失误导成模型下载问题。
+        """
+
+        from vibeocr.classic.runtime_status_messages import (
+            engine_preparation_required_message,
+        )
+
+        if getattr(exc, "code", None) == "OCR_ENGINE_PREPARATION_REQUIRED":
+            return engine_preparation_required_message(getattr(exc, "detail", None))
+        return None
 
     def _refresh_start_btn_enabled(self) -> None:
         """根据忙时状态与是否有待识别图，统一管理 _start_btn 启用状态。

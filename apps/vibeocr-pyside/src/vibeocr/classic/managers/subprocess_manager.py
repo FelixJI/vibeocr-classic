@@ -71,10 +71,15 @@ class SupervisorStartTask(QRunnable):
                     progress=self.signals.progress.emit,
                     cancel_event=self._cancelled,
                     required_capabilities=self.required_capabilities,
-                    # Supervisor 启动只依赖产品随附的 Base Runtime。可选的
-                    # Paddle/MinerU 组件只能由用户显式维护操作安装，不能在
-                    # Base 已就绪后把一次启动隐式扩张为完整 profile 安装。
-                    install_component_ids=(),
+                    # Supervisor 启动只依赖产品随附的 Base Runtime，但期望
+                    # 闭包必须等于当前已安装闭包：Backend ensure 要求
+                    # installed == desired（双向不一致都会按 desired 整仓
+                    # 重装），固定 base-only 会把用户显式安装的完整 profile
+                    # 或高级组件静默缩回 base-only，随后引擎提交以 428
+                    # (OCR_ENGINE_PREPARATION_REQUIRED) 失败。
+                    install_component_ids=(
+                        self._installer_client.startup_install_component_ids()
+                    ),
                 )
             proc = SupervisorProcess.launch(
                 python_exe=(

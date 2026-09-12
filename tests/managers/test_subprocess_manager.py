@@ -44,6 +44,59 @@ def test_start_task_reports_process_and_handshake_stage(monkeypatch) -> None:
     assert started == [True]
 
 
+@pytest.mark.parametrize(
+    ("installed_scope", "expected_scope"),
+    [
+        ((), ()),
+        (
+            ("paddleocr-cuda", "mineru-cuda", "gpu_runtime"),
+            ("paddleocr-cuda", "mineru-cuda", "gpu_runtime"),
+        ),
+    ],
+)
+def test_start_task_ensure_keeps_installed_optional_components(
+    manager: SubprocessManager,
+    monkeypatch,
+    installed_scope: tuple[str, ...],
+    expected_scope: tuple[str, ...],
+) -> None:
+    """启动 ensure 的期望闭包必须等于已安装闭包，不能缩回 base-only。"""
+
+    ensure_kwargs: dict[str, object] = {}
+
+    def fake_ensure(**kwargs):
+        ensure_kwargs.update(kwargs)
+        return SimpleNamespace(
+            python_executable="python",
+            supervisor_module="vibeocr.backend.supervisor.main",
+            working_directory=str(manager._project_root),
+            environment={},
+        )
+
+    manager._installer_client.ensure = Mock(side_effect=fake_ensure)
+    manager._installer_client.startup_install_component_ids = Mock(
+        return_value=installed_scope
+    )
+    monkeypatch.setattr(
+        "vibeocr.runtime_client.process.SupervisorProcess.launch",
+        lambda **_kwargs: Mock(),
+    )
+    started: list[bool] = []
+    task = SupervisorStartTask(
+        installer_client=manager._installer_client,
+        required_capabilities=("ocr.recognition.v2",),
+    )
+    task.signals.started.connect(started.append)
+
+    task.run()
+
+    assert started == [True]
+    assert ensure_kwargs["install_component_ids"] == expected_scope, (
+        "启动 ensure 不得把已安装的可选组件静默缩回 base-only"
+    )
+    manager._installer_client.startup_install_component_ids.assert_called_once_with()
+
+
 @pytest.fixture()
 def manager(qapp, tmp_path):
     (tmp_path / "component-lock.json").write_text(
@@ -160,6 +213,7 @@ def test_worker_start_keeps_qt_event_loop_responsive(
             environment={"VIBEOCR_RUNTIME_ROOT": str(expected_python.parent)},
         )
     )
+    manager._installer_client.startup_install_component_ids = Mock(return_value=())
 
     def slow_launch(**kwargs):
         launch_kwargs.update(kwargs)

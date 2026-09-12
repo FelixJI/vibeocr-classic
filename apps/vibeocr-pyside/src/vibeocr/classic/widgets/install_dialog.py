@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QDialog,
     QHeaderView,
@@ -66,7 +66,9 @@ def component_state_label(
     被安装由 Backend 解析的依赖闭包决定（当前 Backend 的 Paddle/MinerU 共用
     一个 full lock，勾选任一个都会实际安装另一个）。Classic 不预猜闭包，
     在 maintenance 事件回报 ``effective_component_ids`` 前先标“未选择”，
-    回报后如实标注“随闭包一并安装”。
+    回报后如实标注“随闭包一并安装”。无显式勾选的全量 profile 操作
+    （切换推理后端、修复 Runtime）同样按 ``effective_component_ids`` 标注，
+    避免 Backend 回报闭包前停留在含义模糊的“等待中”。
     """
 
     if component.desired_state == "not_required":
@@ -82,6 +84,11 @@ def component_state_label(
         if component.component_id in effective_component_ids:
             return "随闭包一并安装"
         return "未选择"
+    if (
+        not requested_component_ids
+        and component.component_id in effective_component_ids
+    ):
+        return "随闭包一并安装"
     return {
         "missing": "缺失",
         "drifted": "需修复",
@@ -137,12 +144,15 @@ class MaintenanceActivityClock:
 def build_maintenance_detail(
     update: RuntimeMaintenanceUpdate,
     clock: MaintenanceActivityClock | None = None,
+    detail_note: str | None = None,
 ) -> MaintenanceProgressDetail:
     """把维护事件统一渲染为进度条区间与阶段文案。
 
     首启 BackendChoiceDialog 与设置页 InstallDialog 共用，避免百分比、
     字节与步数格式化逻辑出现两份逐渐分歧的实现。仅在渲染不确定进度的
     running 事件时才读取 clock（保持阶段计时的调用语义不变）。
+    ``detail_note`` 是调用方维护的“当前在做什么”明细（如 Installer 事件
+    回报的 fallback_message），为空时不影响既有文案。
     """
     phase = _PHASE_LABELS.get(update.phase, update.phase)
     state = _STATE_LABELS.get(update.operation_state, update.operation_state)
@@ -169,6 +179,8 @@ def build_maintenance_detail(
             )
         if update.estimated_remaining_seconds is not None:
             detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        if detail_note:
+            detail += f" · {detail_note}"
         if scope_note:
             detail += f" · {scope_note}"
         if source_note:
@@ -190,6 +202,8 @@ def build_maintenance_detail(
         detail = f"{phase} · {update.progress_current}/{update.progress_total} 步"
     if update.operation_state == "running" and clock is not None:
         detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
+    if detail_note:
+        detail += f" · {detail_note}"
     if scope_note:
         detail += f" · {scope_note}"
     if source_note:
@@ -422,6 +436,13 @@ class InstallDialog(QDialog):
         self._component_descriptors: dict[str, RuntimeComponentDescriptor] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
+        # 事件是离散到达的；已用时走字与明细展示由 1 秒 QTimer 基于最后一个
+        # 事件本地重渲染，避免事件间隔大（如在线安装 5 秒心跳）时界面停更。
+        self._last_maintenance_update: RuntimeMaintenanceUpdate | None = None
+        self._sticky_detail: tuple[str, str] | None = None
+        self._stage_refresh_timer = QTimer(self)
+        self._stage_refresh_timer.setInterval(1000)
+        self._stage_refresh_timer.timeout.connect(self._refresh_stage_label)
         self._setup_ui()
         self._worker: InstallWorker | None = None
 
@@ -514,6 +535,7 @@ class InstallDialog(QDialog):
         self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
         self._worker.start()
+        self._stage_refresh_timer.start()
         # 安装开始后显示取消按钮
         self._cancel_button.setVisible(True)
 
@@ -569,13 +591,8 @@ class InstallDialog(QDialog):
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
-        rendered = build_maintenance_detail(update, clock=self._activity_clock)
-        if rendered.determinate:
-            self._progress_bar.setRange(0, rendered.progress_maximum)
-            self._progress_bar.setValue(rendered.progress_value)
-        else:
-            self._progress_bar.setRange(0, 0)
-        self._stage_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        self._last_maintenance_update = update
+        rendered = self._render_maintenance_stage(update)
         self._sync_closure_rows(update)
 
         if update.component_id:
@@ -599,15 +616,58 @@ class InstallDialog(QDialog):
                 self._maintenance_callback(summary)
             self._last_maintenance_summary = summary
 
+    def _render_maintenance_stage(
+        self, update: RuntimeMaintenanceUpdate
+    ) -> MaintenanceProgressDetail:
+        """按最后一个事件渲染阶段行与进度条；可被 QTimer 重复调用。"""
+
+        rendered = build_maintenance_detail(
+            update,
+            clock=self._activity_clock,
+            detail_note=self._current_detail_note(update),
+        )
+        if rendered.determinate:
+            self._progress_bar.setRange(0, rendered.progress_maximum)
+            self._progress_bar.setValue(rendered.progress_value)
+        else:
+            self._progress_bar.setRange(0, 0)
+        self._stage_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        return rendered
+
+    def _refresh_stage_label(self) -> None:
+        """QTimer 槽：事件静默期让已用时/明细继续走字，不产生新日志。"""
+
+        if self._last_maintenance_update is None:
+            return
+        self._render_maintenance_stage(self._last_maintenance_update)
+
+    def _current_detail_note(self, update: RuntimeMaintenanceUpdate) -> str | None:
+        """解析事件的“当前在做什么”明细，并在同阶段内保持粘性。
+
+        Installer 只在明细变化时携带 ``fallback_message``；后续心跳事件不带
+        该字段，若不粘性保留，界面会在两次明细事件之间闪回无明细文案。
+        """
+
+        note = update.fallback_message
+        if note:
+            self._sticky_detail = (update.phase, note)
+            return note
+        cached = self._sticky_detail
+        if cached is not None and cached[0] == update.phase:
+            return cached[1]
+        return None
+
     def _sync_closure_rows(self, update: RuntimeMaintenanceUpdate) -> None:
         """按 Backend 回报的 effective 闭包更新未勾选可选组件的行文案。
 
         只刷新“未选择/随闭包一并安装”类行；已勾选组件的行文案由各组件
-        自身的 maintenance 事件驱动，不能被整体刷新覆盖。
+        自身的 maintenance 事件驱动，不能被整体刷新覆盖。无显式勾选的全量
+        profile 操作（切换后端/修复）同样消费 ``effective_component_ids``，
+        否则 MinerU/PaddleOCR 会整场停留在“等待中”直到最终成功。
         """
 
         effective = frozenset(update.effective_component_ids)
-        if not self._requested_install_ids or effective == self._effective_install_ids:
+        if effective == self._effective_install_ids:
             return
         self._effective_install_ids = effective
         for component_id, component in self._component_descriptors.items():
@@ -630,6 +690,9 @@ class InstallDialog(QDialog):
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
+        self._sticky_detail = None
         self._progress_bar.setVisible(False)
         self._cancel_button.setVisible(False)
 
@@ -678,11 +741,15 @@ class InstallDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         """Request cancellation and return immediately; registry owns the worker."""
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
         event.accept()
 
     def request_shutdown(self) -> None:
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
         self.close()

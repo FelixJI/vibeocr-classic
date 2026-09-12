@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -89,6 +89,11 @@ class BackendChoiceDialog(QDialog):
         self._component_descriptors: dict[str, RuntimeComponentDescriptor] = {}
         self._last_maintenance_summary: str | None = None
         self._activity_clock = MaintenanceActivityClock()
+        self._last_maintenance_update: RuntimeMaintenanceUpdate | None = None
+        self._sticky_detail: tuple[str, str] | None = None
+        self._stage_refresh_timer = QTimer(self)
+        self._stage_refresh_timer.setInterval(1000)
+        self._stage_refresh_timer.timeout.connect(self._refresh_stage_label)
         self._setup_ui()
         self._detect_and_set_default()
 
@@ -244,6 +249,7 @@ class BackendChoiceDialog(QDialog):
         self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
         self._worker.start()
+        self._stage_refresh_timer.start()
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装。"""
@@ -289,7 +295,12 @@ class BackendChoiceDialog(QDialog):
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
-        rendered = build_maintenance_detail(update, clock=self._activity_clock)
+        self._last_maintenance_update = update
+        rendered = build_maintenance_detail(
+            update,
+            clock=self._activity_clock,
+            detail_note=self._current_detail_note(update),
+        )
         if rendered.determinate:
             self._progress_bar.setRange(0, rendered.progress_maximum)
             self._progress_bar.setValue(rendered.progress_value)
@@ -315,8 +326,36 @@ class BackendChoiceDialog(QDialog):
                 self._log(summary)
             self._last_maintenance_summary = summary
 
+    def _refresh_stage_label(self) -> None:
+        """QTimer 槽：事件静默期让已用时/明细继续走字，不产生新日志。"""
+
+        if self._last_maintenance_update is None:
+            return
+        update = self._last_maintenance_update
+        rendered = build_maintenance_detail(
+            update,
+            clock=self._activity_clock,
+            detail_note=self._current_detail_note(update),
+        )
+        self._progress_label.setText(f"{rendered.detail} · {rendered.state_label}")
+
+    def _current_detail_note(self, update: RuntimeMaintenanceUpdate) -> str | None:
+        """解析事件的“当前在做什么”明细，并在同阶段内保持粘性。"""
+
+        note = update.fallback_message
+        if note:
+            self._sticky_detail = (update.phase, note)
+            return note
+        cached = self._sticky_detail
+        if cached is not None and cached[0] == update.phase:
+            return cached[1]
+        return None
+
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
+        self._sticky_detail = None
         self._progress_bar.setVisible(False)
         self._cancel_button.setVisible(False)
         if success:
@@ -350,11 +389,15 @@ class BackendChoiceDialog(QDialog):
 
     def closeEvent(self, event) -> None:
         """关闭事件：协作式取消安装，绝不强杀线程（避免孤儿 pip 进程）。"""
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
         event.accept()
 
     def request_shutdown(self) -> None:
+        self._stage_refresh_timer.stop()
+        self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
         self.close()

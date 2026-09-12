@@ -292,7 +292,9 @@ def test_inspect_does_not_trust_locally_synthesized_base_membership(
     assert inspection.base_ready
 
 
-def test_inspect_reports_host_base_profile_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_inspect_reports_host_base_profile_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """回归：基础 Runtime 时 Host 回报 accelerator="cpu" 且 profile_id=win-x64-base。
 
     旧实现按 accelerator 无条件反推 profile，把基础态误标成 win-x64-cpu，
@@ -1490,3 +1492,42 @@ def test_maintenance_update_parses_download_source_scope() -> None:
     }
     with pytest.raises(RuntimeInstallerClientError, match="scope"):
         _maintenance_update(invalid, expected_operation="ensure")
+
+
+def test_maintenance_update_parses_fallback_message() -> None:
+    from vibeocr.classic.runtime_installation import _maintenance_update
+
+    wire = {
+        "protocol_version": 2,
+        "event_version": 1,
+        "operation": "ensure",
+        "event_type": "progress",
+        "message_code": "runtime.install_profile",
+        "fallback_message": "Downloading torch-2.7.0 (2.5 GB)",
+        "snapshot": {
+            "operation_id": "op-42",
+            "sequence": 2,
+            "operation": "ensure",
+            "operation_state": "running",
+            "phase": "install_profile",
+            "profile_id": "win-x64-cpu",
+            "updated_at": "2026-09-12T00:00:00+00:00",
+        },
+    }
+
+    parsed = _maintenance_update(wire, expected_operation="ensure")
+    assert parsed.fallback_message == "Downloading torch-2.7.0 (2.5 GB)"
+
+    missing = {key: value for key, value in wire.items() if key != "fallback_message"}
+    parsed_missing = _maintenance_update(missing, expected_operation="ensure")
+    assert parsed_missing.fallback_message is None
+
+    with pytest.raises(RuntimeInstallerClientError, match="fallback_message"):
+        _maintenance_update(
+            {**wire, "fallback_message": ""}, expected_operation="ensure"
+        )
+
+    with pytest.raises(RuntimeInstallerClientError, match="fallback_message"):
+        _maintenance_update(
+            {**wire, "fallback_message": 42}, expected_operation="ensure"
+        )

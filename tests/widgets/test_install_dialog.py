@@ -220,6 +220,45 @@ class TestBuildMaintenanceDetail:
         rendered = build_maintenance_detail(update)
         assert "已用时" not in rendered.detail
 
+    def test_detail_note_appended_to_steps_progress(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=6,
+            operation="ensure",
+            operation_state="running",
+            phase="install_profile",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            progress_current=4,
+            progress_total=7,
+            progress_unit="steps",
+            fallback_message="Downloading torch-2.7.0 (2.5 GB)",
+        )
+        rendered = build_maintenance_detail(
+            update, detail_note="Downloading torch-2.7.0 (2.5 GB)"
+        )
+        assert "Downloading torch-2.7.0 (2.5 GB)" in rendered.detail
+        assert "4/7 步" in rendered.detail
+
+    def test_detail_note_appended_to_bytes_progress(self):
+        update = RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=7,
+            operation="ensure",
+            operation_state="running",
+            phase="prepare_runtime",
+            profile_id="win-x64-cpu",
+            updated_at="2026-08-14T00:00:00Z",
+            progress_current=25 * 1024 * 1024,
+            progress_total=100 * 1024 * 1024,
+            progress_unit="bytes",
+        )
+        rendered = build_maintenance_detail(update, detail_note="runtime pack 1/2")
+        assert "runtime pack 1/2" in rendered.detail
+        assert "25%" in rendered.detail
+
     def test_matching_scope_stays_silent(self):
         update = RuntimeMaintenanceUpdate(
             event_type="progress",
@@ -522,32 +561,44 @@ class TestCloseEventAndShutdown:
         dlg = InstallDialog.__new__(InstallDialog)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
+        dlg._stage_refresh_timer = MagicMock()
+        dlg._last_maintenance_update = None
         event = MagicMock()
         InstallDialog.closeEvent(dlg, event)
         dlg._worker.request_cancel.assert_called_once()
+        dlg._stage_refresh_timer.stop.assert_called_once()
         event.accept.assert_called_once()
 
     def test_close_event_no_worker_accepts(self, qapp, tmp_path):
         dlg = InstallDialog.__new__(InstallDialog)
         dlg._worker = None
+        dlg._stage_refresh_timer = MagicMock()
+        dlg._last_maintenance_update = None
         event = MagicMock()
         InstallDialog.closeEvent(dlg, event)
+        dlg._stage_refresh_timer.stop.assert_called_once()
         event.accept.assert_called_once()
 
     def test_request_shutdown_cancels_and_closes(self, qapp, tmp_path):
         dlg = InstallDialog.__new__(InstallDialog)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
+        dlg._stage_refresh_timer = MagicMock()
+        dlg._last_maintenance_update = None
         with patch.object(InstallDialog, "close") as mock_close:
             dlg.request_shutdown()
         dlg._worker.request_cancel.assert_called_once()
+        dlg._stage_refresh_timer.stop.assert_called_once()
         mock_close.assert_called_once()
 
     def test_request_shutdown_no_worker_still_closes(self, qapp, tmp_path):
         dlg = InstallDialog.__new__(InstallDialog)
         dlg._worker = None
+        dlg._stage_refresh_timer = MagicMock()
+        dlg._last_maintenance_update = None
         with patch.object(InstallDialog, "close") as mock_close:
             dlg.request_shutdown()
+        dlg._stage_refresh_timer.stop.assert_called_once()
         mock_close.assert_called_once()
 
 
@@ -672,6 +723,144 @@ class TestComponentClosureLabels:
         dlg._on_profile(self._profile())
         assert dlg._component_items["paddleocr-cpu"].text(1) == "等待中"
         assert dlg._component_items["mineru-cpu"].text(1) == "等待中"
+
+    def test_full_profile_operation_labels_rows_by_closure(self):
+        paddle = RuntimeComponentDescriptor(
+            "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+        )
+        # 无显式勾选（切换后端/修复）：Backend 回报闭包前保持既有兜底文案
+        assert component_state_label(paddle) == "等待中"
+        # 回报闭包后如实标注，不再停留在含义模糊的“等待中”
+        assert (
+            component_state_label(
+                paddle,
+                effective_component_ids=frozenset({"paddleocr-cpu", "mineru-cpu"}),
+            )
+            == "随闭包一并安装"
+        )
+
+    def test_dialog_rows_refresh_closure_without_explicit_selection(
+        self, qapp, tmp_path
+    ):
+        dlg = InstallDialog(tmp_path)  # 切换后端：install_component_ids 为 None
+        dlg._on_profile(self._profile())
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "等待中"
+        assert dlg._component_items["mineru-cpu"].text(1) == "等待中"
+
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=1,
+                operation="ensure",
+                operation_state="running",
+                phase="validate_binding",
+                profile_id="win-x64-cpu",
+                updated_at="2026-09-12T00:00:00Z",
+                effective_component_ids=(
+                    "rapidocr-base",
+                    "paddleocr-cpu",
+                    "mineru-cpu",
+                ),
+            )
+        )
+
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "随闭包一并安装"
+        assert dlg._component_items["mineru-cpu"].text(1) == "随闭包一并安装"
+        assert dlg._component_items["rapidocr-base"].text(1) == "随包提供"
+
+    def test_finished_marks_closure_rows_ready_without_selection(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path)
+        dlg._on_profile(self._profile())
+        dlg._on_maintenance(
+            RuntimeMaintenanceUpdate(
+                event_type="progress",
+                operation_id="op-1",
+                sequence=1,
+                operation="ensure",
+                operation_state="running",
+                phase="validate_binding",
+                profile_id="win-x64-cpu",
+                updated_at="2026-09-12T00:00:00Z",
+                effective_component_ids=(
+                    "rapidocr-base",
+                    "paddleocr-cpu",
+                    "mineru-cpu",
+                ),
+            )
+        )
+        dlg._on_finished(True, "Runtime cpu 已验证")
+
+        assert dlg._component_items["paddleocr-cpu"].text(1) == "已就绪"
+        assert dlg._component_items["mineru-cpu"].text(1) == "已就绪"
+
+
+class TestStageRefreshTimer:
+    """QTimer 驱动的本地重渲染：事件静默期已用时/明细继续走字。"""
+
+    @staticmethod
+    def _running_update(
+        sequence: int,
+        *,
+        phase: str = "install_profile",
+        fallback_message: str | None = None,
+    ) -> RuntimeMaintenanceUpdate:
+        return RuntimeMaintenanceUpdate(
+            event_type="progress",
+            operation_id="op-1",
+            sequence=sequence,
+            operation="ensure",
+            operation_state="running",
+            phase=phase,
+            profile_id="win-x64-cpu",
+            updated_at="2026-09-12T00:00:00Z",
+            progress_current=4,
+            progress_total=7,
+            progress_unit="steps",
+            fallback_message=fallback_message,
+        )
+
+    def test_stage_label_re_renders_elapsed_between_events(
+        self, qapp, tmp_path, monkeypatch
+    ):
+        import time as time_module
+
+        dlg = InstallDialog(tmp_path)
+        monkeypatch.setattr(time_module, "monotonic", lambda: 1000.0)
+        dlg._on_maintenance(self._running_update(1))
+        assert "已用时 0 秒" in dlg._stage_label.text()
+
+        # 12 秒内没有任何新事件（如在线安装的 5 秒心跳间隔），
+        # QTimer 到期仍应基于最后一个事件重渲染已用时。
+        monkeypatch.setattr(time_module, "monotonic", lambda: 1012.0)
+        dlg._refresh_stage_label()
+        assert "已用时 12 秒" in dlg._stage_label.text()
+
+    def test_detail_note_sticky_across_events_and_reset_by_phase(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path)
+        dlg._on_maintenance(
+            self._running_update(1, fallback_message="Downloading numpy (16 MB)")
+        )
+        assert "Downloading numpy (16 MB)" in dlg._stage_label.text()
+
+        # 后续心跳事件不携带 fallback_message：同阶段内粘性保留
+        dlg._on_maintenance(self._running_update(2))
+        assert "Downloading numpy (16 MB)" in dlg._stage_label.text()
+
+        # 进入新阶段后明细不再适用，不能继续展示旧包名
+        dlg._on_maintenance(self._running_update(3, phase="verify_runtime"))
+        assert "Downloading numpy (16 MB)" not in dlg._stage_label.text()
+
+    def test_finished_clears_refresh_state(self, qapp, tmp_path):
+        dlg = InstallDialog(tmp_path)
+        _show_dialog(dlg)
+        dlg._on_maintenance(self._running_update(1))
+        dlg._on_finished(True, "Runtime cpu 已验证")
+
+        assert dlg._last_maintenance_update is None
+        final_text = dlg._stage_label.text()
+        dlg._refresh_stage_label()
+        assert dlg._stage_label.text() == final_text
 
 
 class TestLog:

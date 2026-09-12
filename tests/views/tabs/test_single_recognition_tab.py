@@ -1088,3 +1088,62 @@ class TestInflightCancel:
             adapter.shutdown()
             _drive(qasync_loop, lambda: adapter.shutdown_drained)
             set_supervisor_adapter(None)
+
+
+class TestSingleRecognitionTabErrorMapping:
+    """协议 typed 错误到用户可见文案的映射"""
+
+    @staticmethod
+    def _preparation_error(code: str, detail):
+        from vibeocr.runtime_client.errors import InferenceClientError
+
+        return InferenceClientError(
+            code,
+            "The selected OCR engine requires user preparation of a runtime "
+            "component before use.",
+            detail=detail,
+            status_code=428,
+        )
+
+    def test_preparation_required_maps_to_actionable_chinese_message(
+        self, qapp, monkeypatch
+    ):
+        tab = SingleRecognitionTab()
+        exc = self._preparation_error(
+            "OCR_ENGINE_PREPARATION_REQUIRED", {"required_component": "paddleocr-cuda"}
+        )
+
+        shown: list[str] = []
+        monkeypatch.setattr(tab, "_on_ocr_error", shown.append)
+        # 已映射错误自带修复指引；误导性的“下载模型”首用提示不得叠加。
+        suffix_calls: list[tuple] = []
+        monkeypatch.setattr(
+            tab, "_first_use_suffix", lambda *args: suffix_calls.append(args) or ""
+        )
+
+        tab._on_ocr_async_error(exc, "OCR")
+
+        assert shown == [
+            "所选 OCR 引擎尚未准备完成，需要先安装对应的运行时组件"
+            "（组件：paddleocr-cuda）。请在「设置 → 当前可用的识别能力」"
+            "安装对应组件后重试。"
+        ]
+        assert suffix_calls == []
+
+    def test_other_errors_keep_raw_message_and_first_use_suffix(
+        self, qapp, monkeypatch
+    ):
+        tab = SingleRecognitionTab()
+
+        shown: list[str] = []
+        monkeypatch.setattr(tab, "_on_ocr_error", shown.append)
+        monkeypatch.setattr(tab, "_first_use_suffix", lambda *_args: "\n\n提示：suffix")
+
+        tab._on_ocr_async_error(RuntimeError("boom"), "OCR")
+
+        assert shown == ["boom\n\n提示：suffix"]
+
+    def test_plain_exception_has_no_code_attribute(self, qapp):
+        assert (
+            SingleRecognitionTab._recognition_error_message(RuntimeError("x")) is None
+        )

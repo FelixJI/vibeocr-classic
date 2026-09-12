@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,6 +191,30 @@ class RuntimeLaunch:
     working_directory: str
     model_root: str
     environment: dict[str, str]
+
+
+def startup_install_scope(
+    inspection: RuntimeInspection,
+    base_component_ids: Iterable[str],
+) -> tuple[str, ...]:
+    """Derive the ``ensure`` install scope that preserves the installed closure.
+
+    Backend ``ensure`` requires the installed closure to equal the desired
+    scope and reinstalls to the desired scope whenever either side differs.
+    A startup ``ensure`` pinned to the base-only scope would therefore
+    silently contract a full profile (or user-installed optional components)
+    back to base-only, after which advanced engines fail submission with
+    ``OCR_ENGINE_PREPARATION_REQUIRED``. The desired scope is instead the
+    optional components the inspection actually reports ``ready``; with none
+    of them ready (nothing installed yet, or base-only) it stays base-only.
+    """
+
+    base_ids = frozenset(base_component_ids)
+    return tuple(
+        component.component_id
+        for component in inspection.components
+        if component.component_id not in base_ids and component.actual_state == "ready"
+    )
 
 
 ProgressCallback = Callable[[RuntimeMaintenanceUpdate], None]
@@ -1329,6 +1353,42 @@ class RuntimeInstallerClient:
                 "Runtime Installer inspect 响应不完整"
             ) from exc
 
+    def base_profile_component_ids(self) -> tuple[str, ...]:
+        """Return the base profile component ids declared by the manifest."""
+
+        profiles = self._manifest().get("profiles")
+        if not isinstance(profiles, dict):
+            raise RuntimeInstallerClientError("Runtime manifest 缺少 profiles")
+        base_record = profiles.get("win-x64-base")
+        components = (
+            base_record.get("components") if isinstance(base_record, dict) else None
+        )
+        if not isinstance(components, list):
+            raise RuntimeInstallerClientError("Runtime base profile 组件列表无效")
+        ids = tuple(
+            item.get("component_id")
+            for item in components
+            if isinstance(item, dict) and isinstance(item.get("component_id"), str)
+        )
+        if not ids:
+            raise RuntimeInstallerClientError("Runtime base profile 组件为空")
+        return ids
+
+    def startup_install_component_ids(self) -> tuple[str, ...]:
+        """Return the startup ``ensure`` scope that keeps the installed closure.
+
+        绝不能把启动 ensure 固定为 base-only：Backend ensure 要求
+        已安装闭包 == 期望闭包，双向不一致都会按期望闭包整仓重装，
+        固定 base-only 会把用户显式安装的完整 profile / 高级组件静默
+        缩回 base-only，随后引擎提交以 428 (OCR_ENGINE_PREPARATION_REQUIRED)
+        失败。inspect 失败时同样 fail closed，不降级为 base-only。
+        """
+
+        return startup_install_scope(
+            self.inspect(),
+            self.base_profile_component_ids(),
+        )
+
     def ensure(
         self,
         *,
@@ -1430,4 +1490,5 @@ __all__ = [
     "RuntimeMaintenanceUpdate",
     "RuntimeProfileDescriptor",
     "RuntimeSourceIdentity",
+    "startup_install_scope",
 ]

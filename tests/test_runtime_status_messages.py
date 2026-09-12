@@ -5,6 +5,7 @@ from vibeocr.classic.runtime_status_messages import (
     accelerator_display,
     accelerator_framework,
     cuda_requirement_label,
+    engine_preparation_required_message,
     format_runtime_unavailable,
     supervisor_start_failure_message,
 )
@@ -138,15 +139,11 @@ def test_host_plan_projection_with_missing_advanced_components_is_base() -> None
             actual_state="missing",
         ),
     )
+    assert accelerator_framework("cpu", host_base_payload, "win-x64-cpu") is None
     assert (
-        accelerator_framework(
-            "cpu", host_base_payload, "win-x64-cpu"
-        )
-        is None
+        accelerator_display("cpu", "win-x64-cpu", host_base_payload)
+        == "基础 Runtime（未选择高级 OCR 框架）"
     )
-    assert accelerator_display(
-        "cpu", "win-x64-cpu", host_base_payload
-    ) == "基础 Runtime（未选择高级 OCR 框架）"
 
     # 完整 CPU profile：高级组件实际就绪，仍按 profile 判定为 CPU。
     host_full_payload = tuple(
@@ -155,6 +152,20 @@ def test_host_plan_projection_with_missing_advanced_components_is_base() -> None
         else component
         for component in host_base_payload
     )
-    assert (
-        accelerator_framework("cpu", host_full_payload, "win-x64-cpu") == "cpu"
+    assert accelerator_framework("cpu", host_full_payload, "win-x64-cpu") == "cpu"
+
+
+def test_engine_preparation_message_names_required_component() -> None:
+    message = engine_preparation_required_message(
+        {"required_component": "paddleocr-cuda"}
     )
+    assert "所选 OCR 引擎尚未准备完成" in message
+    assert "paddleocr-cuda" in message
+    assert "安装对应组件后重试" in message
+
+
+def test_engine_preparation_message_tolerates_missing_detail() -> None:
+    message = engine_preparation_required_message(None)
+    assert "所选 OCR 引擎尚未准备完成" in message
+    assert "组件：" not in message
+    assert "安装对应组件后重试" in message

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 _ACCELERATOR_LABELS = {
     "cpu": "CPU",
@@ -151,6 +151,24 @@ def format_runtime_unavailable(reasons: Sequence[str]) -> str:
     return f"Runtime 不可用：{detail}" if detail else "Runtime 不可用"
 
 
+def engine_preparation_required_message(detail: object = None) -> str:
+    """User-facing message for the 428 ``OCR_ENGINE_PREPARATION_REQUIRED``.
+
+    该错误只意味着“所选引擎的可选运行时组件尚未安装”，不是识别失败
+    本身；提示用户在设置页准备对应识别模式后重试。
+    """
+
+    required = None
+    if isinstance(detail, Mapping):
+        value = detail.get("required_component")
+        required = value if isinstance(value, str) and value else None
+    component = f"（组件：{required}）" if required else ""
+    return (
+        "所选 OCR 引擎尚未准备完成，需要先安装对应的运行时组件"
+        f"{component}。请在「设置 → 当前可用的识别能力」安装对应组件后重试。"
+    )
+
+
 def supervisor_start_failure_message() -> str:
     return (
         "OCR Supervisor 子进程未能完成启动和就绪握手。\n\n"
@@ -168,6 +186,7 @@ __all__ = [
     "accelerator_framework",
     "cuda_requirement_label",
     "cuda_requirement_version",
+    "engine_preparation_required_message",
     "format_runtime_unavailable",
     "supervisor_start_failure_message",
 ]

@@ -205,6 +205,192 @@ def _inspect_envelope(*, profile: object | None, status: str = "ready") -> dict:
     }
 
 
+def _host_profile(components: list[dict]) -> dict:
+    return {
+        "profile_id": "win-x64-cpu",
+        "accelerator": "cpu",
+        "components": components,
+    }
+
+
+def _manifest_with_base_profile(tmp_path: Path, client: RuntimeInstallerClient):
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    base_components = [
+        {"component_id": "rapidocr-base", "display_name": "RapidOCR base"},
+        {"component_id": "pdf_document_tools", "display_name": "PDF tools"},
+        {"component_id": "image_code_tools", "display_name": "Image code tools"},
+        {"component_id": "runtime_host", "display_name": "Runtime host"},
+    ]
+    manifest["profiles"] = {
+        "win-x64-base": {"components": base_components},
+        "win-x64-cpu": {
+            "components": [
+                *base_components,
+                {"component_id": "paddleocr-cpu", "display_name": "PaddleOCR CPU"},
+                {"component_id": "mineru-cpu", "display_name": "MinerU CPU"},
+            ]
+        },
+    }
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    return client
+
+
+def test_startup_install_scope_preserves_installed_full_profile() -> None:
+    inspection = _inspection_with_components(
+        _base_component("rapidocr-base"),
+        _base_component("pdf_document_tools"),
+        RuntimeComponentDescriptor(
+            "paddleocr-cuda",
+            "PaddleOCR CUDA",
+            actual_state="ready",
+            included_in_base=False,
+        ),
+        RuntimeComponentDescriptor(
+            "mineru-cuda",
+            "MinerU CUDA",
+            actual_state="ready",
+            included_in_base=False,
+        ),
+        RuntimeComponentDescriptor(
+            "gpu_runtime",
+            "GPU runtime",
+            actual_state="ready",
+            included_in_base=False,
+        ),
+    )
+
+    from vibeocr.classic.runtime_installation import startup_install_scope
+
+    assert startup_install_scope(
+        inspection,
+        ("rapidocr-base", "pdf_document_tools"),
+    ) == ("paddleocr-cuda", "mineru-cuda", "gpu_runtime")
+
+
+def test_startup_install_scope_stays_base_only_without_ready_optional() -> None:
+    from vibeocr.classic.runtime_installation import startup_install_scope
+
+    nothing_installed = _inspection_with_components(
+        _base_component("rapidocr-base", actual_state="missing"),
+        RuntimeComponentDescriptor(
+            "paddleocr-cuda",
+            "PaddleOCR CUDA",
+            actual_state="missing",
+            included_in_base=False,
+        ),
+    )
+    base_only = _inspection_with_components(
+        _base_component("rapidocr-base"),
+        RuntimeComponentDescriptor(
+            "paddleocr-cuda",
+            "PaddleOCR CUDA",
+            actual_state="missing",
+            included_in_base=False,
+        ),
+    )
+
+    assert startup_install_scope(nothing_installed, ("rapidocr-base",)) == ()
+    assert startup_install_scope(base_only, ("rapidocr-base",)) == ()
+
+
+def test_startup_install_scope_drops_only_drifted_optional_components() -> None:
+    inspection = _inspection_with_components(
+        _base_component("rapidocr-base"),
+        RuntimeComponentDescriptor(
+            "paddleocr-cuda",
+            "PaddleOCR CUDA",
+            actual_state="drifted",
+            included_in_base=False,
+        ),
+        RuntimeComponentDescriptor(
+            "mineru-cuda",
+            "MinerU CUDA",
+            actual_state="ready",
+            included_in_base=False,
+        ),
+    )
+
+    from vibeocr.classic.runtime_installation import startup_install_scope
+
+    assert startup_install_scope(inspection, ("rapidocr-base",)) == ("mineru-cuda",)
+
+
+def test_startup_install_component_ids_reads_inspection_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _manifest_with_base_profile(tmp_path, _bound_client(tmp_path))
+    monkeypatch.setattr(
+        client,
+        "_invoke",
+        lambda *_args, **_kwargs: _inspect_envelope(
+            profile=_host_profile(
+                [
+                    {
+                        "component_id": "rapidocr-base",
+                        "display_name": "RapidOCR base",
+                        "actual_state": "ready",
+                    },
+                    {
+                        "component_id": "paddleocr-cpu",
+                        "display_name": "PaddleOCR CPU",
+                        "actual_state": "ready",
+                    },
+                    {
+                        "component_id": "mineru-cpu",
+                        "display_name": "MinerU CPU",
+                        "actual_state": "ready",
+                    },
+                ]
+            )
+        ),
+    )
+
+    assert client.base_profile_component_ids() == (
+        "rapidocr-base",
+        "pdf_document_tools",
+        "image_code_tools",
+        "runtime_host",
+    )
+    assert client.startup_install_component_ids() == (
+        "paddleocr-cpu",
+        "mineru-cpu",
+    )
+
+
+@pytest.mark.parametrize(
+    "profiles",
+    [
+        {"win-x64-cpu": {}},
+        {"win-x64-base": {}},
+        {"win-x64-base": {"components": []}},
+    ],
+)
+def test_base_profile_component_ids_fails_closed_on_invalid_manifest(
+    tmp_path: Path, profiles: dict
+) -> None:
+    client = _bound_client(tmp_path)
+    manifest = json.loads(client.runtime_manifest.read_text(encoding="utf-8"))
+    manifest["profiles"] = profiles
+    client.runtime_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(RuntimeInstallerClientError):
+        client.base_profile_component_ids()
+
+
+def test_startup_install_component_ids_fails_closed_when_inspect_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _manifest_with_base_profile(tmp_path, _bound_client(tmp_path))
+
+    def _inspect_failure(*_args, **_kwargs):
+        raise RuntimeInstallerClientError("Runtime Installer inspect 失败")
+
+    monkeypatch.setattr(client, "_invoke", _inspect_failure)
+
+    with pytest.raises(RuntimeInstallerClientError):
+        client.startup_install_component_ids()
+
+
 def test_inspect_uses_full_ready_for_legacy_profile_without_base_flag(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

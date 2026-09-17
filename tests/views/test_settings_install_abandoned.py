@@ -11,12 +11,13 @@ InstallDialog / BackendChoiceDialog 以取消或失败结束（finished(0)）后
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QDialog, QWidget
 
+from vibeocr.classic.runtime_maintenance import RuntimeInstallerClientError
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
 
@@ -40,8 +41,18 @@ def _immediate_invalidation_manager() -> MagicMock:
 
 
 @pytest.fixture
-def controller(qtbot, tmp_path):
-    """构造带真实 UI 的 SettingsPageController，patch 掉重依赖保证隔离"""
+def controller(qtbot, tmp_path, monkeypatch):
+    """构造带真实 UI 的 SettingsPageController，patch 掉重依赖保证隔离。
+
+    所有 patch 必须覆盖整个测试生命周期，而非仅构造期：测试体内的
+    ``finished(0)`` 联动会同步走到 ``refresh_runtime_state``，构造期的
+    ``with patch(...)`` 那时已退出，真实的 ``_start_gpu_detection`` 会拉起
+    GPU 探测线程（Popen nvidia-smi 与 Runtime Installer 子进程），
+    ``is_cache_valid`` 会经 ``generate_machine_id`` 拉起 wmic 子进程，
+    ``inspect`` 也会 Popen Runtime Installer——CI 上由此引入不受测试
+    控制的子进程探测。故统一用 monkeypatch 全程挡住，并注入 inspect
+    立即失败的 Runtime Installer 桩。
+    """
     host = QWidget()
     qtbot.addWidget(host)
     ui = Ui_MainWindowWidget()
@@ -50,39 +61,48 @@ def controller(qtbot, tmp_path):
     install_cb = MagicMock(name="install_succeeded_callback")
     abandoned_cb = MagicMock(name="install_abandoned_callback")
 
-    with (
-        patch(
-            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.backend_options_widget."
+        "BackendOptionsWidget._start_gpu_detection",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller.is_cache_valid",
+        lambda project_root: (False, None),
+    )
+    mock_cm = MagicMock(name="ConfigManager")
+    mock_cm.instance.return_value = MagicMock(
+        get_pipeline_ttls=MagicMock(
+            return_value={
+                "OCR": 0,
+                "TABLE_RECOGNITION": 0,
+                "FORMULA_RECOGNITION": 0,
+                "PP-StructureV3": 300,
+                "MinerU": 0,
+                "PaddleOCR-VL": 300,
+            }
         ),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.is_cache_valid",
-            return_value=(False, None),
-        ),
-        patch("vibeocr.classic.managers.config_manager.ConfigManager") as mock_cm,
-    ):
-        mock_cm.instance.return_value = MagicMock(
-            get_pipeline_ttls=MagicMock(
-                return_value={
-                    "OCR": 0,
-                    "TABLE_RECOGNITION": 0,
-                    "FORMULA_RECOGNITION": 0,
-                    "PP-StructureV3": 300,
-                    "MinerU": 0,
-                    "PaddleOCR-VL": 300,
-                }
-            ),
-        )
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.managers.config_manager.ConfigManager", mock_cm
+    )
 
-        ctrl = SettingsPageController(
-            ui=host,
-            project_root=Path(tmp_path),
-            status_callback=lambda msg: None,
-            ocr_ready_callback=lambda: True,
-            subprocess_manager=_immediate_invalidation_manager(),
-            install_succeeded_callback=install_cb,
-            install_abandoned_callback=abandoned_cb,
-        )
-        ctrl.connect_signals()
+    runtime_installer = MagicMock(name="runtime_installer_client")
+    runtime_installer.inspect.side_effect = RuntimeInstallerClientError(
+        "测试桩：不探测真实 Runtime"
+    )
+
+    ctrl = SettingsPageController(
+        ui=host,
+        project_root=Path(tmp_path),
+        status_callback=lambda msg: None,
+        ocr_ready_callback=lambda: True,
+        subprocess_manager=_immediate_invalidation_manager(),
+        install_succeeded_callback=install_cb,
+        install_abandoned_callback=abandoned_cb,
+        runtime_installer_client=runtime_installer,
+    )
+    ctrl.connect_signals()
     return ctrl, host, install_cb, abandoned_cb
 
 

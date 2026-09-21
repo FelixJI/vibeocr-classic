@@ -30,7 +30,9 @@ def _show_dialog(dlg: InstallDialog) -> None:
     预设 ``_worker``（truthy）以避免 ``showEvent`` 触发真实的 ``_start_install``
     去构造并 ``.start()`` 一个 InstallWorker 线程。
     """
-    dlg._worker = MagicMock()  # truthy → showEvent 的 ``if not self._worker`` 跳过
+    dlg._worker = MagicMock(
+        is_cancelled=MagicMock(return_value=False)
+    )  # truthy → showEvent 的 ``if not self._worker`` 跳过
     dlg.show()
 
 
@@ -133,19 +135,19 @@ class TestSetupUiTitleBranches:
 
     def test_single_pkg_title(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path, single_pkg="numpy")
-        assert dlg.windowTitle() == "重装依赖：numpy"
-        assert "numpy" in dlg._title_text
+        assert dlg.windowTitle() == "修复运行环境"
+        assert "尚未开始安装" in dlg._title_text
 
     def test_packages_batch_title(self, qapp, tmp_path):
         pkgs = ["scipy", "numpy", "pandas"]
         dlg = InstallDialog(tmp_path, packages=pkgs)
-        assert dlg.windowTitle() == "批量重装 3 个依赖包"
-        assert "3" in dlg._title_text
+        assert dlg.windowTitle() == "修复运行环境"
+        assert "尚未开始安装" in dlg._title_text
 
     def test_default_title(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path)
-        assert dlg.windowTitle() == "安装OCR依赖"
-        assert dlg._title_text == "正在安装OCR依赖..."
+        assert dlg.windowTitle() == "安装运行环境"
+        assert "尚未开始安装" in dlg._title_text
 
     def test_modal_and_minimum_size(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path)
@@ -462,8 +464,9 @@ class TestOnFinished:
         dlg = InstallDialog(tmp_path)
         _show_dialog(dlg)
         dlg._on_finished(False, "网络错误")
-        assert dlg._title_label.text() == "安装失败"
-        assert dlg._stage_label.text() == "安装过程中出现错误"
+        assert dlg._title_label.text() == "安装未完成"
+        assert dlg._stage_label.text() == "网络错误"
+        assert dlg.isVisible()
         # done(0) hide 对话框，用 isHidden() 验证显式 setVisible 调用。
         assert not dlg._close_button.isHidden()
         assert dlg._close_button.text() == "关闭"
@@ -553,12 +556,16 @@ class TestStartInstall:
         mock_worker_cls.return_value = MagicMock()
         dlg = InstallDialog(tmp_path, packages=["a", "b"])
         dlg._start_install()
-        assert "2" in dlg._log_text.toPlainText()
+        assert "读取运行环境范围" in dlg._log_text.toPlainText()
+        assert "2 个" not in dlg._log_text.toPlainText()
 
 
 class TestCloseEventAndShutdown:
     def test_close_event_requests_cancel_when_worker_running(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
         dlg._stage_refresh_timer = MagicMock()
@@ -567,10 +574,13 @@ class TestCloseEventAndShutdown:
         InstallDialog.closeEvent(dlg, event)
         dlg._worker.request_cancel.assert_called_once()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        event.accept.assert_called_once()
+        event.ignore.assert_called_once()
 
     def test_close_event_no_worker_accepts(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = None
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
@@ -580,26 +590,37 @@ class TestCloseEventAndShutdown:
         event.accept.assert_called_once()
 
     def test_request_shutdown_cancels_and_closes(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
-        with patch.object(InstallDialog, "close") as mock_close:
-            dlg.request_shutdown()
+        finished = MagicMock()
+        dlg.finished.connect(finished)
+        dlg.request_shutdown()
         dlg._worker.request_cancel.assert_called_once()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        mock_close.assert_called_once()
+        finished.assert_not_called()
+        dlg._terminal_success = False
+        dlg._on_worker_stopped()
+        finished.assert_called_once_with(0)
 
     def test_request_shutdown_no_worker_still_closes(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = None
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
-        with patch.object(InstallDialog, "close") as mock_close:
-            dlg.request_shutdown()
+        finished = MagicMock()
+        dlg.finished.connect(finished)
+        dlg.request_shutdown()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        mock_close.assert_called_once()
+        finished.assert_called_once_with(0)
 
 
 class TestComponentClosureLabels:
@@ -868,3 +889,60 @@ class TestLog:
         dlg = InstallDialog(tmp_path)
         dlg._log("测试消息")
         assert "测试消息" in dlg._log_text.toPlainText()
+
+
+def test_reuse_success_without_event_scope_uses_confirmed_plan(qapp, tmp_path):
+    dlg = InstallDialog(tmp_path, install_component_ids=("paddleocr-cpu",))
+    dlg._on_profile(
+        RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+                ),
+                RuntimeComponentDescriptor(
+                    "mineru-cpu", "MinerU", desired_state="ready"
+                ),
+            ),
+        )
+    )
+    plan = MagicMock(effective_component_ids=("paddleocr-cpu",), blockers=())
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.describe_install_plan",
+        return_value="preview",
+    ):
+        dlg._on_plan_ready(plan)
+    # Formal reuse events may omit scope, including the successful terminal event.
+    dlg._on_maintenance(
+        RuntimeMaintenanceUpdate(
+            "completed",
+            "reuse-op",
+            3,
+            "ensure",
+            "succeeded",
+            "verify_runtime",
+            "win-x64-cpu",
+            "2026-09-21T00:00:00Z",
+        )
+    )
+    dlg._on_finished(True, "运行环境已验证；模型可能仍需首次准备")
+    assert dlg._component_items["paddleocr-cpu"].text(1) == "已就绪"
+    assert dlg._component_items["mineru-cpu"].text(1) == "未选择"
+
+
+def test_success_without_scope_does_not_invent_component_readiness(qapp, tmp_path):
+    dlg = InstallDialog(tmp_path)
+    dlg._on_profile(
+        RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "mineru-cpu", "MinerU", actual_state="missing"
+                ),
+            ),
+        )
+    )
+    dlg._on_finished(True, "操作完成")
+    assert dlg._component_items["mineru-cpu"].text(1) == "缺失"

@@ -109,6 +109,7 @@ def controller(qtbot, tmp_path, monkeypatch):
 class _FakeBackendChoiceDialog(QDialog):
     """提供真实 finished / install_succeeded Signal 的轻量对话框。"""
 
+    install_completed = Signal(bool, str)
     install_succeeded = Signal()
 
     def __init__(self, *args, **kwargs):
@@ -121,10 +122,17 @@ class _FakeBackendChoiceDialog(QDialog):
 class _FakeInstallDialog(QDialog):
     """提供真实 finished / install_succeeded Signal 的轻量安装对话框。"""
 
+    install_completed = Signal(bool, str)
     install_succeeded = Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.before_install = kwargs.get(
+            "before_install", lambda continuation: continuation()
+        )
+
+    def can_start_installation(self):
+        return True
 
     def show(self):
         pass
@@ -140,6 +148,7 @@ def test_install_dialog_failure_invokes_abandoned_callback(controller, monkeypat
     ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
+    dialog.before_install(lambda: None)
     dialog.finished.emit(0)
 
     abandoned_cb.assert_called_once_with()
@@ -175,6 +184,7 @@ def test_install_dialog_user_close_invokes_abandoned_callback(controller, monkey
     ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
+    dialog.before_install(lambda: None)
     dialog.finished.emit(0)
 
     abandoned_cb.assert_called_once_with()
@@ -248,3 +258,111 @@ def test_maintenance_active_reflects_pending_and_open_dialogs(controller, monkey
     ctrl._active_dialogs[-1].finished.emit(0)
 
     assert ctrl.is_maintenance_active is False
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_close_active_install_waits_for_result_before_runtime_recovery(
+    controller, monkeypatch, qtbot, success
+):
+    import threading
+    from uuid import uuid4
+    from PySide6.QtCore import Qt
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+    from vibeocr.classic.widgets.install_dialog import InstallWorker
+
+    ctrl, _host, installed, abandoned = controller
+    release = threading.Event()
+    started = threading.Event()
+    operation_id = str(uuid4())
+
+    class DelayedTerminalWorker(InstallWorker):
+        def run(self):
+            self.plan_ready.emit(None)
+            self._confirmation.wait(5)
+            InstallationRecord(operation_id, 1, "running", None, ()).save(
+                self._project_root
+            )
+            started.set()
+            release.wait(5)
+            state = "succeeded" if success else "cancelled"
+            InstallationRecord(operation_id, 2, state, None, ()).save(
+                self._project_root
+            )
+            self.completed.emit(success, state)
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallWorker", DelayedTerminalWorker
+    )
+    ctrl._show_install_dialog(missing_only=True)
+    dialog = ctrl._active_dialogs[-1]
+    try:
+        qtbot.waitUntil(lambda: dialog._confirm_button.isVisible())
+        dialog._confirm_button.click()
+        qtbot.waitUntil(started.is_set)
+        qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+        assert dialog in ctrl._active_dialogs
+        installed.assert_not_called()
+        abandoned.assert_not_called()
+        assert InstallationRecord.read(ctrl._project_root).state == "running"
+        release.set()
+        qtbot.waitUntil(lambda: dialog._worker is None)
+        qtbot.waitUntil(lambda: dialog not in ctrl._active_dialogs)
+        if success:
+            installed.assert_called_once_with()
+            abandoned.assert_not_called()
+        else:
+            abandoned.assert_called_once_with()
+            installed.assert_not_called()
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: dialog._worker is None)
+        dialog.close()
+
+
+@pytest.mark.parametrize("operation_missing", [False, True])
+def test_replayed_failed_operation_restores_service_without_new_install(
+    controller, monkeypatch, qtbot, operation_missing
+):
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from vibeocr.classic.runtime_installation import RuntimeMaintenanceUpdate
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+
+    ctrl, _host, installed, abandoned = controller
+    record = InstallationRecord(str(uuid4()), 1, "running", "plan", ())
+    record.save(ctrl._project_root)
+    terminal = RuntimeMaintenanceUpdate(
+        "snapshot",
+        record.operation_id,
+        2,
+        "ensure",
+        "failed",
+        "install_profile",
+        "win-x64-cpu",
+        "2026-09-21T00:00:00Z",
+        message_args={"reason_code": "download_failed", "next_action": "check_network"},
+    )
+    client = MagicMock()
+    client.observe.return_value = SimpleNamespace(
+        events=(terminal,), snapshot=terminal, more=False, through_sequence=2
+    )
+    if operation_missing:
+        client.observe.side_effect = RuntimeInstallerClientError(
+            "operation not found", canonical_code="RUNTIME_OPERATION_NOT_FOUND"
+        )
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient",
+        lambda *args, **kwargs: client,
+    )
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+    qtbot.waitUntil(lambda: dialog._worker is None)
+    try:
+        assert InstallationRecord.read(ctrl._project_root).state == "failed"
+        abandoned.assert_called_once_with()
+        installed.assert_not_called()
+        client.ensure.assert_not_called()
+        client.repair.assert_not_called()
+        ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
+    finally:
+        dialog.close()

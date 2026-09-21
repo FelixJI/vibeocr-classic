@@ -178,7 +178,7 @@ def test_recognition_mode_catalog_owns_labels_lifecycle_and_execution_projection
                         "supported_options": [],
                         "lifecycle": {
                             "kind": "process_keep_alive",
-                            "supports_preload": False,
+                            "supports_preload": True,
                             "supports_ttl": True,
                             "supports_pinning": False,
                             "supports_release": True,
@@ -270,7 +270,7 @@ def test_recognition_mode_catalog_owns_labels_lifecycle_and_execution_projection
     assert rapid.lifecycle.supports_preload is False
     assert paddle.lifecycle.supports_preload is True
     assert paddle.lifecycle.supports_pinning is True
-    assert mineru.lifecycle.supports_preload is False
+    assert mineru.lifecycle.supports_preload is True
     assert mineru.lifecycle.supports_ttl is True
     assert mineru.lifecycle.supports_pinning is False
 

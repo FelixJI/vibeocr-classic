@@ -142,6 +142,7 @@ class SettingsPageController:
         self._runtime_adapter = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
         self._selection_catalog: RuntimeSelectionCatalog | None = None
+        self._selection_load_error: str | None = None
         self._selection_accelerator: str | None = None
         # component_id → actual_state；由 Runtime 状态快照回填，供可选能力树
         # 显示真实安装状态（而不是恒显"未安装"）。
@@ -315,15 +316,15 @@ class SettingsPageController:
         # --- 环境维护：重装 Python 运行时 / 重装 OCR 依赖 / 补充安装缺失依赖 ---
         btn_reinstall_python = self._ui.findChild(QPushButton, "btnReinstallPython")
         if btn_reinstall_python:
-            btn_reinstall_python.setText("重建完整 Runtime")
+            btn_reinstall_python.setText("修复运行环境")
             btn_reinstall_python.setToolTip(
-                "重新安装受产品绑定的 Python、Backend、Protocol 与当前推理 profile。"
+                "检查已安装组件，仅修复损坏的已有闭包，不补装未选择的引擎。"
             )
             btn_reinstall_python.clicked.connect(self._on_reinstall_python)
 
         btn_reinstall_deps = self._ui.findChild(QPushButton, "btnReinstallDeps")
         if btn_reinstall_deps:
-            btn_reinstall_deps.setText("选择并确保 Runtime profile")
+            btn_reinstall_deps.setText("安装或调整运行环境")
             btn_reinstall_deps.setToolTip(
                 "选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。"
             )
@@ -331,6 +332,7 @@ class SettingsPageController:
 
         btn_install_missing = self._ui.findChild(QPushButton, "btnInstallMissing")
         if btn_install_missing:
+            btn_install_missing.setVisible(False)
             btn_install_missing.setText("补全当前 Runtime")
             btn_install_missing.setToolTip(
                 "校验当前 profile，仅在缺失或损坏时下载并补全。"
@@ -339,7 +341,7 @@ class SettingsPageController:
 
         btn_update_deps = self._ui.findChild(QPushButton, "btnUpdateDeps")
         if btn_update_deps:
-            btn_update_deps.setText("刷新产品绑定状态")
+            btn_update_deps.setText("检查环境状态")
             btn_update_deps.setToolTip(
                 "Runtime 版本随 VibeOCR 产品更新统一升级；此处只刷新绑定状态。"
             )
@@ -700,21 +702,6 @@ class SettingsPageController:
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
             return
-        name = "GPU（NVIDIA CUDA）" if target == "gpu" else "CPU"
-        size = "通常需要数 GB" if target == "gpu" else "通常超过 1 GB"
-        reply = QMessageBox.question(
-            None,
-            "确认切换推理后端",
-            f"将停止当前 OCR Supervisor，并联网下载、安装完整的 {name} "
-            f"Runtime profile（{size}，实际流量取决于已有缓存）。\n\n"
-            "安装期间会显示进度并可取消。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            if backend_options is not None:
-                backend_options.set_change_in_progress(False)
-            return
         self._open_install_dialog(force_backend=target)
 
     def _on_pdf_pipeline_switching(self, old_pipeline, options) -> None:
@@ -936,6 +923,22 @@ class SettingsPageController:
             row_layout.addStretch(1)
             layout.addWidget(row)
             created_count += 1
+        status = self._ui.findChild(QLabel, "labelLifecycleAvailability")
+        if status is None:
+            status = QLabel(self._ui)
+            status.setObjectName("labelLifecycleAvailability")
+            status.setWordWrap(True)
+            layout.addWidget(status)
+        error = getattr(self, "_selection_load_error", None)
+        if error:
+            status.setText(f"模型管理能力读取失败：{error}")
+        elif self._selection_catalog is None:
+            status.setText("正在等待 Backend 模型管理能力目录…")
+        elif not created_count:
+            status.setText("当前没有已准备且支持 TTL 管理的识别模式；准备模型后刷新。")
+        else:
+            status.setText("")
+        status.setVisible(bool(status.text()))
         logger.info(
             "[TTL Combos] 已创建 %d 个 ComboBox (layout count=%d)",
             created_count,
@@ -1429,11 +1432,11 @@ class SettingsPageController:
         dialog.show()
 
     def _on_reinstall_python(self) -> None:
-        """修复完整 Runtime profile，底层统一调用 Runtime Installer repair。"""
+        """检查并修复已安装闭包，底层统一调用 Runtime Installer repair。"""
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
-            "将校验绑定版本的完整 Runtime profile，并重建损坏或缺失的内容。\n\n"
+            "将检查已安装组件；仅在损坏时修复已有闭包，不补装其他引擎。\n\n"
             "不会执行逐包 pip 变更，也不会修改用户配置、模型缓存和日志。\n\n"
             "是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1442,23 +1445,11 @@ class SettingsPageController:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self._open_reinstall_dialog(reinstall_python=True)
+        self._open_install_dialog(missing_only=True)
 
     def _on_reinstall_deps(self) -> None:
-        """让用户选择并校验或切换完整 Runtime profile。"""
-        reply = QMessageBox.question(
-            None,
-            "选择 Runtime profile",
-            "下一步可选择 CPU 或 GPU profile。只有点击“开始安装”后才会联网；"
-            "安装期间会显示进度并可取消。\n\n"
-            "是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self._open_reinstall_dialog(reinstall_python=False)
+        """Preview the current engine intent without contracting it to base-only."""
+        self._open_install_dialog()
 
     def _on_install_missing(self) -> None:
         """使用 Installer 的当前 accelerator 补全缺失 Runtime 内容。"""
@@ -1506,13 +1497,17 @@ class SettingsPageController:
         single_pkg: str | None = None,
         packages: list[str] | None = None,
     ) -> None:
-        self._run_after_supervisor_invalidated(
-            lambda: self._show_install_dialog(
-                missing_only=missing_only,
-                force_backend=force_backend,
-                single_pkg=single_pkg,
-                packages=packages,
-            )
+        if (
+            self._closing
+            or self._pending_maintenance_dialog is not None
+            or getattr(self, "_active_dialogs", ())
+        ):
+            return
+        self._show_install_dialog(
+            missing_only=missing_only,
+            force_backend=force_backend,
+            single_pkg=single_pkg,
+            packages=packages,
         )
 
     def _show_install_dialog(
@@ -1527,6 +1522,20 @@ class SettingsPageController:
         """显示非模态 Runtime 安装进度；操作只通过 Installer ensure/repair。"""
         from vibeocr.classic.widgets.install_dialog import InstallDialog
 
+        maintenance_started = False
+
+        def before_install(continuation: Callable[[], None]) -> None:
+            def start() -> None:
+                nonlocal maintenance_started
+                maintenance_started = True
+                if not dialog.can_start_installation():
+                    if self._install_abandoned_callback is not None:
+                        self._install_abandoned_callback()
+                    return
+                continuation()
+
+            self._run_after_supervisor_invalidated(start)
+
         dialog = InstallDialog(
             self._project_root,
             missing_only=missing_only,
@@ -1536,11 +1545,32 @@ class SettingsPageController:
             maintenance_callback=self._status_callback,
             install_component_ids=install_component_ids,
             download_source_ids=download_source_ids,
+            before_install=before_install,
         )
+
+        restored_after_failure = False
+
+        def _on_operation_recovered() -> None:
+            nonlocal maintenance_started
+            # The earlier operation stopped the service, even though this window did not.
+            maintenance_started = True
+
+        def _on_completed(success: bool, message: str) -> None:
+            nonlocal restored_after_failure
+            if not success:
+                self._status_callback(f"本次安装未完成：{message}")
+                if maintenance_started and self._install_abandoned_callback is not None:
+                    self._install_abandoned_callback()
+                    restored_after_failure = True
 
         def _on_finished(_result: int) -> None:
             self.refresh_runtime_state()
-            if _result != 1 and self._install_abandoned_callback is not None:
+            if (
+                _result != 1
+                and maintenance_started
+                and not restored_after_failure
+                and self._install_abandoned_callback is not None
+            ):
                 # 维护已先停止 Supervisor；取消/失败（done(0) 或直接关闭）
                 # 时联动 MainWindow 重新检测并恢复 Supervisor。
                 self._install_abandoned_callback()
@@ -1554,6 +1584,9 @@ class SettingsPageController:
             if self._install_succeeded_callback is not None:
                 self._install_succeeded_callback()
 
+        if hasattr(dialog, "operation_recovered"):
+            dialog.operation_recovered.connect(_on_operation_recovered)
+        dialog.install_completed.connect(_on_completed)
         dialog.finished.connect(_on_finished)
         if hasattr(dialog, "install_succeeded"):
             dialog.install_succeeded.connect(_on_install_succeeded)
@@ -1582,7 +1615,7 @@ class SettingsPageController:
     def _on_reinstall_single_dep(self, pkg: str) -> None:
         """单包重装入口（依赖表格"重装"按钮）。
 
-        不二次确认——单包重装只装一个包，影响范围小，直接弹进度对话框。
+        旧入口迁移到整个运行环境修复；在对话框显示真实范围并再次确认。
         """
         self._open_install_dialog(single_pkg=pkg)
 
@@ -1591,7 +1624,7 @@ class SettingsPageController:
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
-            "将校验并修复当前完整 Runtime profile；不会逐包修改。是否继续？",
+            "将检查并修复已有组件闭包；不会补装其他引擎或逐包修改。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1720,7 +1753,17 @@ class SettingsPageController:
                     rows.append(("Protocol manifest", protocol_sha[:12]))
             self._populate_runtime_status_tree(rows)
             if label:
-                label.setText(f"Runtime：{status_text} · 服务：{service}")
+                from vibeocr.classic.runtime_maintenance import (
+                    InstallationRecord,
+                    RuntimeInstallerClientError,
+                )
+
+                try:
+                    record = InstallationRecord.read(self._project_root)
+                    outcome = f"\n{record.summary}" if record is not None else ""
+                except RuntimeInstallerClientError as exc:
+                    outcome = f"\n{exc}"
+                label.setText(f"Runtime：{status_text} · 服务：{service}{outcome}")
         else:
             self._runtime_component_states = {}
             self._populate_runtime_status_tree([])
@@ -1739,6 +1782,7 @@ class SettingsPageController:
             btn_update.setEnabled(enabled)
         # "重装选中项"初始禁用，由依赖树选择变化驱动启用状态
         if btn_reinstall_sel:
+            btn_reinstall_sel.setVisible(False)
             btn_reinstall_sel.setEnabled(enabled)
             btn_reinstall_sel.setText("修复 Runtime")
 
@@ -1796,7 +1840,7 @@ class SettingsPageController:
     ) -> None:
         """依赖树选择变化时保持"修复 Runtime"按钮可用（修复是全 profile 操作）。
 
-        按钮始终映射到完整 Runtime profile 的校验与修复，不随选中项变化重命名，
+        按钮始终映射到已安装闭包的校验与修复，不随选中项变化重命名，
         避免"重装选中项"与"修复 Runtime"两套语义在同一按钮上漂移。
         """
         if btn is None:
@@ -2242,11 +2286,16 @@ class SettingsPageController:
             return
         tree.clear()
         if catalog is None:
-            # 目录未到达（health 未返回或失败）时给出一行占位，避免树空着
-            # 被误读为“没有任何识别能力”。
+            # Distinguish a failed catalog request from an in-flight request.
             tree.addTopLevelItem(
                 QTreeWidgetItem(
-                    ["等待 Backend 识别能力目录…", "", "连接就绪后自动填充"]
+                    [
+                        "Backend 能力读取失败"
+                        if self._selection_load_error
+                        else "等待 Backend 识别能力目录…",
+                        "",
+                        self._selection_load_error or "连接就绪后自动填充",
+                    ]
                 )
             )
             return
@@ -2278,6 +2327,7 @@ class SettingsPageController:
                 )
             group.setExpanded(True)
             tree.addTopLevelItem(group)
+
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
             return
@@ -2290,8 +2340,12 @@ class SettingsPageController:
         try:
             catalog = parse_capability_catalogs(descriptors)
         except RuntimeSelectionError as exc:
+            self._selection_load_error = str(exc)
+            self._selection_catalog = None
+            self._refresh_lifecycle_controls()
             self._status_callback(f"Backend 选择目录无效：{exc}")
             return
+        self._selection_load_error = None
         self._selection_catalog = catalog
         self._refresh_lifecycle_controls()
         from vibeocr.classic.runtime_selection import set_active_recognition_catalog
@@ -2307,6 +2361,10 @@ class SettingsPageController:
     def _on_health_error(self, error: str) -> None:
         if self._closing:
             return
+        self._selection_load_error = error
+        self._selection_catalog = None
+        self._refresh_lifecycle_controls()
+        self._render_engine_availability()
         self._status_callback(f"识别能力读取失败：{error}")
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
         if status is not None:
@@ -2484,10 +2542,7 @@ class SettingsPageController:
         answer = QMessageBox.question(
             None,
             "安装可选组件",
-            (
-                f"{operation}\n"
-                "下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"
-            ),
+            (f"{operation}\n下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -2501,16 +2556,14 @@ class SettingsPageController:
         except RuntimeError:
             pass
         source_ids = self._resolve_download_source_ids()
-        self._run_after_supervisor_invalidated(
-            lambda: self._show_install_dialog(
-                install_component_ids=component_ids,
-                download_source_ids=source_ids,
-                force_backend=(
-                    self._ACCELERATOR_TO_BACKEND.get(accelerator)
-                    if needs_backend_switch
-                    else None
-                ),
-            )
+        self._show_install_dialog(
+            install_component_ids=component_ids,
+            download_source_ids=source_ids,
+            force_backend=(
+                self._ACCELERATOR_TO_BACKEND.get(accelerator)
+                if needs_backend_switch
+                else None
+            ),
         )
 
     def install_recognition_mode(self, mode) -> None:
@@ -2532,9 +2585,7 @@ class SettingsPageController:
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._run_after_supervisor_invalidated(
-            lambda: self._show_install_dialog(install_component_ids=(component_id,))
-        )
+        self._show_install_dialog(install_component_ids=(component_id,))
 
     def _clear_source_combo_rows(self) -> None:
         """移除动态下载源行；行容器必须整行销毁，不能只移除内层 combo。"""

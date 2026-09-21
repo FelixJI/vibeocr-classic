@@ -89,6 +89,7 @@ def test_reinstall_python_passed_to_worker(_cleanup, qtbot, tmp_path):
             captured["reinstall_python"] = reinstall_python
 
         progress = MagicMock()
+        plan_ready = MagicMock()
         profile = MagicMock()
         maintenance = MagicMock()
         completed = MagicMock()
@@ -141,6 +142,7 @@ def test_missing_only_passed_to_install_worker(_cleanup, qtbot, tmp_path):
             captured["missing_only"] = missing_only
 
         progress = MagicMock()
+        plan_ready = MagicMock()
         profile = MagicMock()
         maintenance = MagicMock()
         completed = MagicMock()
@@ -193,6 +195,7 @@ def test_first_run_requests_base_only_instead_of_backend_default_scope(
             captured["install_component_ids"] = install_component_ids
             captured["download_source_ids"] = download_source_ids
             self.progress = MagicMock()
+            self.plan_ready = MagicMock()
             self.profile = MagicMock()
             self.maintenance = MagicMock()
             self.completed = MagicMock()
@@ -323,6 +326,7 @@ def test_install_connects_maintenance_and_profile_signals(_cleanup, qtbot, tmp_p
         ):
             workers.append(self)
             self.progress = MagicMock()
+            self.plan_ready = MagicMock()
             self.profile = MagicMock()
             self.maintenance = MagicMock()
             self.completed = MagicMock()
@@ -477,7 +481,7 @@ def test_maintenance_detail_note_renders_and_sticks(_cleanup, qtbot, tmp_path):
     assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
 
     # 后续心跳不携带 fallback_message：同阶段内不闪回
-    dlg._on_maintenance(_maintenance(phase="install_profile"))
+    dlg._on_maintenance(_maintenance(phase="install_profile", sequence=6))
     assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
 
     # QTimer 重渲染同样保留明细
@@ -485,7 +489,7 @@ def test_maintenance_detail_note_renders_and_sticks(_cleanup, qtbot, tmp_path):
     assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
 
     # 进入新阶段后旧明细不再适用
-    dlg._on_maintenance(_maintenance(phase="verify_runtime"))
+    dlg._on_maintenance(_maintenance(phase="verify_runtime", sequence=7))
     assert "Downloading torch-2.7.0 (2.5 GB)" not in dlg._progress_label.text()
 
 

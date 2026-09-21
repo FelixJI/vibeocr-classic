@@ -3,9 +3,12 @@
 import logging
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
+from uuid import uuid4
+
+from vibeocr.runtime_contracts.dtos import RuntimeInstallPlan
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
@@ -24,10 +27,14 @@ from vibeocr.classic.runtime_installation import (
     RuntimeComponentDescriptor,
     RuntimeInstallerCancelled,
     RuntimeInstallerClient,
+    RuntimeInstallerClientError,
     RuntimeMaintenanceUpdate,
     RuntimeProfileDescriptor,
 )
-from vibeocr.classic.runtime_maintenance import RuntimeMaintenanceViewModel
+from vibeocr.classic.runtime_maintenance import (
+    InstallationRecord,
+    RuntimeMaintenanceViewModel,
+)
 from vibeocr.classic.utils.dialog_workers import track_dialog_worker
 
 logger = logging.getLogger(__name__)
@@ -37,6 +44,10 @@ _PHASE_LABELS = {
     "wait_for_lock": "等待运行时锁",
     "prepare_runtime": "准备 Python 运行时",
     "install_profile": "安装运行时依赖",
+    "resolve_packages": "解析依赖",
+    "download_artifacts": "下载依赖",
+    "install_wheels": "安装依赖包",
+    "probe_environment": "验证环境",
     "install_backend": "安装 Backend 服务",
     "verify_runtime": "验证运行时",
     "commit_runtime": "提交运行时",
@@ -45,7 +56,7 @@ _PHASE_LABELS = {
 _STATE_LABELS = {
     "queued": "等待中",
     "running": "进行中",
-    "succeeded": "已就绪",
+    "succeeded": "运行环境已验证",
     "failed": "失败",
     "cancelled": "已取消",
 }
@@ -63,10 +74,9 @@ def component_state_label(
     """Project the Runtime descriptor truth without implying every row downloads.
 
     ``requested_component_ids`` 是用户本次勾选的组件；未勾选的可选组件是否
-    被安装由 Backend 解析的依赖闭包决定（当前 Backend 的 Paddle/MinerU 共用
-    一个 full lock，勾选任一个都会实际安装另一个）。Classic 不预猜闭包，
+    被安装由 Backend 解析的依赖闭包决定。Classic 不预猜闭包，
     在 maintenance 事件回报 ``effective_component_ids`` 前先标“未选择”，
-    回报后如实标注“随闭包一并安装”。无显式勾选的全量 profile 操作
+    回报后如实标注“随闭包一并安装”。无显式勾选的 profile 操作
     （切换推理后端、修复 Runtime）同样按 ``effective_component_ids`` 标注，
     避免 Backend 回报闭包前停留在含义模糊的“等待中”。
     """
@@ -155,6 +165,30 @@ def build_maintenance_detail(
     回报的 fallback_message），为空时不影响既有文案。
     """
     phase = _PHASE_LABELS.get(update.phase, update.phase)
+    details = []
+    for key, label in (
+        ("package", "依赖包"),
+        ("step", "活动"),
+        ("elapsed_seconds", "总耗时（秒）"),
+        ("last_activity_seconds", "距上次活动（秒）"),
+        ("reason_code", "原因"),
+        ("next_action", "下一步"),
+    ):
+        value = update.message_args.get(key)
+        if value:
+            details.append(f"{label}：{value}")
+    if (
+        update.progress_unit == "bytes"
+        and update.progress_current is not None
+        and update.progress_total is None
+    ):
+        details.append(
+            f"已下载 {_format_byte_count(update.progress_current)}，总量未知"
+        )
+    if update.message_args.get("model_readiness") == "not_checked":
+        details.append("依赖已安装，模型仍需首次准备或验证")
+    if details:
+        detail_note = " · ".join(filter(None, (detail_note, *details)))
     state = _STATE_LABELS.get(update.operation_state, update.operation_state)
     scope_note = _component_scope_note(update)
     view = RuntimeMaintenanceViewModel.from_update(update)
@@ -190,8 +224,14 @@ def build_maintenance_detail(
             phase_label=phase,
             state_label=state,
             determinate=True,
-            progress_value=update.progress_current,
-            progress_maximum=update.progress_total,
+            progress_value=(
+                update.progress_current
+                if update.progress_total <= 2_147_483_647
+                else min(1000, update.progress_current * 1000 // update.progress_total)
+            ),
+            progress_maximum=min(update.progress_total, 1000)
+            if update.progress_total > 2_147_483_647
+            else update.progress_total,
         )
     detail = phase
     if (
@@ -231,9 +271,58 @@ def _component_scope_note(update: RuntimeMaintenanceUpdate) -> str:
     )
 
 
+def describe_install_plan(
+    plan: RuntimeInstallPlan | None, component_names: Mapping[str, str] | None = None
+) -> str:
+    """Render Backend's actions without constructing a client dependency graph."""
+    if plan is None:
+        return "将检查当前已安装组件；仅在损坏时修复已有闭包，不补装标为“不需要”的引擎。无损坏时不会重建。确认后停止服务并执行。"
+    actions = {"install": "安装", "retain": "保留", "replace": "替换", "remove": "移除"}
+    reasons = {
+        "requested": "用户选择",
+        "required_dependency": "必需依赖",
+        "removed_by_selection": "本次选择不再需要",
+    }
+    names = component_names or {}
+    device = "NVIDIA GPU" if plan.accelerator.value == "nvidia_cuda" else "CPU"
+    lines = [f"目标推理设备：{device}"]
+    for component in plan.components:
+        action = component.action.value
+        reason = "、".join(reasons.get(code, code) for code in component.reason_codes)
+        lines.append(
+            f"{actions.get(action, action)} {names.get(component.component_id, component.component_id)}（{reason}）"
+        )
+    lines.append(f"依赖包来源：{'、'.join(plan.effective_download_source_ids)}")
+    cost = plan.cost
+    lines.append(
+        "下载量："
+        + (
+            _format_byte_count(cost.download_bytes)
+            if cost.download_bytes is not None
+            else "尚未知，解析依赖后显示真实流量"
+        )
+    )
+    lines.append(
+        "新增磁盘占用："
+        + (
+            _format_byte_count(cost.additional_disk_bytes)
+            if cost.additional_disk_bytes is not None
+            else "尚未知"
+        )
+    )
+    lines.append("模型由引擎原生来源在首次准备时获取；安装依赖不表示已可识别。")
+    for blocker in plan.blockers:
+        lines.append(f"无法安装：{blocker.code} · {blocker.next_action}")
+    return "\n".join(lines)
+
+
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
 
+    operation_recovered = (
+        Signal()
+    )  # A previous operation reached a known terminal state.
+    plan_ready = Signal(object)  # RuntimeInstallPlan or repair scope
     progress = Signal(str, str)  # (stage, message)
     profile = Signal(object)  # RuntimeProfileDescriptor
     maintenance = Signal(object)  # RuntimeMaintenanceUpdate
@@ -260,10 +349,16 @@ class InstallWorker(QThread):
         self._install_component_ids = install_component_ids
         self._download_source_ids = download_source_ids
         self._cancel_event = threading.Event()
+        self._confirmation = threading.Event()
+        self._operation_id = str(uuid4())
+        self._record: InstallationRecord | None = None
         self._maintenance_signature: tuple[str, str, str, str, str] | None = None
         self._maintenance_logged_signature: tuple[str, str, str, str, str] | None = None
         self._maintenance_progress_bucket: int | None = None
         self._maintenance_emitted_at = 0.0
+
+    def confirm_install(self) -> None:
+        self._confirmation.set()
 
     def request_cancel(self) -> None:
         """协作式取消；客户端负责终止它拥有的 Installer 子进程。"""
@@ -282,14 +377,8 @@ class InstallWorker(QThread):
 
     def run(self) -> None:
         """确保或修复整个内容寻址 Runtime；不提供逐包变更入口。"""
+        recovering_previous = False
         try:
-            self._emit_progress("运行时维护", "正在断开 OCR 运行时...")
-            try:
-                from vibeocr.classic.client import shutdown_backend_client
-
-                shutdown_backend_client()
-            except Exception as exc:
-                logger.warning("关闭旧 WorkerHost 失败，将继续安装: %s", exc)
             accelerator = {
                 "cpu": "cpu",
                 "gpu": "nvidia_cuda",
@@ -298,25 +387,123 @@ class InstallWorker(QThread):
                 self._project_root,
                 accelerator=accelerator,
             )
+            previous = InstallationRecord.read(self._project_root)
+            if previous is not None and previous.state in {"queued", "running"}:
+                recovering_previous = True
+                self._record = previous
+                cursor = previous.sequence
+                while True:
+                    try:
+                        page = client.observe(
+                            previous.operation_id, after_sequence=cursor
+                        )
+                    except RuntimeInstallerClientError as exc:
+                        oldest = exc.detail.get("oldest_sequence")
+                        if (
+                            exc.canonical_code != "RUNTIME_CURSOR_EXPIRED"
+                            or type(oldest) is not int
+                            or oldest <= cursor + 1
+                        ):
+                            raise
+                        cursor = oldest - 1
+                        self._emit_progress(
+                            "恢复安装状态",
+                            "部分历史进度已过期，正在读取 Backend 保留的事件。",
+                        )
+                        if self._cancel_event.is_set():
+                            raise RuntimeInstallerCancelled(
+                                "已停止观察；原操作仍由 Backend 管理"
+                            ) from exc
+                        continue
+
+                    for update in page.events:
+                        self._emit_maintenance(update)
+                    cursor = page.through_sequence
+                    if page.more:
+                        if self._cancel_event.is_set():
+                            raise RuntimeInstallerCancelled(
+                                "已停止观察；原操作仍由 Backend 管理"
+                            )
+                        continue
+                    if (
+                        page.snapshot is not None
+                        and page.snapshot.sequence > self._record.sequence
+                    ):
+                        self._emit_maintenance(page.snapshot)
+                    if self._record.state in {"succeeded", "failed", "cancelled"}:
+                        break
+                    if self._cancel_event.wait(0.5):
+                        raise RuntimeInstallerCancelled(
+                            "已停止观察；原操作仍由 Backend 管理"
+                        )
+                record = self._record
+                self.operation_recovered.emit()
+                self.completed.emit(
+                    record.state == "succeeded",
+                    f"已恢复上次操作：{record.summary}；未启动新安装",
+                )
+                return
             repair = (
                 self._reinstall_python
                 or self._missing_only
                 or self._single_pkg is not None
                 or self._packages is not None
             )
-            self.profile.emit(
-                client.profile_descriptor(
-                    install_component_ids=(
-                        None if repair else self._install_component_ids
+            if repair:
+                inspection = client.inspect()
+                client.accelerator = inspection.accelerator
+                self.profile.emit(
+                    RuntimeProfileDescriptor(
+                        inspection.profile,
+                        inspection.accelerator,
+                        inspection.components,
                     )
                 )
+                plan = None
+            else:
+                plan = client.preview_install_plan(
+                    install_component_ids=self._install_component_ids,
+                    download_source_ids=self._download_source_ids,
+                )
+                # Backend may retain the installed device when preference is omitted.
+                client.accelerator = plan.accelerator.value
+                self.profile.emit(
+                    client.profile_descriptor(
+                        install_component_ids=self._install_component_ids
+                    )
+                )
+            self.plan_ready.emit(plan)
+            if plan is not None and plan.blockers:
+                raise RuntimeInstallerClientError(
+                    "安装计划存在阻碍，请查看预览并处理后重试"
+                )
+            while not self._confirmation.wait(0.1):
+                if self._cancel_event.is_set():
+                    raise RuntimeInstallerCancelled("已取消，安装尚未开始")
+            if self._cancel_event.is_set():
+                raise RuntimeInstallerCancelled("已取消，安装尚未开始")
+            self._record = InstallationRecord(
+                self._operation_id,
+                0,
+                "queued",
+                plan.plan_id if plan is not None else None,
+                self._install_component_ids,
             )
+            self._record.save(self._project_root)
+            self._emit_progress("运行时维护", "正在断开 OCR 运行时...")
+            try:
+                from vibeocr.classic.client import shutdown_backend_client
+
+                shutdown_backend_client()
+            except Exception as exc:
+                logger.warning("关闭旧 WorkerHost 失败，将继续安装: %s", exc)
             if repair:
                 self._emit_progress(
                     "运行时修复",
-                    "逐包重装已停用，正在校验并修复完整 Runtime profile...",
+                    "正在检查已安装组件；仅修复损坏闭包，不补装其他引擎...",
                 )
                 client.repair(
+                    operation_id=self._operation_id,
                     progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
                 )
@@ -328,16 +515,41 @@ class InstallWorker(QThread):
                 client.ensure(
                     progress=self._emit_maintenance,
                     cancel_event=self._cancel_event,
-                    install_component_ids=self._install_component_ids,
-                    download_source_ids=self._download_source_ids,
+                    operation_id=self._operation_id,
+                    plan_id=plan.plan_id,
                 )
-            self.completed.emit(
-                True,
-                f"Runtime {accelerator or '当前加速方案'} 已验证",
-            )
+            if self._record is not None and self._record.state not in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                self._record = replace(self._record, state="succeeded")
+                self._record.save(self._project_root)
+            self.completed.emit(True, "运行环境已验证；模型可能仍需首次准备")
         except RuntimeInstallerCancelled as exc:
             logger.info("安装取消: %s", exc)
             self.completed.emit(False, str(exc))
+        except RuntimeInstallerClientError as exc:
+            if self._record is not None and exc.canonical_code in {
+                "RUNTIME_INSTALL_PLAN_STALE",
+                "RUNTIME_INSTALL_PLAN_BLOCKED",
+                "RUNTIME_OPERATION_ID_CONFLICT",
+                "RUNTIME_OPERATION_NOT_FOUND",
+            }:
+                self._record = replace(
+                    self._record,
+                    state="failed",
+                    reason_code=exc.canonical_code,
+                    next_action="refresh_install_plan",
+                )
+                self._record.save(self._project_root)
+                if recovering_previous:
+                    self.operation_recovered.emit()
+                self.completed.emit(
+                    False, f"{exc}\n请关闭窗口，重新读取安装计划并确认。"
+                )
+            else:
+                self.completed.emit(False, str(exc))
         except Exception as exc:
             logger.exception("Runtime Installer 异常")
             self.completed.emit(False, f"安装异常: {exc}")
@@ -345,6 +557,20 @@ class InstallWorker(QThread):
     def _emit_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
         if not self._should_emit_maintenance(update):
             return
+        record = self._record
+        if (
+            record is not None
+            and update.operation_id == record.operation_id
+            and update.sequence > record.sequence
+        ):
+            self._record = replace(
+                record,
+                sequence=update.sequence,
+                state=update.operation_state,
+                reason_code=update.message_args.get("reason_code", ""),
+                next_action=update.message_args.get("next_action", ""),
+            )
+            self._record.save(self._project_root)
         phase = _PHASE_LABELS.get(update.phase, update.phase)
         component = update.component_id or "runtime"
         signature = self._maintenance_update_signature(update)
@@ -406,6 +632,8 @@ class InstallDialog(QDialog):
     """安装进度对话框"""
 
     install_succeeded = Signal()
+    install_completed = Signal(bool, str)
+    operation_recovered = Signal()
 
     def __init__(
         self,
@@ -418,9 +646,13 @@ class InstallDialog(QDialog):
         maintenance_callback: Callable[[str], None] | None = None,
         install_component_ids: tuple[str, ...] | None = None,
         download_source_ids: tuple[str, ...] | None = None,
+        before_install: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
+        self._close_requested = False
+        self._before_install = before_install
+        self._terminal_success = False
         self._missing_only = missing_only
         self._force_backend = force_backend
         self._single_pkg = single_pkg
@@ -448,16 +680,13 @@ class InstallDialog(QDialog):
 
     def _setup_ui(self) -> None:
         """设置UI"""
-        if self._single_pkg:
-            self.setWindowTitle(f"重装依赖：{self._single_pkg}")
-            self._title_text = f"正在重装 {self._single_pkg}..."
-        elif self._packages is not None:
-            n = len(self._packages)
-            self.setWindowTitle(f"批量重装 {n} 个依赖包")
-            self._title_text = f"正在批量重装 {n} 个依赖包..."
-        else:
-            self.setWindowTitle("安装OCR依赖")
-            self._title_text = "正在安装OCR依赖..."
+        repairing = (
+            self._missing_only
+            or self._single_pkg is not None
+            or self._packages is not None
+        )
+        self.setWindowTitle("修复运行环境" if repairing else "安装运行环境")
+        self._title_text = "正在读取安装范围，尚未开始安装"
         self.setMinimumSize(620, 520)
         self.setModal(True)
 
@@ -493,6 +722,11 @@ class InstallDialog(QDialog):
         self._log_text.setReadOnly(True)
         layout.addWidget(self._log_text)
 
+        self._confirm_button = QPushButton("确认并安装")
+        self._confirm_button.setVisible(False)
+        self._confirm_button.clicked.connect(self._confirm_install)
+        layout.addWidget(self._confirm_button)
+
         # 取消按钮（安装进行中显示，触发协作式取消）
         self._cancel_button = QPushButton("取消安装")
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
@@ -501,7 +735,9 @@ class InstallDialog(QDialog):
 
         # 关闭按钮（初始隐藏）
         self._close_button = QPushButton("关闭")
-        self._close_button.clicked.connect(self.accept)
+        self._close_button.clicked.connect(
+            lambda: self.done(1 if self._terminal_success else 0)
+        )
         self._close_button.setVisible(False)
         layout.addWidget(self._close_button)
 
@@ -513,12 +749,7 @@ class InstallDialog(QDialog):
 
     def _start_install(self) -> None:
         """开始安装"""
-        if self._single_pkg:
-            self._log(f"开始重装 {self._single_pkg}...")
-        elif self._packages is not None:
-            self._log(f"开始批量重装 {len(self._packages)} 个依赖包...")
-        else:
-            self._log("开始安装OCR依赖...")
+        self._log("正在读取运行环境范围；确认后执行安装或修复。")
 
         self._worker = InstallWorker(
             self._project_root,
@@ -529,8 +760,12 @@ class InstallDialog(QDialog):
             install_component_ids=self._install_component_ids,
             download_source_ids=self._download_source_ids,
         )
+        self._worker.finished.connect(self._on_worker_stopped)
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
+        if hasattr(self._worker, "operation_recovered"):
+            self._worker.operation_recovered.connect(self.operation_recovered.emit)
+        self._worker.plan_ready.connect(self._on_plan_ready)
         self._worker.profile.connect(self._on_profile)
         self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
@@ -538,6 +773,12 @@ class InstallDialog(QDialog):
         self._stage_refresh_timer.start()
         # 安装开始后显示取消按钮
         self._cancel_button.setVisible(True)
+
+    def _on_worker_stopped(self) -> None:
+        # The tracker deletes finished QThreads; retained failure UI must release it.
+        self._worker = None
+        if self._close_requested:
+            self.done(1 if self._terminal_success else 0)
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装（不杀线程，只 kill 子进程 + 设标志）。"""
@@ -560,6 +801,53 @@ class InstallDialog(QDialog):
             # 不阻塞 UI 事件循环：让 worker 自然结束，finished 信号会驱动后续 UI。
         else:
             self._cancel_button.setVisible(False)
+
+    @Slot(object)
+    def _on_plan_ready(self, plan: RuntimeInstallPlan | None) -> None:
+        # Reuse operations may omit scope from every event; retain Backend truth.
+        self._effective_install_ids = (
+            frozenset(plan.effective_component_ids)
+            if plan is not None
+            else frozenset(
+                key
+                for key, component in self._component_descriptors.items()
+                if component.desired_state == "ready"
+            )
+        )
+        self._title_label.setText("请确认运行环境变更")
+        self._stage_label.setText("预览已就绪；确认前不会停止服务或安装")
+        self._log(
+            describe_install_plan(
+                plan,
+                {
+                    key: value.display_name
+                    for key, value in self._component_descriptors.items()
+                },
+            )
+        )
+        self._confirm_button.setVisible(True)
+        self._confirm_button.setEnabled(plan is None or not plan.blockers)
+
+    def can_start_installation(self) -> bool:
+        return (
+            self._worker is not None
+            and self._worker.isRunning()
+            and not self._worker.is_cancelled()
+        )
+
+    def _confirm_install(self) -> None:
+        worker = self._worker
+        if (
+            worker is None
+            or not worker.isRunning()
+            or not self._confirm_button.isEnabled()
+        ):
+            return
+        self._confirm_button.setEnabled(False)
+        if self._before_install is None:
+            worker.confirm_install()
+        else:
+            self._before_install(worker.confirm_install)
 
     @Slot(str, str)
     def _on_progress(self, stage: str, message: str) -> None:
@@ -591,7 +879,18 @@ class InstallDialog(QDialog):
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        previous = self._last_maintenance_update
+        if (
+            previous is not None
+            and previous.operation_id == update.operation_id
+            and update.sequence <= previous.sequence
+        ):
+            return
         self._last_maintenance_update = update
+        self._cancel_button.setEnabled(
+            update.operation_state in {"queued", "running"}
+            and update.phase != "commit_runtime"
+        )
         rendered = self._render_maintenance_stage(update)
         self._sync_closure_rows(update)
 
@@ -667,7 +966,7 @@ class InstallDialog(QDialog):
         """
 
         effective = frozenset(update.effective_component_ids)
-        if effective == self._effective_install_ids:
+        if not effective or effective == self._effective_install_ids:
             return
         self._effective_install_ids = effective
         for component_id, component in self._component_descriptors.items():
@@ -690,6 +989,13 @@ class InstallDialog(QDialog):
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
+        self._terminal_success = success
+        self.install_completed.emit(success, message)
+        if self._close_requested:
+            if success:
+                self.install_succeeded.emit()
+            return
+        self._confirm_button.setVisible(False)
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
         self._sticky_detail = None
@@ -699,12 +1005,8 @@ class InstallDialog(QDialog):
         if success:
             for component_id, item in self._component_items.items():
                 component = self._component_descriptors[component_id]
-                # 未勾选且不在 effective 闭包内的可选组件没有被安装，不能
-                # 标“已就绪”；effective 未回报时保守沿用旧的完成语义。
-                completed = (
-                    not self._effective_install_ids
-                    or component_id in self._effective_install_ids
-                )
+                # Missing scope is not evidence that every component was installed.
+                completed = component_id in self._effective_install_ids
                 item.setText(
                     1,
                     component_state_label(
@@ -724,13 +1026,19 @@ class InstallDialog(QDialog):
             self.install_succeeded.emit()
             self.done(1)
         else:
-            self._title_label.setText("安装失败")
-            self._stage_label.setText("安装过程中出现错误")
+            self._title_label.setText(
+                "已取消"
+                if self._worker is not None and self._worker.is_cancelled()
+                else "安装未完成"
+            )
+            self._stage_label.setText(message or "安装未完成，请检查详情")
             self._log(f"\n安装失败: {message}")
             self._close_button.setVisible(True)
             self._close_button.setText("关闭")
             # 设置结果为失败
-            self.done(0)
+            # Keep the failure visible while the controller restores the effective runtime.
+            if self._maintenance_callback is not None:
+                self._maintenance_callback(f"本次安装未完成：{message}")
 
     def _log(self, message: str) -> None:
         """添加日志"""
@@ -739,17 +1047,23 @@ class InstallDialog(QDialog):
         scrollbar = self._log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def closeEvent(self, event) -> None:
-        """Request cancellation and return immediately; registry owns the worker."""
+    def reject(self) -> None:
+        """Keep ownership until cancellation or a late commit reports its result."""
+        self._close_requested = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        event.accept()
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._worker.request_cancel()
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        self.reject()
+        if self._worker is not None:
+            event.ignore()
+        else:
+            event.accept()
 
     def request_shutdown(self) -> None:
-        self._stage_refresh_timer.stop()
-        self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        self.close()
+        self.reject()

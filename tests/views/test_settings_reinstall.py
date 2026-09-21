@@ -110,7 +110,7 @@ def test_reinstall_python_button_exists(controller):
 
 
 def test_click_reinstall_python_confirms_then_opens_dialog(controller, monkeypatch):
-    """点重装 Python：确认 Yes 后应弹 BackendChoiceDialog(reinstall_python=True)"""
+    """完整修复先预览，确认执行前不停止服务。"""
     _ctrl, host = controller
     from PySide6.QtWidgets import QMessageBox, QPushButton
 
@@ -137,16 +137,18 @@ def test_click_reinstall_python_confirms_then_opens_dialog(controller, monkeypat
             pass
 
         finished = MagicMock()
+        install_completed = MagicMock()
         install_succeeded = MagicMock()
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
     btn.click()
 
     assert len(instances) == 1, "应弹出一次对话框"
-    assert instances[0].get("reinstall_python") is True
+    assert instances[0].get("missing_only") is True
+    _ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
 
 
 def test_click_reinstall_python_cancel_does_nothing(controller, monkeypatch):
@@ -195,16 +197,19 @@ def test_click_reinstall_deps_opens_dialog_without_reinstall(controller, monkeyp
             pass
 
         finished = MagicMock()
+        install_completed = MagicMock()
         install_succeeded = MagicMock()
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
     btn.click()
 
     assert len(instances) == 1
-    assert instances[0].get("reinstall_python") is False
+    assert instances[0].get("install_component_ids") is None
+    assert instances[0].get("force_backend") is None
+    _ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
 
 
 def test_runtime_maintenance_buttons_enabled_for_bound_product(controller, qtbot):
@@ -410,6 +415,7 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
             pass
 
         finished = MagicMock()
+        install_completed = MagicMock()
         install_succeeded = MagicMock()
 
     # 补装现在走 InstallDialog（非 BackendChoiceDialog），用当前后端
@@ -427,7 +433,7 @@ def test_click_install_missing_opens_dialog_with_missing_only(controller, monkey
     )
 
 
-def test_backend_change_cancel_does_not_start_install(controller, monkeypatch):
+def test_backend_change_opens_preview_without_stopping_service(controller, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
     ctrl, _host = controller
@@ -443,8 +449,8 @@ def test_backend_change_cancel_does_not_start_install(controller, monkeypatch):
 
     ctrl._on_backend_change_requested("gpu")
 
-    open_install.assert_not_called()
-    options.set_change_in_progress.assert_called_once_with(False)
+    open_install.assert_called_once_with(force_backend="gpu")
+    ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
 
 
 def test_backend_change_confirmation_opens_visible_install(controller, monkeypatch):
@@ -582,6 +588,7 @@ def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch,
             pass
 
         finished = MagicMock()
+        install_completed = MagicMock()
         install_succeeded = MagicMock()
 
     monkeypatch.setattr(
@@ -593,3 +600,35 @@ def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch,
 
     assert len(instances) == 1
     assert instances[0].get("packages") == ["runtime-profile"]
+
+
+def test_ready_environment_keeps_failed_installation_outcome(controller):
+    from uuid import uuid4
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+
+    ctrl, host = controller
+    record = InstallationRecord(
+        str(uuid4()),
+        9,
+        "failed",
+        "gpu-plan",
+        ("paddleocr-cuda",),
+        "download_failed",
+        "check_network",
+    )
+    record.save(ctrl._project_root)
+    inspection = ctrl._runtime_installer.inspect.return_value
+    status = SimpleNamespace(
+        service_state=SimpleNamespace(value="ready"),
+        maintenance=None,
+        profile=SimpleNamespace(components=()),
+    )
+    ctrl._apply_env_maintenance_state(
+        ctrl._env_refresh_generation,
+        {"mode": "portable", "inspection": inspection, "runtime_status": status},
+    )
+    text = host.findChild(QLabel, "labelEnvStatus").text()
+    assert "服务：已就绪" in text
+    assert "本次安装：失败" in text
+    assert "download_failed" in text and "check_network" in text
+    assert InstallationRecord.read(ctrl._project_root) == record

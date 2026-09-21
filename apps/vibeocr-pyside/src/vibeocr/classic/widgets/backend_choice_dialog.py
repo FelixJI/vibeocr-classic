@@ -35,6 +35,7 @@ from vibeocr.classic.widgets.install_dialog import (
     MaintenanceActivityClock,
     build_maintenance_detail,
     component_state_label,
+    describe_install_plan,
 )
 
 if TYPE_CHECKING:
@@ -81,6 +82,8 @@ class BackendChoiceDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
+        self._close_requested = False
+        self._terminal_success = False
         self._worker: InstallWorker | None = None
         self._has_gpu = False
         self._reinstall_python = reinstall_python
@@ -206,7 +209,7 @@ class BackendChoiceDialog(QDialog):
         else:
             self._hw_label.setText(
                 "⚠️ 未检测到符合 CUDA 条件的 NVIDIA GPU。\n"
-                "将使用 CPU 模式（文档解析 MinerU 与 VL 模型将不可用）。"
+                "将使用 CPU 模式；各识别模式是否可用以 Backend 能力目录为准。"
             )
 
         if self._has_gpu:
@@ -222,6 +225,10 @@ class BackendChoiceDialog(QDialog):
         return "gpu" if self._gpu_radio.isChecked() else "cpu"
 
     def _on_install_clicked(self) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            self._install_button.setVisible(False)
+            self._worker.confirm_install()
+            return
         # 锁定选择区，显示进度
         self._gpu_radio.setEnabled(False)
         self._cpu_radio.setEnabled(False)
@@ -243,13 +250,37 @@ class BackendChoiceDialog(QDialog):
             missing_only=self._missing_only,
             install_component_ids=(),
         )
+        self._worker.finished.connect(self._on_worker_stopped)
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
+        self._worker.plan_ready.connect(self._on_plan_ready)
         self._worker.profile.connect(self._on_profile)
         self._worker.maintenance.connect(self._on_maintenance)
         self._worker.completed.connect(self._on_finished)
         self._worker.start()
         self._stage_refresh_timer.start()
+
+    @Slot(object)
+    def _on_plan_ready(self, plan) -> None:
+        self._progress_label.setText("预览已就绪，确认后开始安装")
+        self._log(
+            describe_install_plan(
+                plan,
+                {
+                    key: value.display_name
+                    for key, value in self._component_descriptors.items()
+                },
+            )
+        )
+        self._install_button.setText("确认并安装")
+        self._install_button.setVisible(True)
+        self._install_button.setEnabled(plan is None or not plan.blockers)
+
+    def _on_worker_stopped(self) -> None:
+        # The tracker deletes finished QThreads; retained failure UI must release it.
+        self._worker = None
+        if self._close_requested:
+            self.done(1 if self._terminal_success else 0)
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装。"""
@@ -295,7 +326,18 @@ class BackendChoiceDialog(QDialog):
 
     @Slot(object)
     def _on_maintenance(self, update: RuntimeMaintenanceUpdate) -> None:
+        previous = self._last_maintenance_update
+        if (
+            previous is not None
+            and previous.operation_id == update.operation_id
+            and update.sequence <= previous.sequence
+        ):
+            return
         self._last_maintenance_update = update
+        self._cancel_button.setEnabled(
+            update.operation_state in {"queued", "running"}
+            and update.phase != "commit_runtime"
+        )
         rendered = build_maintenance_detail(
             update,
             clock=self._activity_clock,
@@ -353,6 +395,11 @@ class BackendChoiceDialog(QDialog):
 
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
+        self._terminal_success = success
+        if self._close_requested:
+            if success:
+                self.install_succeeded.emit()
+            return
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
         self._sticky_detail = None
@@ -378,7 +425,7 @@ class BackendChoiceDialog(QDialog):
                 self,
                 "依赖安装失败",
                 f"{message}\n\n"
-                "可点击「补充安装缺失依赖」按钮重试（已安装的依赖会自动跳过）。",
+                "请重新读取安装计划，确认实际范围后重试；当前有效环境按检测结果恢复。",
             )
             self.done(0)
 
@@ -387,17 +434,23 @@ class BackendChoiceDialog(QDialog):
         sb = self._log_text.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def closeEvent(self, event) -> None:
-        """关闭事件：协作式取消安装，绝不强杀线程（避免孤儿 pip 进程）。"""
+    def reject(self) -> None:
+        """Keep ownership until cancellation or a late commit reports its result."""
+        self._close_requested = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        event.accept()
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._worker.request_cancel()
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        self.reject()
+        if self._worker is not None:
+            event.ignore()
+        else:
+            event.accept()
 
     def request_shutdown(self) -> None:
-        self._stage_refresh_timer.stop()
-        self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        self.close()
+        self.reject()

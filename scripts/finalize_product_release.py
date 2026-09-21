@@ -79,6 +79,15 @@ def _runtime_asset_names(manifest: dict[str, object]) -> set[str]:
         if not isinstance(profile_id, str) or not isinstance(record, dict):
             raise ValueError("Backend runtime profile must be an object")
         names.add(_release_file_name(record["lock"], f"profiles.{profile_id}.lock"))
+        paddle = record.get("paddle_environment")
+        if paddle is not None:
+            if not isinstance(paddle, dict):
+                raise ValueError("Backend paddle_environment must be an object")
+            names.add(
+                _release_file_name(
+                    paddle["lock"], f"profiles.{profile_id}.paddle_environment.lock"
+                )
+            )
         packs = _runtime_pack_names(record, field=f"profiles.{profile_id}.runtime_pack")
         if profile_id == "win-x64-base":
             base_packs.update(packs)

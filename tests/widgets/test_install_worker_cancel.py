@@ -35,7 +35,7 @@ def test_installer_receives_cancel_event(qtbot, tmp_path):
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
         client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="plan", blockers=()
+            plan_id="plan", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")

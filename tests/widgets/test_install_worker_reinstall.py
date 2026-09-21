@@ -38,7 +38,7 @@ def test_legacy_reinstall_requests_repair_of_whole_profile(qtbot, tmp_path, kwar
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
         client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="plan", blockers=()
+            plan_id="plan", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")
@@ -59,7 +59,7 @@ def test_progress_signal_also_logged(qtbot, tmp_path, caplog):
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
         client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="plan", blockers=()
+            plan_id="plan", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")

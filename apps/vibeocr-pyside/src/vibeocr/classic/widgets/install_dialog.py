@@ -457,20 +457,19 @@ class InstallWorker(QThread):
                         inspection.components,
                     )
                 )
+                plan = None
             else:
+                plan = client.preview_install_plan(
+                    install_component_ids=self._install_component_ids,
+                    download_source_ids=self._download_source_ids,
+                )
+                # Backend may retain the installed device when preference is omitted.
+                client.accelerator = plan.accelerator.value
                 self.profile.emit(
                     client.profile_descriptor(
                         install_component_ids=self._install_component_ids
                     )
                 )
-            plan = (
-                None
-                if repair
-                else client.preview_install_plan(
-                    install_component_ids=self._install_component_ids,
-                    download_source_ids=self._download_source_ids,
-                )
-            )
             self.plan_ready.emit(plan)
             if plan is not None and plan.blockers:
                 raise RuntimeInstallerClientError(

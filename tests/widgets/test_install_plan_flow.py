@@ -22,7 +22,7 @@ def test_cancelling_preview_never_installs_or_stops_service(qapp, tmp_path):
     ):
         client = factory.return_value
         client.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="opaque", blockers=()
+            plan_id="opaque", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         worker.run()
         client.preview_install_plan.assert_called_once_with(
@@ -45,7 +45,7 @@ def test_confirmation_uses_plan_without_resending_mutable_selection(qapp, tmp_pa
     ):
         client = factory.return_value
         client.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="opaque", blockers=()
+            plan_id="opaque", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         worker.run()
         args = client.ensure.call_args.kwargs
@@ -189,7 +189,7 @@ def test_rejected_confirmation_persists_failure_instead_of_queued(qapp, tmp_path
     ) as factory:
         client = factory.return_value
         client.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="consumed", blockers=()
+            plan_id="consumed", blockers=(), accelerator=SimpleNamespace(value="cpu")
         )
         client.ensure.side_effect = RuntimeInstallerClientError(
             "already accepted", canonical_code="RUNTIME_OPERATION_ID_CONFLICT"
@@ -382,3 +382,35 @@ def test_first_run_close_preserves_late_success(qtbot, tmp_path):
             release.set()
             qtbot.waitUntil(lambda: dialog._worker is None)
             dialog.close()
+
+
+def test_default_install_profile_follows_backend_plan_device(qapp, tmp_path):
+    from vibeocr.classic.runtime_installation import RuntimeProfileDescriptor
+
+    worker = InstallWorker(tmp_path)
+    profiles = []
+    worker.profile.connect(profiles.append)
+    worker.plan_ready.connect(lambda _plan: worker.request_cancel())
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+    ) as factory:
+        client = factory.return_value
+        client.accelerator = None
+        client.preview_install_plan.return_value = SimpleNamespace(
+            accelerator=SimpleNamespace(value="nvidia_cuda"),
+            blockers=(),
+        )
+        client.profile_descriptor.side_effect = lambda **_kwargs: (
+            RuntimeProfileDescriptor(
+                "win-x64-cu126"
+                if client.accelerator == "nvidia_cuda"
+                else "win-x64-cpu",
+                client.accelerator or "cpu",
+                (),
+            )
+        )
+        worker.run()
+        client.ensure.assert_not_called()
+    assert profiles[0].accelerator == "nvidia_cuda"
+    assert profiles[0].profile_id == "win-x64-cu126"
+    assert InstallationRecord.read(tmp_path) is None

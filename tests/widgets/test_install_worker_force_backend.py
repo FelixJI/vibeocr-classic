@@ -44,7 +44,9 @@ def test_force_backend_selects_only_runtime_accelerator(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
         client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
-            plan_id="plan", blockers=()
+            plan_id="plan",
+            blockers=(),
+            accelerator=SimpleNamespace(value=accelerator or "cpu"),
         )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")

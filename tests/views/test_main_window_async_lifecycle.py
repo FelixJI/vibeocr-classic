@@ -298,6 +298,11 @@ def test_restored_heavy_tab_builds_after_first_show_on_gui_thread(
     monkeypatch.setattr(
         MainWindow, "_prewarm_lazy_tab", staticmethod(lambda _role: None)
     )
+    # 此用例只验证懒加载，不启动会在后续用例中打开安装窗口的依赖探测。
+    monkeypatch.setattr(
+        "vibeocr.classic.managers.dependency_manager.DependencyManager.check_dependencies",
+        lambda self: None,
+    )
     observations: list[tuple[bool, object]] = []
 
     def build_pdf(window):
@@ -314,6 +319,10 @@ def test_restored_heavy_tab_builds_after_first_show_on_gui_thread(
     qtbot.waitUntil(lambda: bool(observations))
 
     assert observations == [(True, window.thread())]
+    window._force_quit = True
+    window._begin_shutdown_requests()
+    probes = window._collect_shutdown_gui_probes()
+    qtbot.waitUntil(lambda: all(bool(probe()) for _name, probe in probes), timeout=7000)
     window._shutdown_phase = "ready"
     window.close()
     ConfigManager.reset_instance()

@@ -109,6 +109,7 @@ def controller(qtbot, tmp_path, monkeypatch):
 class _FakeBackendChoiceDialog(QDialog):
     """提供真实 finished / install_succeeded Signal 的轻量对话框。"""
 
+    install_completed = Signal(bool, str)
     install_succeeded = Signal()
 
     def __init__(self, *args, **kwargs):
@@ -121,10 +122,17 @@ class _FakeBackendChoiceDialog(QDialog):
 class _FakeInstallDialog(QDialog):
     """提供真实 finished / install_succeeded Signal 的轻量安装对话框。"""
 
+    install_completed = Signal(bool, str)
     install_succeeded = Signal()
 
     def __init__(self, *args, **kwargs):
         super().__init__()
+        self.before_install = kwargs.get(
+            "before_install", lambda continuation: continuation()
+        )
+
+    def can_start_installation(self):
+        return True
 
     def show(self):
         pass
@@ -140,6 +148,7 @@ def test_install_dialog_failure_invokes_abandoned_callback(controller, monkeypat
     ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
+    dialog.before_install(lambda: None)
     dialog.finished.emit(0)
 
     abandoned_cb.assert_called_once_with()
@@ -175,6 +184,7 @@ def test_install_dialog_user_close_invokes_abandoned_callback(controller, monkey
     ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
+    dialog.before_install(lambda: None)
     dialog.finished.emit(0)
 
     abandoned_cb.assert_called_once_with()

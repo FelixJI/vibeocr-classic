@@ -1717,3 +1717,33 @@ def test_maintenance_update_parses_fallback_message() -> None:
         _maintenance_update(
             {**wire, "fallback_message": 42}, expected_operation="ensure"
         )
+
+
+def test_confirm_plan_omits_accelerator_and_passes_formal_host_schema(tmp_path):
+    from importlib.resources import files
+    from jsonschema import Draft202012Validator
+
+    client = _selection_capable_client(tmp_path)
+    client.accelerator = "nvidia_cuda"
+    request = _request_of(
+        client,
+        "ensure",
+        plan_id="opaque",
+        operation_id="operation",
+        required_capabilities=("runtime.maintenance.v2", "runtime.install-plan.v1"),
+    )
+    for field in (
+        "accelerator",
+        "component_ids",
+        "install_component_ids",
+        "download_source_ids",
+    ):
+        assert field not in request
+    schema = json.loads(
+        files("vibeocr.runtime_contracts")
+        .joinpath("runtime-host.schema.json")
+        .read_text(encoding="utf-8")
+    )
+    Draft202012Validator(
+        {"$ref": "#/$defs/RuntimeHostRequest", "$defs": schema["$defs"]}
+    ).validate(request)

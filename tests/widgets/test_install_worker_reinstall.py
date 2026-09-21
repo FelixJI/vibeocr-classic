@@ -19,6 +19,7 @@ def _run_worker_sync(worker: InstallWorker) -> list[tuple[bool, str]]:
     """在当前线程同步执行 run() 并捕获 completed 信号参数。"""
     completed: list[tuple[bool, str]] = []
     worker.completed.connect(lambda *args: completed.append(args))
+    worker.confirm_install()
     worker.run()
     return completed
 
@@ -36,6 +37,9 @@ def test_legacy_reinstall_requests_repair_of_whole_profile(qtbot, tmp_path, kwar
     with patch(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
+        client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
+            plan_id="plan", blockers=()
+        )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")
         )
@@ -54,6 +58,9 @@ def test_progress_signal_also_logged(qtbot, tmp_path, caplog):
     with patch(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as client_class:
+        client_class.return_value.preview_install_plan.return_value = SimpleNamespace(
+            plan_id="plan", blockers=()
+        )
         client_class.return_value.profile_descriptor.return_value = (
             RuntimeProfileDescriptor("win-x64-cpu", "cpu")
         )

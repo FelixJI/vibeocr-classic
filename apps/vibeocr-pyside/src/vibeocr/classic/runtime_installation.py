@@ -18,12 +18,16 @@ import time
 import zipfile
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
+from vibeocr.runtime_contracts.dtos import RuntimeInstallPlan
+from vibeocr.runtime_contracts.parser import parse_runtime_install_plan_response
+
 from vibeocr.classic.runtime_maintenance import (
+    InstallationRecord,
     ProductMaintenanceBusy,
     ProductMaintenanceCoordinator,
     RuntimeInstallerCancelled,
@@ -97,6 +101,7 @@ class RuntimeMaintenanceUpdate:
     estimated_remaining_seconds: float | None = None
     message_code: str | None = None
     fallback_message: str | None = None
+    message_args: dict[str, str] = field(default_factory=dict)
     requested_component_ids: tuple[str, ...] = ()
     effective_component_ids: tuple[str, ...] = ()
     requested_download_source_ids: tuple[str, ...] = ()
@@ -385,6 +390,12 @@ def _maintenance_update(
         not isinstance(fallback_message, str) or not fallback_message
     ):
         raise RuntimeInstallerClientError("Runtime maintenance fallback_message 无效")
+    message_args = wire.get("message_args", {})
+    if not isinstance(message_args, dict) or any(
+        not isinstance(key, str) or not isinstance(item, str)
+        for key, item in message_args.items()
+    ):
+        raise RuntimeInstallerClientError("Runtime maintenance message_args 无效")
     return RuntimeMaintenanceUpdate(
         event_type=event_type,
         operation_id=str(snapshot["operation_id"]),
@@ -405,6 +416,7 @@ def _maintenance_update(
         ),
         message_code=message_code,
         fallback_message=fallback_message,
+        message_args=dict(message_args),
         requested_component_ids=tuple(requested),
         effective_component_ids=tuple(effective),
         requested_download_source_ids=tuple(requested_sources),
@@ -619,12 +631,22 @@ class RuntimeInstallerClient:
         install_component_ids: tuple[str, ...] | None = None,
         download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
+        plan_id: str | None = None,
     ) -> list[str]:
         request = {
             **self._binding_request(),
             "operation": operation,
             "accelerator": self.accelerator,
         }
+        if plan_id is not None:
+            if operation != "ensure" or not operation_id:
+                raise RuntimeInstallerClientError(
+                    "确认安装计划需要 ensure 与 operation_id"
+                )
+            if install_component_ids is not None or download_source_ids is not None:
+                raise RuntimeInstallerClientError("确认安装计划不能覆盖选择")
+            request.pop("accelerator", None)
+            request["plan_id"] = plan_id
         selection = RuntimeMaintenanceRequestBuilder(
             self._available_capabilities()
         ).selection_fields(
@@ -693,7 +715,11 @@ class RuntimeInstallerClient:
         return tuple(capabilities)
 
     def _invoke_control(
-        self, request: dict[str, Any], *, timeout: float = 30
+        self,
+        request: dict[str, Any],
+        *,
+        timeout: float = 30,
+        response_kind: str | None = None,
     ) -> dict[str, Any]:
         self._verify_installer_executable()
         try:
@@ -719,7 +745,12 @@ class RuntimeInstallerClient:
             if value.get("event_version") != 1:
                 envelopes.append(value)
         envelope = envelopes[-1] if envelopes else None
-        if result.returncode != 0 or envelope is None or envelope.get("ok") is not True:
+        valid_response = envelope is not None and (
+            envelope.get("response_kind") == response_kind
+            if response_kind is not None
+            else envelope.get("ok") is True
+        )
+        if result.returncode != 0 or not valid_response:
             error = envelope.get("error") if isinstance(envelope, dict) else None
             raise self._error_from_wire(
                 error,
@@ -776,6 +807,52 @@ class RuntimeInstallerClient:
                 error.get("detail") if isinstance(error.get("detail"), dict) else None
             ),
         )
+
+    def preview_install_plan(
+        self,
+        *,
+        install_component_ids: tuple[str, ...] | None = None,
+        download_source_ids: tuple[str, ...] | None = None,
+    ) -> RuntimeInstallPlan:
+        """Ask Backend for a read-only, expiring plan; never start installation."""
+        if not self._supports_capability("runtime.install-plan.v1"):
+            raise RuntimeInstallerClientError(
+                "当前 Runtime 不支持安装预览，请先更新组件"
+            )
+        fields = RuntimeMaintenanceRequestBuilder(
+            self._available_capabilities()
+        ).selection_fields(
+            operation="ensure",
+            install_component_ids=install_component_ids,
+            download_source_ids=download_source_ids,
+        )
+        envelope = self._invoke_control(
+            {
+                "request_kind": "install_plan",
+                **(
+                    {"accelerator": self.accelerator}
+                    if self.accelerator is not None
+                    else {}
+                ),
+                "required_capabilities": ["runtime.install-plan.v1"],
+                **fields,
+            },
+            timeout=RUNTIME_INSPECT_TIMEOUT_SECONDS,
+            response_kind="install_plan",
+        )
+        try:
+            response = parse_runtime_install_plan_response(
+                {
+                    "schema_version": 2,
+                    "plan": envelope["plan"],
+                    "negotiated_capabilities": envelope["negotiated_capabilities"],
+                }
+            )
+            if "runtime.install-plan.v1" not in response.negotiated_capabilities:
+                raise ValueError("install plan capability was not negotiated")
+            return response.plan
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeInstallerClientError("Runtime 安装计划响应无效") from exc
 
     def observe(
         self, operation_id: str, *, after_sequence: int = 0, limit: int = 128
@@ -989,6 +1066,7 @@ class RuntimeInstallerClient:
         install_component_ids: tuple[str, ...] | None = None,
         download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
+        plan_id: str | None = None,
     ) -> dict[str, Any]:
         self._verify_installer_executable()
         smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
@@ -1032,6 +1110,7 @@ class RuntimeInstallerClient:
                     install_component_ids=install_component_ids,
                     download_source_ids=download_source_ids,
                     required_capabilities=required_capabilities,
+                    plan_id=plan_id,
                 ),
                 cwd=self.content_root,
                 stdout=subprocess.PIPE,
@@ -1398,6 +1477,7 @@ class RuntimeInstallerClient:
         install_component_ids: tuple[str, ...] | None = None,
         download_source_ids: tuple[str, ...] | None = None,
         required_capabilities: tuple[str, ...] = (),
+        plan_id: str | None = None,
     ) -> RuntimeLaunch:
         """Ensure the runtime with an explicit optional-component install scope.
 
@@ -1408,6 +1488,20 @@ class RuntimeInstallerClient:
         sources for this operation and must be non-empty when provided.
         """
 
+        previous = InstallationRecord.read(self.product_root)
+        if (
+            previous is not None
+            and previous.state in {"queued", "running"}
+            and previous.operation_id != operation_id
+        ):
+            raise RuntimeInstallerClientError(
+                "上次安装结果尚未确认，请先恢复观察；未启动新安装"
+            )
+        if plan_id is not None:
+            required_capabilities = (
+                "runtime.maintenance.v2",
+                "runtime.install-plan.v1",
+            )
         if not required_capabilities and self._supports_capability(
             "runtime.maintenance.v2"
         ):
@@ -1422,6 +1516,7 @@ class RuntimeInstallerClient:
                     install_component_ids=install_component_ids,
                     download_source_ids=download_source_ids,
                     required_capabilities=required_capabilities,
+                    plan_id=plan_id,
                 )
             )
 

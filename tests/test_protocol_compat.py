@@ -43,11 +43,11 @@ def test_compat_parser_round_trips_the_protocol_engine_field() -> None:
 @pytest.mark.parametrize(
     ("payload_override", "message"),
     [
-        ({"engine": None}, "OCR engine must be a string"),
-        ({"engine": "cuda"}, "unknown OCR engine"),
+        ({"engine": None}, "ocr engine must be a string"),
+        ({"engine": "cuda"}, "unknown ocr engine"),
         (
             {"pipeline_id": "TABLE_RECOGNITION", "engine": "rapidocr"},
-            "OCR engine is only valid for the OCR pipeline",
+            "engine is only valid for the plain-text OCR pipeline",
         ),
         (
             {"engine": "rapidocr", "future_field": True},

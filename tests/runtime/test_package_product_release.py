@@ -567,3 +567,28 @@ def test_runtime_asset_names_rejects_nonportable_windows_file_name(name: str) ->
 
     with pytest.raises(ValueError, match="release file name"):
         _runtime_asset_names(manifest)
+
+
+def test_runtime_asset_names_includes_independent_paddle_environment_lock():
+    from scripts.finalize_product_release import _runtime_asset_names
+
+    manifest = {
+        "backend_wheel": "backend.whl",
+        "protocol_manifest": "protocol.json",
+        "protocol_wheel": "protocol.whl",
+        "python": {"archive": "python.zip"},
+        "installer": {"archive": "installer.zip"},
+        "profiles": {
+            "win-x64-base": {"lock": "base.lock", "runtime_pack": "base.zip"},
+            "win-x64-cpu": {
+                "lock": "cpu.lock",
+                "paddle_environment": {"lock": "paddle-cpu.lock"},
+            },
+        },
+    }
+    assert "paddle-cpu.lock" in _runtime_asset_names(manifest)
+    manifest["profiles"]["win-x64-cpu"]["paddle_environment"]["lock"] = (
+        "../outside.lock"
+    )
+    with pytest.raises(ValueError, match="paddle_environment.lock"):
+        _runtime_asset_names(manifest)

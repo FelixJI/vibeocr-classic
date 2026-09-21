@@ -217,6 +217,7 @@ def test_installed_forward_proxy_falls_back_to_materialized_local_feed(
 
 def test_materialized_fallback_cancellation_does_not_call_velopack_download(
     monkeypatch,
+    tmp_path,
 ):
     class FailingRemoteManager(_Manager):
         def check_for_updates(self):
@@ -245,6 +246,9 @@ def test_materialized_fallback_cancellation_does_not_call_velopack_download(
             else FailingRemoteManager()
         ),
         materializer=Materializer(),
+        maintenance_coordinator=ProductMaintenanceCoordinator(
+            tmp_path / "state/locks/product-maintenance.lock"
+        ),
     )
     asyncio.run(coordinator.check())
 

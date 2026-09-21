@@ -35,9 +35,7 @@ class _MainWindowHarness:
     _on_supervisor_invalidated_for_maintenance = (
         MainWindow._on_supervisor_invalidated_for_maintenance
     )
-    _cancel_pending_maintenance_dialog = (
-        MainWindow._cancel_pending_maintenance_dialog
-    )
+    _cancel_pending_maintenance_dialog = MainWindow._cancel_pending_maintenance_dialog
     _show_install_dialog = MainWindow._show_install_dialog
 
     def __init__(self, manager: _FakeManager) -> None:
@@ -96,9 +94,7 @@ def test_main_window_close_drops_late_invalidation_callback(qapp) -> None:
     window._show_install_dialog_after_invalidation.assert_not_called()
 
 
-def test_settings_failure_does_not_open_install_dialog(
-    qapp, monkeypatch
-) -> None:
+def test_settings_failure_does_not_open_install_dialog(qapp, monkeypatch) -> None:
     manager = _FakeManager()
     controller = _SettingsHarness(manager)
     warning = Mock()
@@ -107,7 +103,7 @@ def test_settings_failure_does_not_open_install_dialog(
         warning,
     )
 
-    controller._open_install_dialog(force_backend="cpu")
+    controller._run_after_supervisor_invalidated(controller._show_install_dialog)
     manager.finish(False, "process still running")
 
     controller._show_install_dialog.assert_not_called()
@@ -135,7 +131,7 @@ def test_settings_close_drops_late_invalidation_callback(qapp) -> None:
     manager = _FakeManager()
     controller = _SettingsHarness(manager)
 
-    controller._open_install_dialog(force_backend="cpu")
+    controller._run_after_supervisor_invalidated(controller._show_install_dialog)
     controller._closing = True
     controller._cancel_pending_maintenance_dialog()
     manager.finish(True)

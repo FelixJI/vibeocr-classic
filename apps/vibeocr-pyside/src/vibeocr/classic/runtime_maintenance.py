@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -36,6 +37,108 @@ class RuntimeInstallerClientError(RuntimeError):
         self.retryable = retryable
         self.retry_after = retry_after
         self.detail = dict(detail or {})
+
+
+@dataclass(frozen=True, slots=True)
+class InstallationRecord:
+    """Last user-confirmed operation; service readiness never overwrites it."""
+
+    operation_id: str
+    sequence: int
+    state: str
+    plan_id: str | None = None
+    requested_component_ids: tuple[str, ...] | None = None
+    reason_code: str = ""
+    next_action: str = ""
+
+    @staticmethod
+    def path(product_root: Path) -> Path:
+        return product_root / "config" / "installation-operation.json"
+
+    @classmethod
+    def read(cls, product_root: Path) -> InstallationRecord | None:
+        path = cls.path(product_root)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            raise RuntimeInstallerClientError(
+                "上次安装记录无法读取，请检查诊断；未开始新安装"
+            ) from exc
+        try:
+            UUID(value["operation_id"])
+            if type(value["sequence"]) is not int or value["sequence"] < 0:
+                raise ValueError("invalid sequence")
+            if value["state"] not in {
+                "queued",
+                "running",
+                "succeeded",
+                "failed",
+                "cancelled",
+            }:
+                raise ValueError("invalid state")
+            scope = value.get("requested_component_ids")
+            if scope is not None and (
+                not isinstance(scope, list)
+                or any(not isinstance(v, str) for v in scope)
+            ):
+                raise ValueError("invalid scope")
+            for key in ("reason_code", "next_action"):
+                if not isinstance(value.get(key, ""), str):
+                    raise ValueError("invalid guidance")
+            plan_id = value.get("plan_id")
+            if plan_id is not None and not isinstance(plan_id, str):
+                raise ValueError("invalid plan")
+            return cls(
+                value["operation_id"],
+                value["sequence"],
+                value["state"],
+                plan_id,
+                None if scope is None else tuple(scope),
+                value.get("reason_code", ""),
+                value.get("next_action", ""),
+            )
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise RuntimeInstallerClientError("上次安装记录无效；未开始新安装") from exc
+
+    def save(self, product_root: Path) -> None:
+        path = self.path(product_root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        value = {
+            "operation_id": self.operation_id,
+            "sequence": self.sequence,
+            "state": self.state,
+            "plan_id": self.plan_id,
+            "requested_component_ids": self.requested_component_ids,
+            "reason_code": self.reason_code,
+            "next_action": self.next_action,
+        }
+        try:
+            with temporary.open("w", encoding="utf-8") as stream:
+                json.dump(value, stream, ensure_ascii=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @property
+    def summary(self) -> str:
+        labels = {
+            "queued": "等待确认执行结果",
+            "running": "进行中或等待恢复确认",
+            "succeeded": "运行环境已验证；模型仍需准备或验证",
+            "failed": "失败",
+            "cancelled": "已取消",
+        }
+        return " · ".join(
+            filter(
+                None,
+                (f"本次安装：{labels[self.state]}", self.reason_code, self.next_action),
+            )
+        )
 
 
 class RuntimeInstallerCancelled(RuntimeInstallerClientError):
@@ -138,9 +241,7 @@ class _RuntimeControl:
 
 
 class ProductMaintenanceLease:
-    def __init__(
-        self, coordinator: ProductMaintenanceCoordinator, token: UUID
-    ) -> None:
+    def __init__(self, coordinator: ProductMaintenanceCoordinator, token: UUID) -> None:
         self._coordinator = coordinator
         self._token = token
         self._released = False
@@ -195,7 +296,9 @@ class ProductMaintenanceCoordinator:
         deadline = time.monotonic() + max(0.0, timeout)
         with self._condition:
             if self._owner is ProductMaintenanceOwner.UPDATE:
-                raise ProductMaintenanceBusy("product maintenance is owned by AppUpdate")
+                raise ProductMaintenanceBusy(
+                    "product maintenance is owned by AppUpdate"
+                )
             control = self._runtime_control
             if self._owner is ProductMaintenanceOwner.RUNTIME and not cancel_runtime:
                 raise ProductMaintenanceBusy(

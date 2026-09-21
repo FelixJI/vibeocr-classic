@@ -82,7 +82,8 @@ class BackendChoiceDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
-        self._dismissed = False
+        self._close_requested = False
+        self._terminal_success = False
         self._worker: InstallWorker | None = None
         self._has_gpu = False
         self._reinstall_python = reinstall_python
@@ -278,6 +279,8 @@ class BackendChoiceDialog(QDialog):
     def _on_worker_stopped(self) -> None:
         # The tracker deletes finished QThreads; retained failure UI must release it.
         self._worker = None
+        if self._close_requested:
+            self.done(1 if self._terminal_success else 0)
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装。"""
@@ -392,7 +395,10 @@ class BackendChoiceDialog(QDialog):
 
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
-        if self._dismissed:
+        self._terminal_success = success
+        if self._close_requested:
+            if success:
+                self.install_succeeded.emit()
             return
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
@@ -429,17 +435,22 @@ class BackendChoiceDialog(QDialog):
         sb.setValue(sb.maximum())
 
     def reject(self) -> None:
-        """Esc and window close cancel the same owned worker without blocking Qt."""
-        self._dismissed = True
+        """Keep ownership until cancellation or a late commit reports its result."""
+        self._close_requested = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._worker.request_cancel()
+            return
         super().reject()
 
     def closeEvent(self, event) -> None:
         self.reject()
-        event.accept()
+        if self._worker is not None:
+            event.ignore()
+        else:
+            event.accept()
 
     def request_shutdown(self) -> None:
         self.reject()

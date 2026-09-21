@@ -276,7 +276,7 @@ def describe_install_plan(
 ) -> str:
     """Render Backend's actions without constructing a client dependency graph."""
     if plan is None:
-        return "将检查并修复当前完整运行环境；不会逐包重装。确认后停止服务并执行。"
+        return "将检查当前已安装组件；仅在损坏时修复已有闭包，不补装标为“不需要”的引擎。无损坏时不会重建。确认后停止服务并执行。"
     actions = {"install": "安装", "retain": "保留", "replace": "替换", "remove": "移除"}
     reasons = {
         "requested": "用户选择",
@@ -443,16 +443,22 @@ class InstallWorker(QThread):
                 or self._single_pkg is not None
                 or self._packages is not None
             )
-            if repair and accelerator is None:
-                # Repair follows the effective runtime, not the shipped lock default.
-                client.accelerator = client.inspect().accelerator
-            self.profile.emit(
-                client.profile_descriptor(
-                    install_component_ids=(
-                        None if repair else self._install_component_ids
+            if repair:
+                inspection = client.inspect()
+                client.accelerator = inspection.accelerator
+                self.profile.emit(
+                    RuntimeProfileDescriptor(
+                        inspection.profile,
+                        inspection.accelerator,
+                        inspection.components,
                     )
                 )
-            )
+            else:
+                self.profile.emit(
+                    client.profile_descriptor(
+                        install_component_ids=self._install_component_ids
+                    )
+                )
             plan = (
                 None
                 if repair
@@ -489,7 +495,7 @@ class InstallWorker(QThread):
             if repair:
                 self._emit_progress(
                     "运行时修复",
-                    "逐包重装已停用，正在校验并修复完整 Runtime profile...",
+                    "正在检查已安装组件；仅修复损坏闭包，不补装其他引擎...",
                 )
                 client.repair(
                     operation_id=self._operation_id,
@@ -636,7 +642,7 @@ class InstallDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
-        self._dismissed = False
+        self._close_requested = False
         self._before_install = before_install
         self._terminal_success = False
         self._missing_only = missing_only
@@ -761,6 +767,8 @@ class InstallDialog(QDialog):
     def _on_worker_stopped(self) -> None:
         # The tracker deletes finished QThreads; retained failure UI must release it.
         self._worker = None
+        if self._close_requested:
+            self.done(1 if self._terminal_success else 0)
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装（不杀线程，只 kill 子进程 + 设标志）。"""
@@ -961,10 +969,12 @@ class InstallDialog(QDialog):
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
-        if self._dismissed:
-            return
         self._terminal_success = success
         self.install_completed.emit(success, message)
+        if self._close_requested:
+            if success:
+                self.install_succeeded.emit()
+            return
         self._confirm_button.setVisible(False)
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
@@ -1022,17 +1032,22 @@ class InstallDialog(QDialog):
         scrollbar.setValue(scrollbar.maximum())
 
     def reject(self) -> None:
-        """Esc and window close cancel the same owned worker without blocking Qt."""
-        self._dismissed = True
+        """Keep ownership until cancellation or a late commit reports its result."""
+        self._close_requested = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
+        if self._worker is not None:
+            if self._worker.isRunning():
+                self._worker.request_cancel()
+            return
         super().reject()
 
     def closeEvent(self, event) -> None:
         self.reject()
-        event.accept()
+        if self._worker is not None:
+            event.ignore()
+        else:
+            event.accept()
 
     def request_shutdown(self) -> None:
         self.reject()

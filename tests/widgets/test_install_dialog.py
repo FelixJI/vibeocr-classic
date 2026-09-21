@@ -574,7 +574,7 @@ class TestCloseEventAndShutdown:
         InstallDialog.closeEvent(dlg, event)
         dlg._worker.request_cancel.assert_called_once()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        event.accept.assert_called_once()
+        event.ignore.assert_called_once()
 
     def test_close_event_no_worker_accepts(self, qapp, tmp_path):
         from PySide6.QtWidgets import QDialog
@@ -603,6 +603,9 @@ class TestCloseEventAndShutdown:
         dlg.request_shutdown()
         dlg._worker.request_cancel.assert_called_once()
         dlg._stage_refresh_timer.stop.assert_called_once()
+        finished.assert_not_called()
+        dlg._terminal_success = False
+        dlg._on_worker_stopped()
         finished.assert_called_once_with(0)
 
     def test_request_shutdown_no_worker_still_closes(self, qapp, tmp_path):

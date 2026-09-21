@@ -318,7 +318,7 @@ class SettingsPageController:
         if btn_reinstall_python:
             btn_reinstall_python.setText("修复运行环境")
             btn_reinstall_python.setToolTip(
-                "重新安装受产品绑定的 Python、Backend、Protocol 与当前推理 profile。"
+                "检查已安装组件，仅修复损坏的已有闭包，不补装未选择的引擎。"
             )
             btn_reinstall_python.clicked.connect(self._on_reinstall_python)
 
@@ -1432,11 +1432,11 @@ class SettingsPageController:
         dialog.show()
 
     def _on_reinstall_python(self) -> None:
-        """修复完整 Runtime profile，底层统一调用 Runtime Installer repair。"""
+        """检查并修复已安装闭包，底层统一调用 Runtime Installer repair。"""
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
-            "将校验绑定版本的完整 Runtime profile，并重建损坏或缺失的内容。\n\n"
+            "将检查已安装组件；仅在损坏时修复已有闭包，不补装其他引擎。\n\n"
             "不会执行逐包 pip 变更，也不会修改用户配置、模型缓存和日志。\n\n"
             "是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1617,7 +1617,7 @@ class SettingsPageController:
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
-            "将校验并修复当前完整 Runtime profile；不会逐包修改。是否继续？",
+            "将检查并修复已有组件闭包；不会补装其他引擎或逐包修改。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1833,7 +1833,7 @@ class SettingsPageController:
     ) -> None:
         """依赖树选择变化时保持"修复 Runtime"按钮可用（修复是全 profile 操作）。
 
-        按钮始终映射到完整 Runtime profile 的校验与修复，不随选中项变化重命名，
+        按钮始终映射到已安装闭包的校验与修复，不随选中项变化重命名，
         避免"重装选中项"与"修复 Runtime"两套语义在同一按钮上漂移。
         """
         if btn is None:

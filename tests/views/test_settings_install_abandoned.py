@@ -258,3 +258,62 @@ def test_maintenance_active_reflects_pending_and_open_dialogs(controller, monkey
     ctrl._active_dialogs[-1].finished.emit(0)
 
     assert ctrl.is_maintenance_active is False
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_close_active_install_waits_for_result_before_runtime_recovery(
+    controller, monkeypatch, qtbot, success
+):
+    import threading
+    from uuid import uuid4
+    from PySide6.QtCore import Qt
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+    from vibeocr.classic.widgets.install_dialog import InstallWorker
+
+    ctrl, _host, installed, abandoned = controller
+    release = threading.Event()
+    started = threading.Event()
+    operation_id = str(uuid4())
+
+    class DelayedTerminalWorker(InstallWorker):
+        def run(self):
+            self.plan_ready.emit(None)
+            self._confirmation.wait(5)
+            InstallationRecord(operation_id, 1, "running", None, ()).save(
+                self._project_root
+            )
+            started.set()
+            release.wait(5)
+            state = "succeeded" if success else "cancelled"
+            InstallationRecord(operation_id, 2, state, None, ()).save(
+                self._project_root
+            )
+            self.completed.emit(success, state)
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallWorker", DelayedTerminalWorker
+    )
+    ctrl._show_install_dialog(missing_only=True)
+    dialog = ctrl._active_dialogs[-1]
+    try:
+        qtbot.waitUntil(lambda: dialog._confirm_button.isVisible())
+        dialog._confirm_button.click()
+        qtbot.waitUntil(started.is_set)
+        qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+        assert dialog in ctrl._active_dialogs
+        installed.assert_not_called()
+        abandoned.assert_not_called()
+        assert InstallationRecord.read(ctrl._project_root).state == "running"
+        release.set()
+        qtbot.waitUntil(lambda: dialog._worker is None)
+        qtbot.waitUntil(lambda: dialog not in ctrl._active_dialogs)
+        if success:
+            installed.assert_called_once_with()
+            abandoned.assert_not_called()
+        else:
+            abandoned.assert_called_once_with()
+            installed.assert_not_called()
+    finally:
+        release.set()
+        qtbot.waitUntil(lambda: dialog._worker is None)
+        dialog.close()

@@ -294,19 +294,91 @@ def test_escape_first_run_preview_cancels_worker_without_failure_popup(qtbot, tm
             qtbot.waitUntil(lambda: dialog._worker is None)
 
 
-def test_repair_preview_uses_inspected_device_instead_of_lock_default(qapp, tmp_path):
+def test_repair_preview_preserves_actual_installed_scope(qapp, tmp_path):
+    from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
+    from vibeocr.classic.widgets.install_dialog import (
+        component_state_label,
+        describe_install_plan,
+    )
+
     worker = InstallWorker(tmp_path, missing_only=True)
     worker.plan_ready.connect(lambda _plan: worker.request_cancel())
+    profiles = []
+    worker.profile.connect(profiles.append)
+    components = (
+        RuntimeComponentDescriptor(
+            "paddleocr-cuda",
+            "PaddleOCR",
+            "3.7.0",
+            desired_state="ready",
+            actual_state="ready",
+        ),
+        RuntimeComponentDescriptor(
+            "mineru-cuda",
+            "MinerU",
+            "4.0.2",
+            desired_state="not_required",
+            actual_state="missing",
+        ),
+    )
     with patch(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
     ) as factory:
         client = factory.return_value
         client.accelerator = None
-        client.inspect.return_value = SimpleNamespace(accelerator="nvidia_cuda")
-        observed = []
-        client.profile_descriptor.side_effect = lambda **_kwargs: observed.append(
-            client.accelerator
+        client.inspect.return_value = SimpleNamespace(
+            accelerator="nvidia_cuda", profile="win-x64-cu126", components=components
         )
         worker.run()
-        assert observed == ["nvidia_cuda"]
+        assert profiles[0].accelerator == "nvidia_cuda"
+        assert profiles[0].components == components
+        assert component_state_label(profiles[0].components[1]) == "不需要"
+        client.profile_descriptor.assert_not_called()
         client.repair.assert_not_called()
+    assert "无损坏时不会重建" in describe_install_plan(None)
+
+
+def test_first_run_close_preserves_late_success(qtbot, tmp_path):
+    import threading
+    from PySide6.QtCore import Qt
+    from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
+
+    release = threading.Event()
+    started = threading.Event()
+
+    class CommittingWorker(InstallWorker):
+        def run(self):
+            self.plan_ready.emit(None)
+            self._confirmation.wait(5)
+            started.set()
+            release.wait(5)
+            self.completed.emit(True, "committed")
+
+    with (
+        patch(
+            "vibeocr.classic.widgets.backend_choice_dialog.InstallWorker",
+            CommittingWorker,
+        ),
+        patch.object(BackendChoiceDialog, "_detect_and_set_default"),
+    ):
+        dialog = BackendChoiceDialog(tmp_path)
+        qtbot.addWidget(dialog)
+        succeeded, finished = [], []
+        dialog.install_succeeded.connect(lambda: succeeded.append(True))
+        dialog.finished.connect(finished.append)
+        dialog.show()
+        dialog._install_button.click()
+        try:
+            qtbot.waitUntil(lambda: dialog._install_button.text() == "确认并安装")
+            dialog._install_button.click()
+            qtbot.waitUntil(started.is_set)
+            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+            assert not finished and not succeeded
+            release.set()
+            qtbot.waitUntil(lambda: dialog._worker is None)
+            assert succeeded == [True]
+            assert finished == [1]
+        finally:
+            release.set()
+            qtbot.waitUntil(lambda: dialog._worker is None)
+            dialog.close()

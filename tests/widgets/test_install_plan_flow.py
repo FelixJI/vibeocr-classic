@@ -292,3 +292,21 @@ def test_escape_first_run_preview_cancels_worker_without_failure_popup(qtbot, tm
         finally:
             dialog.request_shutdown()
             qtbot.waitUntil(lambda: dialog._worker is None)
+
+
+def test_repair_preview_uses_inspected_device_instead_of_lock_default(qapp, tmp_path):
+    worker = InstallWorker(tmp_path, missing_only=True)
+    worker.plan_ready.connect(lambda _plan: worker.request_cancel())
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+    ) as factory:
+        client = factory.return_value
+        client.accelerator = None
+        client.inspect.return_value = SimpleNamespace(accelerator="nvidia_cuda")
+        observed = []
+        client.profile_descriptor.side_effect = lambda **_kwargs: observed.append(
+            client.accelerator
+        )
+        worker.run()
+        assert observed == ["nvidia_cuda"]
+        client.repair.assert_not_called()

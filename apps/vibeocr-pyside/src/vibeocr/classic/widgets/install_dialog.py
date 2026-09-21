@@ -443,6 +443,9 @@ class InstallWorker(QThread):
                 or self._single_pkg is not None
                 or self._packages is not None
             )
+            if repair and accelerator is None:
+                # Repair follows the effective runtime, not the shipped lock default.
+                client.accelerator = client.inspect().accelerator
             self.profile.emit(
                 client.profile_descriptor(
                     install_component_ids=(

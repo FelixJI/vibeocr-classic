@@ -319,8 +319,9 @@ def test_close_active_install_waits_for_result_before_runtime_recovery(
         dialog.close()
 
 
+@pytest.mark.parametrize("operation_missing", [False, True])
 def test_replayed_failed_operation_restores_service_without_new_install(
-    controller, monkeypatch, qtbot
+    controller, monkeypatch, qtbot, operation_missing
 ):
     from types import SimpleNamespace
     from uuid import uuid4
@@ -345,6 +346,10 @@ def test_replayed_failed_operation_restores_service_without_new_install(
     client.observe.return_value = SimpleNamespace(
         events=(terminal,), snapshot=terminal, more=False, through_sequence=2
     )
+    if operation_missing:
+        client.observe.side_effect = RuntimeInstallerClientError(
+            "operation not found", canonical_code="RUNTIME_OPERATION_NOT_FOUND"
+        )
     monkeypatch.setattr(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient",
         lambda *args, **kwargs: client,

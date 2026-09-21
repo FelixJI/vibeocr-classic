@@ -377,6 +377,7 @@ class InstallWorker(QThread):
 
     def run(self) -> None:
         """确保或修复整个内容寻址 Runtime；不提供逐包变更入口。"""
+        recovering_previous = False
         try:
             accelerator = {
                 "cpu": "cpu",
@@ -388,6 +389,7 @@ class InstallWorker(QThread):
             )
             previous = InstallationRecord.read(self._project_root)
             if previous is not None and previous.state in {"queued", "running"}:
+                recovering_previous = True
                 self._record = previous
                 cursor = previous.sequence
                 while True:
@@ -541,6 +543,8 @@ class InstallWorker(QThread):
                     next_action="refresh_install_plan",
                 )
                 self._record.save(self._project_root)
+                if recovering_previous:
+                    self.operation_recovered.emit()
                 self.completed.emit(
                     False, f"{exc}\n请关闭窗口，重新读取安装计划并确认。"
                 )

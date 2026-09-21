@@ -388,7 +388,29 @@ class InstallWorker(QThread):
                 self._record = previous
                 cursor = previous.sequence
                 while True:
-                    page = client.observe(previous.operation_id, after_sequence=cursor)
+                    try:
+                        page = client.observe(
+                            previous.operation_id, after_sequence=cursor
+                        )
+                    except RuntimeInstallerClientError as exc:
+                        oldest = exc.detail.get("oldest_sequence")
+                        if (
+                            exc.canonical_code != "RUNTIME_CURSOR_EXPIRED"
+                            or type(oldest) is not int
+                            or oldest <= cursor + 1
+                        ):
+                            raise
+                        cursor = oldest - 1
+                        self._emit_progress(
+                            "恢复安装状态",
+                            "部分历史进度已过期，正在读取 Backend 保留的事件。",
+                        )
+                        if self._cancel_event.is_set():
+                            raise RuntimeInstallerCancelled(
+                                "已停止观察；原操作仍由 Backend 管理"
+                            ) from exc
+                        continue
+
                     for update in page.events:
                         self._emit_maintenance(update)
                     cursor = page.through_sequence
@@ -497,6 +519,7 @@ class InstallWorker(QThread):
             if self._record is not None and exc.canonical_code in {
                 "RUNTIME_INSTALL_PLAN_STALE",
                 "RUNTIME_INSTALL_PLAN_BLOCKED",
+                "RUNTIME_OPERATION_ID_CONFLICT",
                 "RUNTIME_OPERATION_NOT_FOUND",
             }:
                 self._record = replace(
@@ -715,6 +738,7 @@ class InstallDialog(QDialog):
             install_component_ids=self._install_component_ids,
             download_source_ids=self._download_source_ids,
         )
+        self._worker.finished.connect(self._on_worker_stopped)
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
         self._worker.plan_ready.connect(self._on_plan_ready)
@@ -725,6 +749,10 @@ class InstallDialog(QDialog):
         self._stage_refresh_timer.start()
         # 安装开始后显示取消按钮
         self._cancel_button.setVisible(True)
+
+    def _on_worker_stopped(self) -> None:
+        # The tracker deletes finished QThreads; retained failure UI must release it.
+        self._worker = None
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装（不杀线程，只 kill 子进程 + 设标志）。"""

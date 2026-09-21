@@ -248,6 +248,7 @@ class BackendChoiceDialog(QDialog):
             missing_only=self._missing_only,
             install_component_ids=(),
         )
+        self._worker.finished.connect(self._on_worker_stopped)
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
         self._worker.plan_ready.connect(self._on_plan_ready)
@@ -272,6 +273,10 @@ class BackendChoiceDialog(QDialog):
         self._install_button.setText("确认并安装")
         self._install_button.setVisible(True)
         self._install_button.setEnabled(plan is None or not plan.blockers)
+
+    def _on_worker_stopped(self) -> None:
+        # The tracker deletes finished QThreads; retained failure UI must release it.
+        self._worker = None
 
     def _on_cancel_clicked(self) -> None:
         """取消按钮：确认后协作式取消安装。"""

@@ -158,3 +158,79 @@ def test_recovery_reads_all_pages_before_terminal_snapshot(qapp, tmp_path):
     assert restored.sequence == 5
     assert restored.reason_code == "download_failed"
     assert restored.next_action == "check_network"
+
+
+def test_failed_dialog_can_close_after_real_worker_deletion(qtbot, tmp_path):
+    from vibeocr.classic.widgets.install_dialog import InstallDialog
+
+    class FailingWorker(InstallWorker):
+        def run(self):
+            self.completed.emit(False, "plan expired")
+
+    with patch("vibeocr.classic.widgets.install_dialog.InstallWorker", FailingWorker):
+        dialog = InstallDialog(tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.waitUntil(lambda: dialog._close_button.isVisible())
+        qtbot.waitUntil(lambda: dialog._worker is None)
+        assert "plan expired" in dialog._log_text.toPlainText()
+        dialog.close()
+
+
+def test_rejected_confirmation_persists_failure_instead_of_queued(qapp, tmp_path):
+    from vibeocr.classic.runtime_maintenance import RuntimeInstallerClientError
+
+    worker = InstallWorker(tmp_path, install_component_ids=())
+    worker.confirm_install()
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+    ) as factory:
+        client = factory.return_value
+        client.preview_install_plan.return_value = SimpleNamespace(
+            plan_id="consumed", blockers=()
+        )
+        client.ensure.side_effect = RuntimeInstallerClientError(
+            "already accepted", canonical_code="RUNTIME_OPERATION_ID_CONFLICT"
+        )
+        worker.run()
+    record = InstallationRecord.read(tmp_path)
+    assert record.state == "failed"
+    assert record.reason_code == "RUNTIME_OPERATION_ID_CONFLICT"
+    assert record.next_action == "refresh_install_plan"
+
+
+def test_expired_replay_cursor_resumes_retained_events_without_install(qapp, tmp_path):
+    from vibeocr.classic.runtime_maintenance import RuntimeInstallerClientError
+
+    record = InstallationRecord(str(uuid4()), 3, "running", "old-plan", ())
+    record.save(tmp_path)
+    terminal = RuntimeMaintenanceUpdate(
+        "progress",
+        record.operation_id,
+        8,
+        "ensure",
+        "failed",
+        "install_profile",
+        "win-x64-cpu",
+        "2026-09-21T00:00:00Z",
+        message_args={"reason_code": "download_failed", "next_action": "check_network"},
+    )
+    worker = InstallWorker(tmp_path)
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+    ) as factory:
+        client = factory.return_value
+        client.observe.side_effect = [
+            RuntimeInstallerClientError(
+                "expired",
+                canonical_code="RUNTIME_CURSOR_EXPIRED",
+                detail={"oldest_sequence": 8},
+            ),
+            SimpleNamespace(
+                events=(terminal,), snapshot=terminal, more=False, through_sequence=8
+            ),
+        ]
+        worker.run()
+        assert client.observe.call_args.kwargs == {"after_sequence": 7}
+        client.ensure.assert_not_called()
+    assert InstallationRecord.read(tmp_path).reason_code == "download_failed"

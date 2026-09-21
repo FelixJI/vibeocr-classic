@@ -154,7 +154,7 @@ _EXPECTED_RECOGNITION_MODE_SEMANTICS: Mapping[
         "MinerU",
         None,
         "advanced_component",
-        ("process_keep_alive", False, True, False, True),
+        ("process_keep_alive", True, True, False, True),
     ),
     "paddle_table": (
         "specialized",

@@ -238,3 +238,57 @@ def test_expired_replay_cursor_resumes_retained_events_without_install(qapp, tmp
         assert client.observe.call_args.kwargs == {"after_sequence": 7}
         client.ensure.assert_not_called()
     assert InstallationRecord.read(tmp_path).reason_code == "download_failed"
+
+
+def test_escape_preview_cancels_real_worker_without_installing(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+    from vibeocr.classic.widgets.install_dialog import InstallDialog
+
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+    ) as factory:
+        client = factory.return_value
+        dialog = InstallDialog(tmp_path, missing_only=True)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.waitUntil(lambda: dialog._confirm_button.isVisible())
+        try:
+            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+            qtbot.waitUntil(lambda: dialog._worker is None, timeout=2000)
+            assert not dialog.isVisible()
+            client.repair.assert_not_called()
+            client.ensure.assert_not_called()
+            assert InstallationRecord.read(tmp_path) is None
+        finally:
+            dialog.request_shutdown()
+            qtbot.waitUntil(lambda: dialog._worker is None)
+
+
+def test_escape_first_run_preview_cancels_worker_without_failure_popup(qtbot, tmp_path):
+    from PySide6.QtCore import Qt
+    from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
+
+    with (
+        patch(
+            "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
+        ) as factory,
+        patch.object(BackendChoiceDialog, "_detect_and_set_default"),
+        patch(
+            "vibeocr.classic.widgets.backend_choice_dialog.QMessageBox.warning"
+        ) as warning,
+    ):
+        dialog = BackendChoiceDialog(tmp_path, missing_only=True)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        dialog._install_button.click()
+        qtbot.waitUntil(lambda: dialog._install_button.text() == "确认并安装")
+        try:
+            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
+            qtbot.waitUntil(lambda: dialog._worker is None, timeout=2000)
+            assert not dialog.isVisible()
+            factory.return_value.repair.assert_not_called()
+            warning.assert_not_called()
+            assert InstallationRecord.read(tmp_path) is None
+        finally:
+            dialog.request_shutdown()
+            qtbot.waitUntil(lambda: dialog._worker is None)

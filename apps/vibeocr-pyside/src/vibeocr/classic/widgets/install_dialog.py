@@ -633,6 +633,7 @@ class InstallDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
+        self._dismissed = False
         self._before_install = before_install
         self._terminal_success = False
         self._missing_only = missing_only
@@ -957,6 +958,8 @@ class InstallDialog(QDialog):
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
         """安装完成"""
+        if self._dismissed:
+            return
         self._terminal_success = success
         self.install_completed.emit(success, message)
         self._confirm_button.setVisible(False)
@@ -1015,17 +1018,18 @@ class InstallDialog(QDialog):
         scrollbar = self._log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def closeEvent(self, event) -> None:
-        """Request cancellation and return immediately; registry owns the worker."""
+    def reject(self) -> None:
+        """Esc and window close cancel the same owned worker without blocking Qt."""
+        self._dismissed = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        self.reject()
         event.accept()
 
     def request_shutdown(self) -> None:
-        self._stage_refresh_timer.stop()
-        self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        self.close()
+        self.reject()

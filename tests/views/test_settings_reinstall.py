@@ -110,7 +110,7 @@ def test_reinstall_python_button_exists(controller):
 
 
 def test_click_reinstall_python_confirms_then_opens_dialog(controller, monkeypatch):
-    """点重装 Python：确认 Yes 后应弹 BackendChoiceDialog(reinstall_python=True)"""
+    """完整修复先预览，确认执行前不停止服务。"""
     _ctrl, host = controller
     from PySide6.QtWidgets import QMessageBox, QPushButton
 
@@ -141,13 +141,14 @@ def test_click_reinstall_python_confirms_then_opens_dialog(controller, monkeypat
         install_succeeded = MagicMock()
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
     btn.click()
 
     assert len(instances) == 1, "应弹出一次对话框"
-    assert instances[0].get("reinstall_python") is True
+    assert instances[0].get("missing_only") is True
+    _ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
 
 
 def test_click_reinstall_python_cancel_does_nothing(controller, monkeypatch):

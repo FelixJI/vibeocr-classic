@@ -82,6 +82,7 @@ class BackendChoiceDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self._project_root = project_root
+        self._dismissed = False
         self._worker: InstallWorker | None = None
         self._has_gpu = False
         self._reinstall_python = reinstall_python
@@ -391,6 +392,8 @@ class BackendChoiceDialog(QDialog):
 
     @Slot(bool, str)
     def _on_finished(self, success: bool, message: str) -> None:
+        if self._dismissed:
+            return
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
         self._sticky_detail = None
@@ -425,17 +428,18 @@ class BackendChoiceDialog(QDialog):
         sb = self._log_text.verticalScrollBar()
         sb.setValue(sb.maximum())
 
-    def closeEvent(self, event) -> None:
-        """关闭事件：协作式取消安装，绝不强杀线程（避免孤儿 pip 进程）。"""
+    def reject(self) -> None:
+        """Esc and window close cancel the same owned worker without blocking Qt."""
+        self._dismissed = True
         self._stage_refresh_timer.stop()
         self._last_maintenance_update = None
         if self._worker and self._worker.isRunning():
             self._worker.request_cancel()
+        super().reject()
+
+    def closeEvent(self, event) -> None:
+        self.reject()
         event.accept()
 
     def request_shutdown(self) -> None:
-        self._stage_refresh_timer.stop()
-        self._last_maintenance_update = None
-        if self._worker and self._worker.isRunning():
-            self._worker.request_cancel()
-        self.close()
+        self.reject()

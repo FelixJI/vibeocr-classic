@@ -1445,7 +1445,7 @@ class SettingsPageController:
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self._open_reinstall_dialog(reinstall_python=True)
+        self._open_install_dialog(missing_only=True)
 
     def _on_reinstall_deps(self) -> None:
         """Preview the current engine intent without contracting it to base-only."""

@@ -562,7 +562,10 @@ class TestStartInstall:
 
 class TestCloseEventAndShutdown:
     def test_close_event_requests_cancel_when_worker_running(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
         dlg._stage_refresh_timer = MagicMock()
@@ -574,7 +577,10 @@ class TestCloseEventAndShutdown:
         event.accept.assert_called_once()
 
     def test_close_event_no_worker_accepts(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = None
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
@@ -584,26 +590,34 @@ class TestCloseEventAndShutdown:
         event.accept.assert_called_once()
 
     def test_request_shutdown_cancels_and_closes(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = MagicMock()
         dlg._worker.isRunning.return_value = True
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
-        with patch.object(InstallDialog, "close") as mock_close:
-            dlg.request_shutdown()
+        finished = MagicMock()
+        dlg.finished.connect(finished)
+        dlg.request_shutdown()
         dlg._worker.request_cancel.assert_called_once()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        mock_close.assert_called_once()
+        finished.assert_called_once_with(0)
 
     def test_request_shutdown_no_worker_still_closes(self, qapp, tmp_path):
+        from PySide6.QtWidgets import QDialog
+
         dlg = InstallDialog.__new__(InstallDialog)
+        QDialog.__init__(dlg)
         dlg._worker = None
         dlg._stage_refresh_timer = MagicMock()
         dlg._last_maintenance_update = None
-        with patch.object(InstallDialog, "close") as mock_close:
-            dlg.request_shutdown()
+        finished = MagicMock()
+        dlg.finished.connect(finished)
+        dlg.request_shutdown()
         dlg._stage_refresh_timer.stop.assert_called_once()
-        mock_close.assert_called_once()
+        finished.assert_called_once_with(0)
 
 
 class TestComponentClosureLabels:

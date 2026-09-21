@@ -1550,6 +1550,11 @@ class SettingsPageController:
 
         restored_after_failure = False
 
+        def _on_operation_recovered() -> None:
+            nonlocal maintenance_started
+            # The earlier operation stopped the service, even though this window did not.
+            maintenance_started = True
+
         def _on_completed(success: bool, message: str) -> None:
             nonlocal restored_after_failure
             if not success:
@@ -1579,6 +1584,8 @@ class SettingsPageController:
             if self._install_succeeded_callback is not None:
                 self._install_succeeded_callback()
 
+        if hasattr(dialog, "operation_recovered"):
+            dialog.operation_recovered.connect(_on_operation_recovered)
         dialog.install_completed.connect(_on_completed)
         dialog.finished.connect(_on_finished)
         if hasattr(dialog, "install_succeeded"):

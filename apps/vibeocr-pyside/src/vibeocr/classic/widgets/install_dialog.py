@@ -319,6 +319,7 @@ def describe_install_plan(
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
 
+    operation_recovered = Signal()  # A previous operation reached a known terminal state.
     plan_ready = Signal(object)  # RuntimeInstallPlan or repair scope
     progress = Signal(str, str)  # (stage, message)
     profile = Signal(object)  # RuntimeProfileDescriptor
@@ -432,6 +433,7 @@ class InstallWorker(QThread):
                             "已停止观察；原操作仍由 Backend 管理"
                         )
                 record = self._record
+                self.operation_recovered.emit()
                 self.completed.emit(
                     record.state == "succeeded",
                     f"已恢复上次操作：{record.summary}；未启动新安装",
@@ -626,6 +628,7 @@ class InstallDialog(QDialog):
 
     install_succeeded = Signal()
     install_completed = Signal(bool, str)
+    operation_recovered = Signal()
 
     def __init__(
         self,
@@ -755,6 +758,8 @@ class InstallDialog(QDialog):
         self._worker.finished.connect(self._on_worker_stopped)
         track_dialog_worker(self._worker)
         self._worker.progress.connect(self._on_progress)
+        if hasattr(self._worker, "operation_recovered"):
+            self._worker.operation_recovered.connect(self.operation_recovered.emit)
         self._worker.plan_ready.connect(self._on_plan_ready)
         self._worker.profile.connect(self._on_profile)
         self._worker.maintenance.connect(self._on_maintenance)

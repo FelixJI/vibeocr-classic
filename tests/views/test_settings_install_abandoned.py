@@ -317,3 +317,47 @@ def test_close_active_install_waits_for_result_before_runtime_recovery(
         release.set()
         qtbot.waitUntil(lambda: dialog._worker is None)
         dialog.close()
+
+
+def test_replayed_failed_operation_restores_service_without_new_install(
+    controller, monkeypatch, qtbot
+):
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from vibeocr.classic.runtime_installation import RuntimeMaintenanceUpdate
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+
+    ctrl, _host, installed, abandoned = controller
+    record = InstallationRecord(str(uuid4()), 1, "running", "plan", ())
+    record.save(ctrl._project_root)
+    terminal = RuntimeMaintenanceUpdate(
+        "snapshot",
+        record.operation_id,
+        2,
+        "ensure",
+        "failed",
+        "install_profile",
+        "win-x64-cpu",
+        "2026-09-21T00:00:00Z",
+        message_args={"reason_code": "download_failed", "next_action": "check_network"},
+    )
+    client = MagicMock()
+    client.observe.return_value = SimpleNamespace(
+        events=(terminal,), snapshot=terminal, more=False, through_sequence=2
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient",
+        lambda *args, **kwargs: client,
+    )
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+    qtbot.waitUntil(lambda: dialog._worker is None)
+    try:
+        assert InstallationRecord.read(ctrl._project_root).state == "failed"
+        abandoned.assert_called_once_with()
+        installed.assert_not_called()
+        client.ensure.assert_not_called()
+        client.repair.assert_not_called()
+        ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
+    finally:
+        dialog.close()

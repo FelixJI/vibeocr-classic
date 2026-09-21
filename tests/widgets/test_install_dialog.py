@@ -889,3 +889,60 @@ class TestLog:
         dlg = InstallDialog(tmp_path)
         dlg._log("测试消息")
         assert "测试消息" in dlg._log_text.toPlainText()
+
+
+def test_reuse_success_without_event_scope_uses_confirmed_plan(qapp, tmp_path):
+    dlg = InstallDialog(tmp_path, install_component_ids=("paddleocr-cpu",))
+    dlg._on_profile(
+        RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "paddleocr-cpu", "PaddleOCR", desired_state="ready"
+                ),
+                RuntimeComponentDescriptor(
+                    "mineru-cpu", "MinerU", desired_state="ready"
+                ),
+            ),
+        )
+    )
+    plan = MagicMock(effective_component_ids=("paddleocr-cpu",), blockers=())
+    with patch(
+        "vibeocr.classic.widgets.install_dialog.describe_install_plan",
+        return_value="preview",
+    ):
+        dlg._on_plan_ready(plan)
+    # Formal reuse events may omit scope, including the successful terminal event.
+    dlg._on_maintenance(
+        RuntimeMaintenanceUpdate(
+            "completed",
+            "reuse-op",
+            3,
+            "ensure",
+            "succeeded",
+            "verify_runtime",
+            "win-x64-cpu",
+            "2026-09-21T00:00:00Z",
+        )
+    )
+    dlg._on_finished(True, "运行环境已验证；模型可能仍需首次准备")
+    assert dlg._component_items["paddleocr-cpu"].text(1) == "已就绪"
+    assert dlg._component_items["mineru-cpu"].text(1) == "未选择"
+
+
+def test_success_without_scope_does_not_invent_component_readiness(qapp, tmp_path):
+    dlg = InstallDialog(tmp_path)
+    dlg._on_profile(
+        RuntimeProfileDescriptor(
+            "win-x64-cpu",
+            "cpu",
+            (
+                RuntimeComponentDescriptor(
+                    "mineru-cpu", "MinerU", actual_state="missing"
+                ),
+            ),
+        )
+    )
+    dlg._on_finished(True, "操作完成")
+    assert dlg._component_items["mineru-cpu"].text(1) == "缺失"

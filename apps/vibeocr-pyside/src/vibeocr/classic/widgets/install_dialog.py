@@ -319,7 +319,9 @@ def describe_install_plan(
 class InstallWorker(QThread):
     """通过唯一 Runtime Installer API 安装或修复完整运行时。"""
 
-    operation_recovered = Signal()  # A previous operation reached a known terminal state.
+    operation_recovered = (
+        Signal()
+    )  # A previous operation reached a known terminal state.
     plan_ready = Signal(object)  # RuntimeInstallPlan or repair scope
     progress = Signal(str, str)  # (stage, message)
     profile = Signal(object)  # RuntimeProfileDescriptor
@@ -799,6 +801,16 @@ class InstallDialog(QDialog):
 
     @Slot(object)
     def _on_plan_ready(self, plan: RuntimeInstallPlan | None) -> None:
+        # Reuse operations may omit scope from every event; retain Backend truth.
+        self._effective_install_ids = (
+            frozenset(plan.effective_component_ids)
+            if plan is not None
+            else frozenset(
+                key
+                for key, component in self._component_descriptors.items()
+                if component.desired_state == "ready"
+            )
+        )
         self._title_label.setText("请确认运行环境变更")
         self._stage_label.setText("预览已就绪；确认前不会停止服务或安装")
         self._log(
@@ -951,7 +963,7 @@ class InstallDialog(QDialog):
         """
 
         effective = frozenset(update.effective_component_ids)
-        if effective == self._effective_install_ids:
+        if not effective or effective == self._effective_install_ids:
             return
         self._effective_install_ids = effective
         for component_id, component in self._component_descriptors.items():
@@ -990,12 +1002,8 @@ class InstallDialog(QDialog):
         if success:
             for component_id, item in self._component_items.items():
                 component = self._component_descriptors[component_id]
-                # 未勾选且不在 effective 闭包内的可选组件没有被安装，不能
-                # 标“已就绪”；effective 未回报时保守沿用旧的完成语义。
-                completed = (
-                    not self._effective_install_ids
-                    or component_id in self._effective_install_ids
-                )
+                # Missing scope is not evidence that every component was installed.
+                completed = component_id in self._effective_install_ids
                 item.setText(
                     1,
                     component_state_label(

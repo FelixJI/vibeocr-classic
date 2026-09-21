@@ -181,6 +181,8 @@ def test_rejected_confirmation_persists_failure_instead_of_queued(qapp, tmp_path
     from vibeocr.classic.runtime_maintenance import RuntimeInstallerClientError
 
     worker = InstallWorker(tmp_path, install_component_ids=())
+    messages = []
+    worker.completed.connect(lambda _ok, message: messages.append(message))
     worker.confirm_install()
     with patch(
         "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
@@ -197,6 +199,8 @@ def test_rejected_confirmation_persists_failure_instead_of_queued(qapp, tmp_path
     assert record.state == "failed"
     assert record.reason_code == "RUNTIME_OPERATION_ID_CONFLICT"
     assert record.next_action == "refresh_install_plan"
+
+    assert "重新读取安装计划" in messages[-1]
 
 
 def test_expired_replay_cursor_resumes_retained_events_without_install(qapp, tmp_path):

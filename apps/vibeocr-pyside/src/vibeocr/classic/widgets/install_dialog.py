@@ -529,7 +529,11 @@ class InstallWorker(QThread):
                     next_action="refresh_install_plan",
                 )
                 self._record.save(self._project_root)
-            self.completed.emit(False, str(exc))
+                self.completed.emit(
+                    False, f"{exc}\n请关闭窗口，重新读取安装计划并确认。"
+                )
+            else:
+                self.completed.emit(False, str(exc))
         except Exception as exc:
             logger.exception("Runtime Installer 异常")
             self.completed.emit(False, f"安装异常: {exc}")

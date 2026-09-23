@@ -78,9 +78,3 @@
 - 与 `vibeocr-next` 共享 Protocol v2 major/minor-compatible 和 required capabilities，但实现、UI、版本与 Release 完全独立，不做跨仓级联发版。
 - Backend 升级若仍在 Protocol v2 且 capabilities 满足，本仓应由 CI 自动跟踪；major 改变必须先修改本仓兼容声明与实现。
 - `file-toolbox`、`vibetable` 与本仓无运行时依赖，仅共享自动化治理。
-
-<!-- AI-FLOW-V4:START -->
-## AI Flow v4.0
-
-执行 AI Flow 任务前，读取 `.ai-flow/AGENTS.md`、`.ai-flow/AI_CODING_PLAYBOOK.md`、`.ai-flow/project.json` 和对应 GitHub Issue。工作流补充而不覆盖上面的工程规则；Issue-first、balanced、人工跨工具交接、Codex 只读 reviewer 子代理、人工合并。
-<!-- AI-FLOW-V4:END -->

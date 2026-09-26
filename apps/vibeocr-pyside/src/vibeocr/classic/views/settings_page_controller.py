@@ -1106,6 +1106,8 @@ class SettingsPageController:
             # Runtime 总体 ready 不代表已保存的 OCR 引擎可运行。首个任务前
             # 主动读取实时 catalog，以便中断安装后恢复到可用 Base 引擎。
             adapter.fetch_health()
+            # 启动前的环境快照尚未连接 Supervisor，就绪后同步服务状态。
+            self._refresh_env_maintenance_state()
         if ConfigManager.instance().get_preload_enabled():
             self._on_preload_now_clicked()
         else:

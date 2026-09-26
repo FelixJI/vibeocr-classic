@@ -632,3 +632,92 @@ def test_ready_environment_keeps_failed_installation_outcome(controller):
     assert "本次安装：失败" in text
     assert "download_failed" in text and "check_network" in text
     assert InstallationRecord.read(ctrl._project_root) == record
+
+
+def _ready_runtime_status_payload() -> dict:
+    """Supervisor 已就绪时的最小 getRuntimeStatus 载荷。"""
+    return {
+        "schema_version": 2,
+        "instance_id": "runtime-ready-1",
+        "service_state": "ready",
+        "backend_version": "0.14.0",
+        "profile": {
+            "profile_id": "win-x64-cpu",
+            "accelerator": "cpu",
+            "components": [],
+        },
+        "maintenance": {
+            "operation_id": "op-ready-1",
+            "sequence": 1,
+            "operation": "ensure",
+            "operation_state": "succeeded",
+            "phase": "commit_runtime",
+            "profile_id": "win-x64-cpu",
+            "updated_at": "2026-09-24T00:00:00Z",
+        },
+    }
+
+
+class _StartedRuntimeAdapter(QObject):
+    """Supervisor 已就绪的最小 adapter：环境刷新只用到这些成员。"""
+
+    residency_status = Signal(object)
+    residency_error = Signal(str)
+    settings_updated = Signal(object)
+    settings_loaded = Signal(object)
+    settings_error = Signal(str)
+    health_loaded = Signal(object)
+    health_error = Signal(str)
+    preload_completed = Signal(object)
+    preload_error = Signal(str)
+
+    def __init__(self, status_payload: dict) -> None:
+        super().__init__()
+        self.is_started = True
+        self.runtime_status_client = SimpleNamespace(
+            request_json=lambda _method: dict(status_payload)
+        )
+        self.fetch_health_calls = 0
+
+    def fetch_health(self) -> None:
+        self.fetch_health_calls += 1
+
+    def refresh_residency(self) -> None:
+        return None
+
+
+def test_supervisor_ready_refreshes_env_service_row(controller, qtbot, monkeypatch):
+    """Supervisor ready 后设置页服务行应离开启动前的“未连接”旧快照。
+
+    回归：connect_signals 在 Supervisor 启动前刷新环境状态，服务行固定
+    “未连接”；on_supervisor_ready 此前只刷新驻留/预加载，不重刷环境维护
+    快照，导致状态栏“Supervisor 已连接”与设置服务表“未连接”长期不同步
+    （backend#99 2026-09-24 Classic GUI 截图实测）。
+    """
+    ctrl, host = controller
+    label = host.findChild(QLabel, "labelEnvStatus")
+    qtbot.waitUntil(lambda: label.text().startswith("Runtime："), timeout=3000)
+    assert label.text().endswith("服务：未连接")
+
+    adapter = _StartedRuntimeAdapter(_ready_runtime_status_payload())
+    monkeypatch.setattr(
+        "vibeocr.classic.views.settings_page_controller.get_supervisor_adapter",
+        lambda: adapter,
+    )
+    config = MagicMock()
+    config.get_preload_enabled.return_value = False
+    config_class = MagicMock()
+    config_class.instance.return_value = config
+    monkeypatch.setattr(
+        "vibeocr.classic.managers.config_manager.ConfigManager", config_class
+    )
+
+    ctrl.on_supervisor_ready()
+
+    qtbot.waitUntil(lambda: label.text().endswith("服务：已就绪"), timeout=3000)
+    tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
+    rows = {
+        tree.topLevelItem(index).text(0): tree.topLevelItem(index).text(1)
+        for index in range(tree.topLevelItemCount())
+    }
+    assert rows["服务"] == "已就绪"

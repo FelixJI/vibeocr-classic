@@ -34,6 +34,7 @@ class _MissingRuntimeWindow:
         self._start_install = MagicMock()
 
     _on_dependency_check_finished = MainWindow._on_dependency_check_finished
+    _on_install_succeeded = MainWindow._on_install_succeeded
 
 
 class _RapidReadyWindow:
@@ -99,6 +100,16 @@ def test_missing_base_runtime_starts_automatic_base_preparation_after_gui_is_rea
     single_shot.assert_called_once()
     window._start_install.assert_called_once_with()
     window._statusbar.set_result.assert_called_once_with("Runtime 未安装：CPU")
+
+
+def test_base_install_success_replaces_stale_not_installed_result() -> None:
+    window = _MissingRuntimeWindow()
+    window._refresh_settings_env_state = MagicMock()
+    window._statusbar.resultMessage.return_value = "Runtime 未安装：CPU"
+
+    window._on_install_succeeded()
+
+    window._statusbar.set_result.assert_called_once_with("Base Runtime 已验证")
 
 
 def test_advanced_component_gaps_never_open_a_first_start_dialog() -> None:

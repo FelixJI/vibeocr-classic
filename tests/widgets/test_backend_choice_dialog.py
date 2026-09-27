@@ -39,6 +39,7 @@ def test_gpu_available_defaults_to_gpu(_cleanup, qtbot, tmp_path):
     """有 GPU 时默认选 GPU，两项启用"""
     dlg = _make_dialog(tmp_path, qtbot, has_gpu=True)
     qtbot.addWidget(dlg)
+    assert dlg.windowTitle() == "选择计算设备"
     assert dlg._gpu_radio.isChecked()
     assert dlg._gpu_radio.isEnabled()
     assert dlg._cpu_radio.isEnabled()
@@ -468,7 +469,7 @@ def test_success_marks_all_components_ready(_cleanup, qtbot, tmp_path):
 
 
 def test_maintenance_detail_note_renders_and_sticks(_cleanup, qtbot, tmp_path):
-    """子进程状态行明细渲染进阶段文案，并在心跳间隔内粘性保留。"""
+    """诊断进入可展开详情，主进度不显示原始包日志。"""
     dlg = _make_dialog(tmp_path, qtbot, has_gpu=False)
     qtbot.addWidget(dlg)
 
@@ -478,15 +479,21 @@ def test_maintenance_detail_note_renders_and_sticks(_cleanup, qtbot, tmp_path):
             fallback_message="Downloading torch-2.7.0 (2.5 GB)",
         )
     )
-    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+    assert "Downloading torch-2.7.0 (2.5 GB)" not in dlg._progress_label.text()
+    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._log_text.toPlainText()
+    assert dlg._log_text.isHidden()
+    dlg._details_button.click()
+    assert not dlg._log_text.isHidden()
 
     # 后续心跳不携带 fallback_message：同阶段内不闪回
     dlg._on_maintenance(_maintenance(phase="install_profile", sequence=6))
-    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+    assert dlg._current_detail_note(_maintenance(phase="install_profile")) == (
+        "Downloading torch-2.7.0 (2.5 GB)"
+    )
 
     # QTimer 重渲染同样保留明细
     dlg._refresh_stage_label()
-    assert "Downloading torch-2.7.0 (2.5 GB)" in dlg._progress_label.text()
+    assert "Downloading torch-2.7.0 (2.5 GB)" not in dlg._progress_label.text()
 
     # 进入新阶段后旧明细不再适用
     dlg._on_maintenance(_maintenance(phase="verify_runtime", sequence=7))

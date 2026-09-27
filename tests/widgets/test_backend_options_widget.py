@@ -1,4 +1,4 @@
-"""设置页"推理后端"组件测试"""
+"""设置页「计算设备」组件测试"""
 
 import threading
 import time
@@ -226,7 +226,7 @@ def test_base_only_runtime_is_distinguished_from_uninstalled(_cleanup, qtbot, tm
     qtbot.addWidget(widget)
 
     assert widget.current_backend() is None
-    assert widget._current_label.text() == "当前后端：基础 Runtime（未选择加速框架）"
+    assert widget._current_label.text() == "当前生效：基础 Runtime（未选择计算设备）"
     assert "基础 Runtime 已就绪" in widget._status_label.text()
     # 基础态如实选中"基础 Runtime"单选，而不是默认勾 GPU/CPU 冒充已选择。
     assert widget._base_radio.isChecked()
@@ -246,7 +246,7 @@ def test_gpu_profile_shows_cuda_requirement_and_driver_capability(
     widget = _make_widget(tmp_path, has_gpu=True, runtime_backend="gpu")
     qtbot.addWidget(widget)
     assert widget.current_backend() == "gpu"
-    assert widget._current_label.text() == "当前后端：GPU（NVIDIA CUDA 12.6）"
+    assert widget._current_label.text() == "当前生效：GPU（NVIDIA CUDA 12.6）"
     hardware = widget._hw_label.text()
     assert "驱动 566.36" in hardware
     assert "支持 CUDA 12.6" in hardware
@@ -259,9 +259,13 @@ def test_apply_requests_visible_backend_change(_cleanup, qtbot, tmp_path):
     qtbot.addWidget(widget)
     received: list[str] = []
     widget.backend_change_requested.connect(received.append)
+    assert widget._current_label.text().startswith("当前生效：GPU")
+    assert widget._pending_label.text() == "待应用：无变更"
     widget._cpu_radio.setChecked(True)
+    assert widget._pending_label.text() == "待应用：CPU"
     widget._apply()
     assert received == ["cpu"]
+    assert widget._pending_label.text() == "待应用：CPU（等待确认）"
     assert "等待确认" in widget._status_label.text()
 
 

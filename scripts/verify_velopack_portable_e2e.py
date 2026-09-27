@@ -18,7 +18,9 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-_STATE_MARKERS = ("config", "logs", "cache", "models", "runtime")
+# Runtime is installed atomically on first launch. Its actual files are checked
+# by the packaged app's pre/post-update snapshot, not a pre-install placeholder.
+_STATE_MARKERS = ("config", "logs", "cache", "models")
 _PORTABLE_LAUNCHER = "VibeOCR.exe"
 
 

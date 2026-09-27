@@ -7,9 +7,18 @@ import pytest
 from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
     EDITABLE_SOURCE_KINDS,
+    ENGINE_AVAILABILITY_PREPARATION_REQUIRED,
+    ENGINE_AVAILABILITY_READY,
+    ENGINE_AVAILABILITY_UNAVAILABLE,
     ENGINE_SELECTION_CAPABILITY,
     RECOGNITION_MODE_CAPABILITY,
+    RecognitionModeEntry,
+    RecognitionModeLifecycle,
+    RuntimeSelectionCatalog,
     RuntimeSelectionError,
+    document_parsing_availability,
+    document_parsing_availability_notice,
+    gpu_gating_applies,
     migrate_legacy_feature_ids,
     parse_capability_catalogs,
     resolve_engine_id,
@@ -495,3 +504,74 @@ def test_migrate_legacy_feature_ids_maps_2_7_document_parsing() -> None:
         "mineru",
         "paddleocr",
     )
+
+
+# ---------------- 文档解析门控（mode availability 权威，旧 GPU 布尔仅兼容） ----------------
+
+
+def _mineru_mode_catalog(availability: str):
+    """直接构造仅含 mineru 模式的目录（与 widget 测试同构，不经 parser）。"""
+    return RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                "mineru_document",
+                "document",
+                "MinerU",
+                None,
+                "advanced_component",
+                availability,
+                RecognitionModeLifecycle("process_keep_alive", True, True, False, True),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+
+class TestDocumentParsingAvailability:
+    """目录存在时按 mineru 模式 availability 判定；无目录保持旧三态兼容。"""
+
+    def test_catalog_ready_is_authoritative_over_legacy_gpu_false(self) -> None:
+        catalog = _mineru_mode_catalog(ENGINE_AVAILABILITY_READY)
+        assert gpu_gating_applies(catalog) is False
+        assert (
+            document_parsing_availability(catalog, False)
+            == ENGINE_AVAILABILITY_READY
+        )
+
+    @pytest.mark.parametrize(
+        "blocked",
+        [ENGINE_AVAILABILITY_PREPARATION_REQUIRED, ENGINE_AVAILABILITY_UNAVAILABLE],
+    )
+    def test_catalog_not_ready_fails_closed(self, blocked: str) -> None:
+        assert document_parsing_availability(_mineru_mode_catalog(blocked), True) == (
+            blocked
+        )
+
+    def test_legacy_engine_catalog_keeps_gpu_tri_state(self) -> None:
+        catalog = parse_capability_catalogs(_descriptors())
+        assert gpu_gating_applies(catalog) is True
+        assert document_parsing_availability(catalog, None) is None
+        assert (
+            document_parsing_availability(catalog, True) == ENGINE_AVAILABILITY_READY
+        )
+        assert document_parsing_availability(catalog, False) == (
+            ENGINE_AVAILABILITY_UNAVAILABLE
+        )
+
+    def test_missing_catalog_keeps_gpu_tri_state(self) -> None:
+        assert gpu_gating_applies(None) is True
+        assert document_parsing_availability(None, None) is None
+        assert document_parsing_availability(None, False) == (
+            ENGINE_AVAILABILITY_UNAVAILABLE
+        )
+
+    def test_notice_covers_non_ready_states_only(self) -> None:
+        assert document_parsing_availability_notice(ENGINE_AVAILABILITY_READY) is None
+        for state in (
+            None,
+            ENGINE_AVAILABILITY_PREPARATION_REQUIRED,
+            ENGINE_AVAILABILITY_UNAVAILABLE,
+        ):
+            kind, title, message = document_parsing_availability_notice(state)
+            assert kind in {"information", "warning"}
+            assert title and message

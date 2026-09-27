@@ -862,15 +862,25 @@ class TestStageRefreshTimer:
         dlg._on_maintenance(
             self._running_update(1, fallback_message="Downloading numpy (16 MB)")
         )
-        assert "Downloading numpy (16 MB)" in dlg._stage_label.text()
+        assert "Downloading numpy (16 MB)" not in dlg._stage_label.text()
+        assert "Downloading numpy (16 MB)" in dlg._log_text.toPlainText()
+        assert dlg._log_text.isHidden()
+        dlg._details_button.click()
+        assert not dlg._log_text.isHidden()
 
         # 后续心跳事件不携带 fallback_message：同阶段内粘性保留
         dlg._on_maintenance(self._running_update(2))
-        assert "Downloading numpy (16 MB)" in dlg._stage_label.text()
+        assert dlg._current_detail_note(self._running_update(2)) == (
+            "Downloading numpy (16 MB)"
+        )
 
         # 进入新阶段后明细不再适用，不能继续展示旧包名
         dlg._on_maintenance(self._running_update(3, phase="verify_runtime"))
         assert "Downloading numpy (16 MB)" not in dlg._stage_label.text()
+        assert (
+            dlg._current_detail_note(self._running_update(3, phase="verify_runtime"))
+            is None
+        )
 
     def test_finished_clears_refresh_state(self, qapp, tmp_path):
         dlg = InstallDialog(tmp_path)
@@ -913,6 +923,13 @@ def test_reuse_success_without_event_scope_uses_confirmed_plan(qapp, tmp_path):
         return_value="preview",
     ):
         dlg._on_plan_ready(plan)
+    assert not dlg._log_text.isHidden()
+    assert "preview" in dlg._log_text.toPlainText()
+    dlg._worker = MagicMock()
+    dlg._confirm_install()
+    dlg._worker.confirm_install.assert_called_once_with()
+    assert dlg._log_text.isHidden()
+    dlg._worker = None
     # Formal reuse events may omit scope, including the successful terminal event.
     dlg._on_maintenance(
         RuntimeMaintenanceUpdate(

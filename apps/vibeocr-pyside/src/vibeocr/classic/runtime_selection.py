@@ -575,6 +575,78 @@ def legacy_execution_projection(mode_id: str) -> tuple[str, str | None] | None:
     return _LEGACY_MODE_PROJECTIONS.get(mode_id)
 
 
+# 文档文件（PDF/Office）固定路由到 MinerU；此 mode id 是共享门控入口的
+# 业务锚点，避免各调用方各自拼写。
+DOCUMENT_PARSING_MODE_ID = "mineru_document"
+
+
+def gpu_gating_applies(catalog: RuntimeSelectionCatalog | None) -> bool:
+    """旧 GPU 布尔门控仅对未协商识别模式目录的 Backend 生效。
+
+    已协商八模式目录时，mode 级 ``availability`` 是唯一权威，历史 GPU
+    探测布尔不再覆盖它；无目录（health 未达或旧 Backend）保持保守兼容。
+    """
+
+    return catalog is None or not catalog.has_recognition_mode_catalog
+
+
+def document_parsing_availability(
+    catalog: RuntimeSelectionCatalog | None, gpu_capability: bool | None
+) -> str | None:
+    """Return the effective availability of MinerU document parsing.
+
+    目录存在时直接投影 ``mineru_document`` 模式的 availability；无目录时
+    把历史 GPU 三态映射到同一词表：``None`` 表示探测未完成，``ready`` /
+    ``unavailable`` 分别对应 GPU / CPU 兼容门控。调用方据此 fail closed。
+    """
+
+    if not gpu_gating_applies(catalog):
+        mode = catalog.mode(DOCUMENT_PARSING_MODE_ID)
+        if mode is None:
+            return ENGINE_AVAILABILITY_UNAVAILABLE
+        return mode.availability
+    if gpu_capability is None:
+        return None
+    return (
+        ENGINE_AVAILABILITY_READY
+        if gpu_capability
+        else ENGINE_AVAILABILITY_UNAVAILABLE
+    )
+
+
+def document_parsing_availability_notice(
+    availability: str | None,
+) -> tuple[str, str, str] | None:
+    """Map a non-ready availability to a user-facing notice.
+
+    Returns ``(kind, title, message)`` where ``kind`` is ``"information"`` or
+    ``"warning"``；``None`` 表示模式已就绪。探测未完成（``None``
+    availability）映射为清稍后再试的提示，不误导为 GPU 缺失。
+    """
+
+    if availability == ENGINE_AVAILABILITY_READY:
+        return None
+    if availability == ENGINE_AVAILABILITY_PREPARATION_REQUIRED:
+        return (
+            "warning",
+            "文档解析未就绪",
+            "深度文档解析（MinerU）需要先安装运行时组件。\n"
+            "请在「设置 → 识别设置」准备该模式后重试。",
+        )
+    if availability == ENGINE_AVAILABILITY_UNAVAILABLE:
+        return (
+            "warning",
+            "文档解析不可用",
+            "当前运行环境无法提供文档解析（MinerU）。\n"
+            "请将文件转为图片后识别，或在设置页检查计算设备与组件后重试。",
+        )
+    return (
+        "information",
+        "文档解析检测中",
+        "正在检测运行时识别能力，请稍候再试。",
+    )
+
+
 # Classic 的一个 Supervisor 会话只持有一份 health catalog。将其保留在这个
 # 本地 projection seam，避免把未发布的 mode 字段写入 Protocol 请求；提交端
 # 仍始终把 mode 转为已发布的 pipeline_id + engine。
@@ -736,6 +808,7 @@ def resolve_engine_id(override: str | None) -> str | None:
 
 __all__ = [
     "COMPONENT_SELECTION_CAPABILITY",
+    "DOCUMENT_PARSING_MODE_ID",
     "DOWNLOAD_SOURCES_CAPABILITY",
     "EDITABLE_SOURCE_KINDS",
     "ENGINE_AVAILABILITY_LABELS",
@@ -755,6 +828,9 @@ __all__ = [
     "RuntimeSelectionCatalog",
     "RuntimeSelectionError",
     "VALID_ENGINE_IDS",
+    "document_parsing_availability",
+    "document_parsing_availability_notice",
+    "gpu_gating_applies",
     "legacy_execution_projection",
     "migrate_legacy_feature_ids",
     "execution_projection_for_mode",

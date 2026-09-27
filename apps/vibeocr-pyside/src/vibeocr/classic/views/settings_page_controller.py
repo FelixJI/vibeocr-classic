@@ -109,11 +109,13 @@ class SettingsPageController:
         defer_machine_cache_status: bool = False,
         runtime_status_callback: Callable[[str], None] | None = None,
         runtime_installer_client: RuntimeInstallerClient | None = None,
+        maintenance_result_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._ui = ui
         self._project_root = project_root
         self._status_callback = status_callback
         self._runtime_status_callback = runtime_status_callback
+        self._maintenance_result_callback = maintenance_result_callback
         self._ocr_ready_callback = ocr_ready_callback
         self._subprocess_manager = subprocess_manager
         self._runtime_installer = runtime_installer_client or RuntimeInstallerClient(
@@ -326,7 +328,7 @@ class SettingsPageController:
         if btn_reinstall_deps:
             btn_reinstall_deps.setText("安装或调整运行环境")
             btn_reinstall_deps.setToolTip(
-                "选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。"
+                "选择 CPU/GPU 运行环境；确认后通过可见安装流程校验或切换。"
             )
             btn_reinstall_deps.clicked.connect(self._on_reinstall_deps)
 
@@ -335,7 +337,7 @@ class SettingsPageController:
             btn_install_missing.setVisible(False)
             btn_install_missing.setText("补全当前 Runtime")
             btn_install_missing.setToolTip(
-                "校验当前 profile，仅在缺失或损坏时下载并补全。"
+                "校验当前运行环境，仅在缺失或损坏时下载并补全。"
             )
             btn_install_missing.clicked.connect(self._on_install_missing)
 
@@ -653,7 +655,7 @@ class SettingsPageController:
         self._pdf_options.settings_changed.connect(self._on_pdf_settings_changed)
 
     def _init_backend_options_in_group(self) -> None:
-        """把推理后端组件放入「应用设置」页的「推理后端与依赖」分组内。
+        """把计算设备组件放入「运行环境与组件」页。
 
         推理后端（GPU/CPU 选择）与 OCR 依赖安装本质上是同一件事——后端决定
         要装哪些依赖，依赖表格/重装按钮负责查看与维护这些依赖。故合并到同一
@@ -862,14 +864,15 @@ class SettingsPageController:
                 widget.deleteLater()
 
     def _init_pipeline_ttl_combos(self) -> None:
-        """在「模型管理 → 运行时缓存」分组内追加每管道 TTL ComboBox。
+        """在「模型与性能」页的运行时缓存分组内追加每管道 TTL ComboBox。
 
-        原型由 spinPipelineTtl + chkEnablePipelineTtl（单 TTL 适用于所有管道）改为
-        6 个独立 ComboBox，分别对应 OCRPipeline 枚举的每一项。每个 ComboBox 携带
-        相同的 7 档预设（_TTL_PRESETS），选中项经 ConfigManager.set_pipeline_ttl
-        持久化，并通过 _sync_configured_pipeline_ttls 批量下发到 worker。
+        仅为当前 catalog 中已就绪且声明 TTL 管理的识别模式创建行；每个
+        ComboBox 携带 _TTL_PRESETS 预设（不支持固定驻留的管道会去掉
+        「持久驻留」档）。选中项经 ConfigManager.set_pipeline_ttl 持久化，
+        并通过 _sync_configured_pipeline_ttls 批量下发到 worker。
 
-        幂等：重复调用时若已存在任一模式化 TTL 行则直接返回。
+        重建由 _refresh_lifecycle_controls 负责：先 _clear_pipeline_ttl_combos
+        清空旧行再调用本方法，因此本方法自身不检测已有行。
         """
         layout = self._ui.findChild(QVBoxLayout, "runtimeCacheLayout")
         if layout is None:
@@ -1458,7 +1461,7 @@ class SettingsPageController:
         reply = QMessageBox.question(
             None,
             "确认补充安装缺失依赖",
-            "将校验当前 Runtime profile；仅在缺失或损坏时联网补全。\n\n"
+            "将校验当前运行环境；仅在缺失或损坏时联网补全。\n\n"
             "不会更改当前 CPU/GPU 选择。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1470,8 +1473,8 @@ class SettingsPageController:
         current_backend = self._runtime_backend_or_none()
         if current_backend is None:
             self._show_settings_toast(
-                "尚未确定推理后端（可能仅安装了基础 Runtime），"
-                "请先通过「选择并确保 Runtime profile」安装完整 profile"
+                "尚未确定计算设备（可能仅安装了基础 Runtime），"
+                "请先通过「安装或调整运行环境」准备所需组件"
             )
             return
         self._open_install_dialog(missing_only=True, force_backend=current_backend)
@@ -1522,7 +1525,16 @@ class SettingsPageController:
         download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         """显示非模态 Runtime 安装进度；操作只通过 Installer ensure/repair。"""
+        from vibeocr.classic.runtime_maintenance import (
+            InstallationRecord,
+            RuntimeInstallerClientError,
+        )
         from vibeocr.classic.widgets.install_dialog import InstallDialog
+
+        try:
+            previous_record = InstallationRecord.read(self._project_root)
+        except RuntimeInstallerClientError:
+            previous_record = None
 
         maintenance_started = False
 
@@ -1559,6 +1571,29 @@ class SettingsPageController:
 
         def _on_completed(success: bool, message: str) -> None:
             nonlocal restored_after_failure
+            result_callback = self._maintenance_result_callback
+            if result_callback is not None:
+                if success:
+                    result_callback("本次安装已验证")
+                else:
+                    try:
+                        record = InstallationRecord.read(self._project_root)
+                    except RuntimeInstallerClientError:
+                        record = None
+                    fresh_terminal = record is not None and (
+                        previous_record is None
+                        or record.operation_id != previous_record.operation_id
+                        or record.sequence > previous_record.sequence
+                        or record.state != previous_record.state
+                    )
+                    outcome = (
+                        "本次安装已取消"
+                        if fresh_terminal and record.state == "cancelled"
+                        else "本次安装失败"
+                        if fresh_terminal and record.state == "failed"
+                        else "本次安装未完成"
+                    )
+                    result_callback(outcome)
             if not success:
                 self._status_callback(f"本次安装未完成：{message}")
                 if maintenance_started and self._install_abandoned_callback is not None:
@@ -2164,6 +2199,17 @@ class SettingsPageController:
             else spec
             for spec in current.pipelines
         )
+        existing_names = {spec.name for spec in current.pipelines}
+        pipelines += tuple(
+            PipelineSpec(
+                name=name,
+                ttl_seconds=ttl if ttl > 0 else None,
+                pinned=ttl == -1,
+            )
+            for name, ttl in configured_by_name.items()
+            if name not in existing_names
+            and (ttl > 0 or (ttl == -1 and name in pinnable_names))
+        )
         snapshot = SettingsSnapshot(
             default_ttl_seconds=current.default_ttl_seconds,
             pipelines=pipelines,
@@ -2209,8 +2255,8 @@ class SettingsPageController:
     }
 
     _SOURCE_KIND_LABELS = {
-        "package_index": "Python 包索引",
-        "model_registry": "模型源",
+        "package_index": "依赖下载源",
+        "model_registry": "模型下载源",
     }
 
     def _init_ocr_runtime_group(self) -> None:
@@ -2483,10 +2529,10 @@ class SettingsPageController:
             return candidates[0], current_accelerator is None
         dialog = QMessageBox()
         dialog.setIcon(QMessageBox.Icon.Question)
-        dialog.setWindowTitle("选择推理后端")
+        dialog.setWindowTitle("选择计算设备")
         dialog.setText(
             "当前 Runtime 尚未选择加速框架（基础 Runtime）。\n"
-            "所选可选能力提供 CPU 与 GPU 组件；请选择要切换的推理后端："
+            "所选可选能力提供 CPU 与 GPU 组件；请选择要应用的计算设备："
         )
         accelerator_by_button: dict[QMessageBox.QAbstractButton, str] = {}
         for accelerator in candidates:
@@ -2536,8 +2582,8 @@ class SettingsPageController:
         accelerator_label = self._ACCELERATOR_LABELS.get(accelerator, accelerator)
         if needs_backend_switch:
             operation = (
-                f"当前为基础 Runtime，将切换到 {accelerator_label} 完整 profile，"
-                f"并安装：{names}。"
+                f"当前为基础 Runtime，将切换到 {accelerator_label} 运行环境，"
+                f"并安装所选引擎组件：{names}。"
             )
         else:
             operation = f"即将为 {accelerator_label} 后端在线下载并安装：{names}。"

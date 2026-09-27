@@ -421,12 +421,15 @@ class MainWindow(QMainWindow):
         return tab
 
     def _configure_recognition_mode_widgets(self, host) -> None:
-        """新建的懒加载入口继承当前 health 模式目录。"""
+        """新建的懒加载入口继承当前 health 模式目录与门控状态。"""
         catalog = self._recognition_catalog
         if catalog is None:
             return
         from vibeocr.classic.widgets.preprocess_options_widget import (
             PreprocessOptionsWidget,
+        )
+        from vibeocr.classic.widgets.screenshot_options_widget import (
+            ScreenshotOptionsWidget,
         )
 
         for widget in host.findChildren(PreprocessOptionsWidget):
@@ -434,6 +437,12 @@ class MainWindow(QMainWindow):
             widget.set_advanced_mode_install_callback(
                 self._settings_controller.install_recognition_mode
             )
+        # 设置页若在目录之后才构造（独立宿主/懒构造），同样继承目录；
+        # 目录会翻转旧 GPU 门控判定，随后重播已探测结果。
+        for widget in host.findChildren(ScreenshotOptionsWidget):
+            widget.set_recognition_catalog(catalog)
+        if self._runtime_gpu_capability is not None:
+            self._apply_gpu_gating_to_all(self._runtime_gpu_capability)
 
     def _on_lazy_tab_changed(self, index: int) -> None:
         """显示 skeleton，并 single-flight 启动纯数据/模块定位预热。"""
@@ -654,6 +663,7 @@ class MainWindow(QMainWindow):
             ui=self,
             project_root=self._project_root,
             status_callback=self._statusbar.showMessage,
+            maintenance_result_callback=self._statusbar.set_result,
             runtime_status_callback=self._show_background_runtime_status,
             ocr_ready_callback=lambda: self._ocr_ready,
             subprocess_manager=self._subprocess_manager,
@@ -669,6 +679,7 @@ class MainWindow(QMainWindow):
             defer_machine_cache_status=True,
         )
         self._settings_controller.connect_signals()
+        self._configure_recognition_mode_widgets(self)
 
     def _on_recognition_catalog_loaded(self, catalog) -> None:
         """把 health 中协商的识别模式投影到所有本地作业入口。"""
@@ -695,6 +706,17 @@ class MainWindow(QMainWindow):
                 install_callback_setter(
                     self._settings_controller.install_recognition_mode
                 )
+
+        # 截图选项页的 GPU 门控同样以目录为权威；目录到达会翻转旧布尔判定，
+        # 需要重播已探测结果让所有组件重算。
+        from vibeocr.classic.widgets.screenshot_options_widget import (
+            ScreenshotOptionsWidget,
+        )
+
+        for widget in self.findChildren(ScreenshotOptionsWidget):
+            widget.set_recognition_catalog(catalog)
+        if self._runtime_gpu_capability is not None:
+            self._apply_gpu_gating_to_all(self._runtime_gpu_capability)
 
     def _on_settings_install_succeeded(self) -> None:
         """设置页重装/补装依赖成功后的联动回调（Bug A 修复）
@@ -1027,6 +1049,7 @@ class MainWindow(QMainWindow):
             return
         self._ocr_ready = True
         self._statusbar.showMessage("Base Runtime 已准备，快速 OCR 可直接使用")
+        self._statusbar.set_result("Base Runtime 已验证")
         # 安装完成后 Python 运行时状态已变，刷新设置页环境维护区 label
         # （首启时 label 在 Python 未装时写下"未安装"，此处避免重启才更新）
         self._refresh_settings_env_state()

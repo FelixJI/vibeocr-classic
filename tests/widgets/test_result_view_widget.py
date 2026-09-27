@@ -1,9 +1,7 @@
 """Tests for result_view_widget block rendering functions."""
 
 import re
-import sys
 import time
-import types
 from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
@@ -1317,14 +1315,12 @@ class TestResultViewPrewarmWebEngine:
             def registerObject(self, name, obj):
                 pass
 
-        # 桩掉 _ensure_web_view 内 ``from PySide6.QtWebChannel import QWebChannel``
-        # 与 ``from PySide6.QtWebEngineWidgets import QWebEngineView`` 的延迟 import。
-        webchannel_mod = types.ModuleType("PySide6.QtWebChannel")
-        webchannel_mod.QWebChannel = _FakeWebChannel
-        monkeypatch.setitem(sys.modules, "PySide6.QtWebChannel", webchannel_mod)
-        webengine_mod = types.ModuleType("PySide6.QtWebEngineWidgets")
-        webengine_mod.QWebEngineView = _FakeWebView
-        monkeypatch.setitem(sys.modules, "PySide6.QtWebEngineWidgets", webengine_mod)
+        # 保留 PySide6 原生模块对象，仅替换类；卸载再导入扩展模块会污染
+        # 后续测试中真实 QWebEngineView 的 Qt 注册状态。
+        from PySide6 import QtWebChannel, QtWebEngineWidgets
+
+        monkeypatch.setattr(QtWebChannel, "QWebChannel", _FakeWebChannel)
+        monkeypatch.setattr(QtWebEngineWidgets, "QWebEngineView", _FakeWebView)
         # 桩掉 layout.addWidget 以计数「加入布局」次数（即触发父级重排的次数）。
         # 不调用真实 addWidget：_FakeWebView 非 QWidget 子类，真实调用会类型失败；
         # 这里只需计数 _ensure_web_view 是否走到 addWidget 这一步。

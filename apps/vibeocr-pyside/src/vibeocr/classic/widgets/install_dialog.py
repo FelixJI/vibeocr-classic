@@ -125,6 +125,7 @@ class MaintenanceProgressDetail:
     detail: str
     phase_label: str
     state_label: str
+    summary: str
     determinate: bool = False
     progress_value: int = 0
     progress_maximum: int = 0
@@ -213,6 +214,7 @@ def build_maintenance_detail(
             )
         if update.estimated_remaining_seconds is not None:
             detail += f" · 预计剩余 {update.estimated_remaining_seconds} 秒"
+        summary = detail
         if detail_note:
             detail += f" · {detail_note}"
         if scope_note:
@@ -223,6 +225,7 @@ def build_maintenance_detail(
             detail=detail,
             phase_label=phase,
             state_label=state,
+            summary=summary,
             determinate=True,
             progress_value=(
                 update.progress_current
@@ -242,6 +245,11 @@ def build_maintenance_detail(
         detail = f"{phase} · {update.progress_current}/{update.progress_total} 步"
     if update.operation_state == "running" and clock is not None:
         detail += f" · 已用时 {clock.elapsed_seconds(update)} 秒"
+    summary = detail
+    if update.progress_unit == "bytes" and update.progress_current is not None:
+        summary += f" · 已下载 {_format_byte_count(update.progress_current)}，总量未知"
+    if update.message_args.get("model_readiness") == "not_checked":
+        summary += " · 模型仍需首次准备或验证"
     if detail_note:
         detail += f" · {detail_note}"
     if scope_note:
@@ -249,7 +257,7 @@ def build_maintenance_detail(
     if source_note:
         detail += f" · {source_note}"
     return MaintenanceProgressDetail(
-        detail=detail, phase_label=phase, state_label=state
+        detail=detail, phase_label=phase, state_label=state, summary=summary
     )
 
 
@@ -510,7 +518,7 @@ class InstallWorker(QThread):
             else:
                 self._emit_progress(
                     "运行时安装",
-                    "正在确保绑定的 Runtime profile 可用...",
+                    "正在确保绑定的运行环境可用...",
                 )
                 client.ensure(
                     progress=self._emit_maintenance,
@@ -703,11 +711,12 @@ class InstallDialog(QDialog):
 
         # 当前阶段
         self._stage_label = QLabel("准备中...")
+        self._stage_label.setWordWrap(True)
         layout.addWidget(self._stage_label)
 
         self._components_tree = QTreeWidget()
         self._components_tree.setObjectName("runtimeComponentsTree")
-        self._components_tree.setHeaderLabels(["Backend 组件", "状态", "版本"])
+        self._components_tree.setHeaderLabels(["运行组件", "状态", "版本"])
         self._components_tree.setRootIsDecorated(False)
         self._components_tree.setAlternatingRowColors(True)
         self._components_tree.setMinimumHeight(150)
@@ -720,6 +729,12 @@ class InstallDialog(QDialog):
         # 日志输出
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
+        self._log_text.document().setMaximumBlockCount(1000)
+        self._log_text.setVisible(False)
+        self._details_button = QPushButton("安装范围与诊断详情")
+        self._details_button.setCheckable(True)
+        self._details_button.toggled.connect(self._log_text.setVisible)
+        layout.addWidget(self._details_button)
         layout.addWidget(self._log_text)
 
         self._confirm_button = QPushButton("确认并安装")
@@ -816,6 +831,7 @@ class InstallDialog(QDialog):
         )
         self._title_label.setText("请确认运行环境变更")
         self._stage_label.setText("预览已就绪；确认前不会停止服务或安装")
+        self._details_button.setChecked(True)
         self._log(
             describe_install_plan(
                 plan,
@@ -844,6 +860,7 @@ class InstallDialog(QDialog):
         ):
             return
         self._confirm_button.setEnabled(False)
+        self._details_button.setChecked(False)
         if self._before_install is None:
             worker.confirm_install()
         else:
@@ -892,6 +909,8 @@ class InstallDialog(QDialog):
             and update.phase != "commit_runtime"
         )
         rendered = self._render_maintenance_stage(update)
+        if update.event_type != "heartbeat":
+            self._log(rendered.detail)
         self._sync_closure_rows(update)
 
         if update.component_id:
@@ -930,7 +949,7 @@ class InstallDialog(QDialog):
             self._progress_bar.setValue(rendered.progress_value)
         else:
             self._progress_bar.setRange(0, 0)
-        self._stage_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        self._stage_label.setText(f"{rendered.summary} · {rendered.state_label}")
         return rendered
 
     def _refresh_stage_label(self) -> None:

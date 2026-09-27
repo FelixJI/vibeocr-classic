@@ -842,25 +842,27 @@ class SingleRecognitionTab(BaseOcrTab):
         if is_document_file(file_path):
             self._invalidate_image_decodes()
             self._file_btn.setEnabled(self._accepting_new_input())
-            # 文档文件(PDF/Office)强制走 MinerU 文档解析，CPU 后端下不可用。
-            # 在此拦截，避免进入 _run_ocr_with_data 后因管道被 GPU 门控禁用而崩溃。
+            # 文档文件(PDF/Office)路由到 MinerU 文档解析。可用性以协商
+            # mode catalog 的 mineru availability 为权威（CPU 计算设备不
+            # 拦截已就绪模式）；仅旧 Backend（无目录）保持 GPU 三态兼容。
+            # 未就绪/不可用在此拦截并给出可操作指引，不放行。
             from PySide6.QtWidgets import QMessageBox
 
-            gpu_capability = self._preprocess_options.gpu_capability
-            if gpu_capability is None:
-                QMessageBox.information(
-                    self,
-                    "GPU 能力检测中",
-                    "正在检测运行时 GPU 能力，请稍候再试。",
+            from vibeocr.classic.runtime_selection import (
+                document_parsing_availability_notice,
+            )
+
+            notice = document_parsing_availability_notice(
+                self._preprocess_options.document_parsing_availability()
+            )
+            if notice is not None:
+                kind, title, message = notice
+                dialog = (
+                    QMessageBox.information
+                    if kind == "information"
+                    else QMessageBox.warning
                 )
-                return
-            if not gpu_capability:
-                QMessageBox.warning(
-                    self,
-                    "文档解析不可用",
-                    "当前为 CPU 后端，文档解析(MinerU)需要 GPU 支持。\n"
-                    "请将文件转为图片后识别，或在设置页切换到 GPU 后端后重启。",
-                )
+                dialog(self, title, message)
                 return
             self._run_ocr_with_file(path)
         else:

@@ -19,6 +19,9 @@ ENGINE_SELECTION_CAPABILITY = "ocr.engine-selection.v1"
 RECOGNITION_MODE_CAPABILITY = "ocr.recognition-modes.v1"
 COMPONENT_SELECTION_CAPABILITY = "runtime.component-selection.v1"
 DOWNLOAD_SOURCES_CAPABILITY = "runtime.download-sources.v1"
+# 自部署远程 MinerU API（Protocol 2.9.0 起）。未声明该能力的 Backend 不支持
+# 远程连接设置，设置页 fail closed，不构造远程配置请求。
+MINERU_REMOTE_API_CAPABILITY = "ocr.mineru-remote-api.v1"
 
 ENGINE_AVAILABILITY_READY = "ready"
 ENGINE_AVAILABILITY_PREPARATION_REQUIRED = "preparation_required"
@@ -817,6 +820,7 @@ __all__ = [
     "ENGINE_AVAILABILITY_UNAVAILABLE",
     "ENGINE_DISPLAY_NAMES",
     "ENGINE_SELECTION_CAPABILITY",
+    "MINERU_REMOTE_API_CAPABILITY",
     "RECOGNITION_MODE_CAPABILITY",
     "RECOGNITION_MODE_DISPLAY_NAMES",
     "ComponentVariantEntry",

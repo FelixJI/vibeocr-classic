@@ -594,12 +594,28 @@ class SupervisorClientAdapter(QObject):
 
         self._schedule(_release())
 
-    def preload(self, pipelines: tuple[str, ...]) -> None:
+    def preload(
+        self,
+        pipelines: tuple[str, ...],
+        *,
+        recognition_modes: tuple[str, ...] = (),
+    ) -> None:
+        """请求 Supervisor 预加载管道或识别模式。
+
+        ``recognition_modes`` 携带用户语义（如 ``mineru_document``）时，
+        Backend 会按模式解析真实资源；仅在非空时传递该关键字，保持
+        与仅接收 ``pipelines`` 的旧客户端/测试桩兼容。
+        """
+
         async def _preload() -> None:
             try:
 
                 async def _request() -> Any:
                     client = await self._acquire_client()
+                    if recognition_modes:
+                        return await client.preload(
+                            pipelines, recognition_modes=recognition_modes
+                        )
                     return await client.preload(pipelines)
 
                 status = await asyncio.wait_for(

@@ -156,6 +156,59 @@ def test_install_dialog_failure_invokes_abandoned_callback(controller, monkeypat
     assert dialog not in ctrl._active_dialogs
 
 
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("cancelled", "本次安装已取消"),
+        ("failed", "本次安装失败"),
+    ],
+)
+def test_install_terminal_result_survives_service_recovery(
+    controller, monkeypatch, state, expected
+):
+    from uuid import uuid4
+
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+
+    ctrl, _host, _installed, abandoned = controller
+    result = MagicMock()
+    ctrl._maintenance_result_callback = result
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
+    )
+
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+    dialog.before_install(lambda: None)
+    InstallationRecord(str(uuid4()), 2, state).save(ctrl._project_root)
+    dialog.install_completed.emit(False, "Runtime Installer 操作已取消")
+    dialog.finished.emit(0)
+
+    result.assert_called_once_with(expected)
+    abandoned.assert_called_once_with()
+
+
+def test_prior_cancelled_record_does_not_classify_new_unstarted_dialog(
+    controller, monkeypatch
+):
+    from uuid import uuid4
+
+    from vibeocr.classic.runtime_maintenance import InstallationRecord
+
+    ctrl, _host, _installed, _abandoned = controller
+    result = MagicMock()
+    ctrl._maintenance_result_callback = result
+    InstallationRecord(str(uuid4()), 2, "cancelled").save(ctrl._project_root)
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
+    )
+
+    ctrl._show_install_dialog()
+    ctrl._active_dialogs[-1].install_completed.emit(False, "未开始安装")
+
+    result.assert_called_once_with("本次安装未完成")
+
+
 def test_install_dialog_success_does_not_invoke_abandoned_callback(
     controller, monkeypatch
 ):

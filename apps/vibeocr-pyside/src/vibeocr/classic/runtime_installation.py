@@ -475,7 +475,13 @@ class RuntimeInstallerClient:
             runtime_manifest or self.content_root / "backend" / "runtime-manifest.json"
         ).resolve()
         explicit_layout = layout_manifest or os.environ.get("VIBEOCR_PORTABLE_LAYOUT")
-        if explicit_layout is None:
+        # A release manifest inside Velopack's replaceable ``current`` cannot
+        # anchor its shared_root to the stable sibling state directory. Auto
+        # layout is valid only when content and state belong to one product root.
+        if explicit_layout is None and self.product_root in {
+            self.content_root,
+            self.content_root / "state",
+        }:
             product_manifest = self.content_root / "product-release-manifest.json"
             try:
                 product_layout = json.loads(
@@ -605,12 +611,16 @@ class RuntimeInstallerClient:
         self._capability_descriptors = tuple(descriptors)
 
     def _binding_request(self) -> dict[str, Any]:
-        # Runtime Host 的 product_root 语义是“产品根”（layout manifest 注册、
-        # component-lock 所在目录）；runtime store 由 shared_root 决定并落在
-        # <portable-root>/state。Classic 自身的 state root 不参与该绑定。
+        # With an explicit shared layout the registered product root is content.
+        # Otherwise Backend stores runtime under product_root; Classic passes its
+        # stable state root while lock and manifest remain in versioned content.
         request = {
             "protocol_version": 2,
-            "product_root": str(self.content_root),
+            "product_root": str(
+                self.content_root
+                if self.layout_manifest is not None
+                else self.product_root
+            ),
             "component_lock": str(self.component_lock),
             "runtime_manifest": str(self.runtime_manifest),
         }

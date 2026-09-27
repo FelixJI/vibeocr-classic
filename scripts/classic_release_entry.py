@@ -72,8 +72,7 @@ def _record_early_bootstrap_event(phase: str) -> None:
             "pid": os.getpid(),
             "argv": [str(argument)[:512] for argument in sys.argv[:16]],
             "environment": {
-                name: name in os.environ
-                for name in _EARLY_BOOTSTRAP_ENVIRONMENT_KEYS
+                name: name in os.environ for name in _EARLY_BOOTSTRAP_ENVIRONMENT_KEYS
             },
         }
         getppid = getattr(os, "getppid", None)
@@ -313,6 +312,14 @@ def _run_velopack_update_smoke() -> int:
         required = client.required_capabilities()
         client.inspect(required_capabilities=required)
         launch = client.ensure(install_component_ids=())
+        try:
+            Path(launch.python_executable).resolve(strict=True).relative_to(
+                paths.runtime_root.resolve(strict=True)
+            )
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                "packaged Runtime executable escaped stable state/runtime"
+            ) from exc
         probe_runtime_launch(launch, paths.state_root)
     finally:
         for name, value in saved_proxy.items():

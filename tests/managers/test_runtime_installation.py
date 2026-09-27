@@ -685,13 +685,70 @@ def test_external_state_root_keeps_component_authority_in_product_content(
     arguments = client._arguments("inspect")
     request = json.loads(arguments[arguments.index("--request-json") + 1])
 
-    # Runtime Host 的 product_root 必须是 layout 注册的产品根（content_root）；
-    # state root 只属于 Classic 自己，不进入绑定请求。
-    assert request["product_root"] == str(content.resolve())
+    # 无显式 layout 时，Backend 将 product_root 用作可变 store；组件绑定仍由
+    # current 中的正式 lock 与 manifest 提供。
+    assert request["product_root"] == str(state.resolve())
     assert request["component_lock"] == str((content / "component-lock.json").resolve())
     assert request["runtime_manifest"] == str(
         (content / "backend" / "runtime-manifest.json").resolve()
     )
+
+
+def test_velopack_current_manifest_does_not_move_runtime_under_current(
+    tmp_path: Path,
+) -> None:
+    portable = tmp_path / "portable"
+    content = portable / "current"
+    state = portable / "state"
+    (content / "backend").mkdir(parents=True)
+    (content / "component-lock.json").write_text("{}", encoding="utf-8")
+    (content / "backend" / "runtime-manifest.json").write_text("{}", encoding="utf-8")
+    (content / "product-release-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "shared_root": "state",
+                "products": {"classic": {"root": "."}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = RuntimeInstallerClient(
+        state,
+        content_root=content,
+        command=("python", "-m", "vibeocr.backend.runtime_installer"),
+    )
+
+    request = client._binding_request()
+
+    assert request["product_root"] == str(state.resolve())
+    assert request["component_lock"] == str((content / "component-lock.json").resolve())
+    assert request["runtime_manifest"] == str(
+        (content / "backend" / "runtime-manifest.json").resolve()
+    )
+    assert "layout_manifest" not in request
+
+
+def test_explicit_layout_keeps_registered_content_root_with_external_state(
+    tmp_path: Path,
+) -> None:
+    content = tmp_path / "current"
+    state = tmp_path / "state"
+    content.mkdir()
+    marker = tmp_path / "shared-layout.json"
+    marker.write_text("{}", encoding="utf-8")
+
+    client = RuntimeInstallerClient(
+        state,
+        content_root=content,
+        layout_manifest=marker,
+        command=("python", "-m", "vibeocr.backend.runtime_installer"),
+    )
+
+    request = client._binding_request()
+    assert request["product_root"] == str(content.resolve())
+    assert request["layout_manifest"] == str(marker.resolve())
+    assert request["product_id"] == "classic"
 
 
 def test_product_release_manifest_is_default_portable_layout(tmp_path: Path) -> None:

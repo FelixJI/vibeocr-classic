@@ -141,6 +141,7 @@ class BackendChoiceDialog(QDialog):
 
         # 进度区（初始隐藏）
         self._progress_label = QLabel("")
+        self._progress_label.setWordWrap(True)
         self._progress_label.setVisible(False)
         layout.addWidget(self._progress_label)
 
@@ -152,7 +153,7 @@ class BackendChoiceDialog(QDialog):
         # 重依赖组件进度树（初始隐藏；profile 信号到达后逐组件更新状态）
         self._components_tree = QTreeWidget()
         self._components_tree.setObjectName("firstRunComponentsTree")
-        self._components_tree.setHeaderLabels(["Backend 组件", "状态", "版本"])
+        self._components_tree.setHeaderLabels(["运行组件", "状态", "版本"])
         self._components_tree.setRootIsDecorated(False)
         self._components_tree.setAlternatingRowColors(True)
         self._components_tree.setMinimumHeight(120)
@@ -165,7 +166,12 @@ class BackendChoiceDialog(QDialog):
 
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
+        self._log_text.document().setMaximumBlockCount(1000)
         self._log_text.setVisible(False)
+        self._details_button = QPushButton("安装范围与诊断详情")
+        self._details_button.setCheckable(True)
+        self._details_button.toggled.connect(self._log_text.setVisible)
+        layout.addWidget(self._details_button)
         layout.addWidget(self._log_text)
 
         # 按钮
@@ -227,6 +233,7 @@ class BackendChoiceDialog(QDialog):
     def _on_install_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._install_button.setVisible(False)
+            self._details_button.setChecked(False)
             self._worker.confirm_install()
             return
         # 锁定选择区，显示进度
@@ -238,7 +245,6 @@ class BackendChoiceDialog(QDialog):
         self._progress_label.setVisible(True)
         self._progress_bar.setVisible(True)
         self._components_tree.setVisible(True)
-        self._log_text.setVisible(True)
 
         backend = self.selected_backend()
         self._log(f"选择后端：{backend.upper()}，开始安装...")
@@ -263,6 +269,7 @@ class BackendChoiceDialog(QDialog):
     @Slot(object)
     def _on_plan_ready(self, plan) -> None:
         self._progress_label.setText("预览已就绪，确认后开始安装")
+        self._details_button.setChecked(True)
         self._log(
             describe_install_plan(
                 plan,
@@ -348,7 +355,9 @@ class BackendChoiceDialog(QDialog):
             self._progress_bar.setValue(rendered.progress_value)
         else:
             self._progress_bar.setRange(0, 0)
-        self._progress_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        self._progress_label.setText(f"{rendered.summary} · {rendered.state_label}")
+        if update.event_type != "heartbeat":
+            self._log(rendered.detail)
 
         if update.component_id:
             item = self._component_items.get(update.component_id)
@@ -379,7 +388,7 @@ class BackendChoiceDialog(QDialog):
             clock=self._activity_clock,
             detail_note=self._current_detail_note(update),
         )
-        self._progress_label.setText(f"{rendered.detail} · {rendered.state_label}")
+        self._progress_label.setText(f"{rendered.summary} · {rendered.state_label}")
 
     def _current_detail_note(self, update: RuntimeMaintenanceUpdate) -> str | None:
         """解析事件的“当前在做什么”明细，并在同阶段内保持粘性。"""

@@ -193,7 +193,7 @@ class BackendOptionsWidget(QWidget):
             "通常需要下载数 GB 依赖，识别更快，需兼容的 NVIDIA GPU"
         )
         self._cpu_radio = QRadioButton("CPU 计算")
-        self._cpu_radio.setToolTip("完整文档解析 profile 通常超过 1 GB，兼容性较广")
+        self._cpu_radio.setToolTip("完整文档解析运行环境通常超过 1 GB，兼容性较广")
         # 探测完成前禁用，避免基于未知硬件状态误操作后端切换。
         self._base_radio.setEnabled(False)
         self._gpu_radio.setEnabled(False)
@@ -209,8 +209,8 @@ class BackendOptionsWidget(QWidget):
 
         # 提示文字
         self._hint_label = QLabel(
-            "GPU：需要 NVIDIA GPU，完整 profile（CUDA 12.6）通常需下载数 GB，识别更快\n"
-            "CPU：兼容性较广，完整 profile 通常超过 1 GB；两者均在基础 Runtime 之上安装"
+            "GPU：需要 NVIDIA GPU，完整运行环境（CUDA 12.6）通常需下载数 GB，识别更快\n"
+            "CPU：兼容性较广，完整运行环境通常超过 1 GB；两者均在基础 Runtime 之上安装"
         )
         self._hint_label.setWordWrap(True)
         group_layout.addWidget(self._hint_label)
@@ -389,10 +389,10 @@ class BackendOptionsWidget(QWidget):
                         )
                         else "低于要求"
                     )
-                    hardware += f"；GPU profile 需要 {requirement}：{verdict}"
+                    hardware += f"；GPU 运行环境需要 {requirement}：{verdict}"
                 else:
                     hardware += (
-                        f"；GPU profile 需要 {requirement}（本机驱动支持版本未知）"
+                        f"；GPU 运行环境需要 {requirement}（本机驱动支持版本未知）"
                     )
             self._hw_label.setText(hardware)
 
@@ -435,7 +435,7 @@ class BackendOptionsWidget(QWidget):
         if self._current is None:
             self._current_label.setText("当前生效：基础 Runtime（未选择计算设备）")
             self._status_label.setText(
-                "基础 Runtime 已就绪（快速 OCR 可用）；安装完整 profile 后可启用"
+                "基础 Runtime 已就绪（快速 OCR 可用）；安装完整运行环境后可启用"
                 "文档解析、表格、公式等高级能力。"
             )
             return

@@ -663,6 +663,7 @@ class MainWindow(QMainWindow):
             ui=self,
             project_root=self._project_root,
             status_callback=self._statusbar.showMessage,
+            maintenance_result_callback=self._statusbar.set_result,
             runtime_status_callback=self._show_background_runtime_status,
             ocr_ready_callback=lambda: self._ocr_ready,
             subprocess_manager=self._subprocess_manager,
@@ -1048,6 +1049,7 @@ class MainWindow(QMainWindow):
             return
         self._ocr_ready = True
         self._statusbar.showMessage("Base Runtime 已准备，快速 OCR 可直接使用")
+        self._statusbar.set_result("Base Runtime 已验证")
         # 安装完成后 Python 运行时状态已变，刷新设置页环境维护区 label
         # （首启时 label 在 Python 未装时写下"未安装"，此处避免重启才更新）
         self._refresh_settings_env_state()

@@ -109,11 +109,13 @@ class SettingsPageController:
         defer_machine_cache_status: bool = False,
         runtime_status_callback: Callable[[str], None] | None = None,
         runtime_installer_client: RuntimeInstallerClient | None = None,
+        maintenance_result_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._ui = ui
         self._project_root = project_root
         self._status_callback = status_callback
         self._runtime_status_callback = runtime_status_callback
+        self._maintenance_result_callback = maintenance_result_callback
         self._ocr_ready_callback = ocr_ready_callback
         self._subprocess_manager = subprocess_manager
         self._runtime_installer = runtime_installer_client or RuntimeInstallerClient(
@@ -326,7 +328,7 @@ class SettingsPageController:
         if btn_reinstall_deps:
             btn_reinstall_deps.setText("安装或调整运行环境")
             btn_reinstall_deps.setToolTip(
-                "选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。"
+                "选择 CPU/GPU 运行环境；确认后通过可见安装流程校验或切换。"
             )
             btn_reinstall_deps.clicked.connect(self._on_reinstall_deps)
 
@@ -335,7 +337,7 @@ class SettingsPageController:
             btn_install_missing.setVisible(False)
             btn_install_missing.setText("补全当前 Runtime")
             btn_install_missing.setToolTip(
-                "校验当前 profile，仅在缺失或损坏时下载并补全。"
+                "校验当前运行环境，仅在缺失或损坏时下载并补全。"
             )
             btn_install_missing.clicked.connect(self._on_install_missing)
 
@@ -1459,7 +1461,7 @@ class SettingsPageController:
         reply = QMessageBox.question(
             None,
             "确认补充安装缺失依赖",
-            "将校验当前 Runtime profile；仅在缺失或损坏时联网补全。\n\n"
+            "将校验当前运行环境；仅在缺失或损坏时联网补全。\n\n"
             "不会更改当前 CPU/GPU 选择。是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1523,7 +1525,16 @@ class SettingsPageController:
         download_source_ids: tuple[str, ...] | None = None,
     ) -> None:
         """显示非模态 Runtime 安装进度；操作只通过 Installer ensure/repair。"""
+        from vibeocr.classic.runtime_maintenance import (
+            InstallationRecord,
+            RuntimeInstallerClientError,
+        )
         from vibeocr.classic.widgets.install_dialog import InstallDialog
+
+        try:
+            previous_record = InstallationRecord.read(self._project_root)
+        except RuntimeInstallerClientError:
+            previous_record = None
 
         maintenance_started = False
 
@@ -1560,6 +1571,29 @@ class SettingsPageController:
 
         def _on_completed(success: bool, message: str) -> None:
             nonlocal restored_after_failure
+            result_callback = self._maintenance_result_callback
+            if result_callback is not None:
+                if success:
+                    result_callback("本次安装已验证")
+                else:
+                    try:
+                        record = InstallationRecord.read(self._project_root)
+                    except RuntimeInstallerClientError:
+                        record = None
+                    fresh_terminal = record is not None and (
+                        previous_record is None
+                        or record.operation_id != previous_record.operation_id
+                        or record.sequence > previous_record.sequence
+                        or record.state != previous_record.state
+                    )
+                    outcome = (
+                        "本次安装已取消"
+                        if fresh_terminal and record.state == "cancelled"
+                        else "本次安装失败"
+                        if fresh_terminal and record.state == "failed"
+                        else "本次安装未完成"
+                    )
+                    result_callback(outcome)
             if not success:
                 self._status_callback(f"本次安装未完成：{message}")
                 if maintenance_started and self._install_abandoned_callback is not None:
@@ -2210,8 +2244,8 @@ class SettingsPageController:
     }
 
     _SOURCE_KIND_LABELS = {
-        "package_index": "Python 包索引",
-        "model_registry": "模型源",
+        "package_index": "依赖下载源",
+        "model_registry": "模型下载源",
     }
 
     def _init_ocr_runtime_group(self) -> None:
@@ -2537,8 +2571,8 @@ class SettingsPageController:
         accelerator_label = self._ACCELERATOR_LABELS.get(accelerator, accelerator)
         if needs_backend_switch:
             operation = (
-                f"当前为基础 Runtime，将切换到 {accelerator_label} 完整 profile，"
-                f"并安装：{names}。"
+                f"当前为基础 Runtime，将切换到 {accelerator_label} 运行环境，"
+                f"并安装所选引擎组件：{names}。"
             )
         else:
             operation = f"即将为 {accelerator_label} 后端在线下载并安装：{names}。"

@@ -304,6 +304,35 @@ def test_paddle_ttl_debounce_preserves_unmanaged_ocr_policy(
     assert adapter.refresh_calls == 2
 
 
+@pytest.mark.parametrize(
+    "existing_pipelines",
+    [(), (PipelineSpec(name="FutureEngine", ttl_seconds=600, pinned=True),)],
+)
+def test_mineru_ttl_adds_only_configured_ready_pipeline(
+    runtime_controller, qtbot, existing_pipelines
+) -> None:
+    controller, host, adapter, ttls = runtime_controller
+    ttls["PP-StructureV3"] = 0
+    ttls["FORMULA_RECOGNITION"] = 300
+    _apply_ready_lifecycle_catalog(controller)
+    adapter.residency_status.emit(
+        ResidencyStatus(default_ttl_seconds=900, pipelines=existing_pipelines)
+    )
+    adapter.update_calls.clear()
+
+    combo = host.findChild(QWidget, "comboTtl_MinerU")
+    combo.setCurrentIndex(combo.findData(60))
+
+    qtbot.waitUntil(lambda: len(adapter.update_calls) == 1, timeout=1500)
+    snapshot = adapter.update_calls[0]
+    assert snapshot.default_ttl_seconds == 900
+    assert snapshot.pipelines == (
+        *existing_pipelines,
+        PipelineSpec(name="MinerU", ttl_seconds=60),
+    )
+    assert ttls["MinerU"] == 60
+
+
 def test_release_all_uses_release_idle_and_reenables_on_status(
     runtime_controller, monkeypatch
 ) -> None:

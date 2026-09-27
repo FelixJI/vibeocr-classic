@@ -2199,6 +2199,17 @@ class SettingsPageController:
             else spec
             for spec in current.pipelines
         )
+        existing_names = {spec.name for spec in current.pipelines}
+        pipelines += tuple(
+            PipelineSpec(
+                name=name,
+                ttl_seconds=ttl if ttl > 0 else None,
+                pinned=ttl == -1,
+            )
+            for name, ttl in configured_by_name.items()
+            if name not in existing_names
+            and (ttl > 0 or (ttl == -1 and name in pinnable_names))
+        )
         snapshot = SettingsSnapshot(
             default_ttl_seconds=current.default_ttl_seconds,
             pipelines=pipelines,

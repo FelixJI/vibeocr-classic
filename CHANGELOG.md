@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.1
+
+### Features
+
+- **mineru:** 支持可选本地安装与远程 API 解析 (#119) (1e278d2)
+
+### Bug Fixes
+
+- **settings:** 按能力目录放行 CPU 文档解析并统一设置语义 (#117) (cea57b6)
+- **settings:** 就绪后同步运行环境服务状态 (#116) (3977409)
+
 ## 0.11.0
 
 ### Features

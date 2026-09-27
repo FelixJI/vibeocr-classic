@@ -696,7 +696,6 @@ class BatchRecognitionTab(BaseOcrTab):
 
         from vibeocr.runtime_contracts import JobPriority
 
-        pipeline_selection = options.to_pipeline_selection()
         self._supervisor_files = [file_info for file_info, _data in loaded]
         uploads = [
             (Path(file_info["path"]).name, None, data) for file_info, data in loaded
@@ -704,6 +703,7 @@ class BatchRecognitionTab(BaseOcrTab):
         # submit_recognition 同步抛异常会逃出 Qt slot，导致 _run_state 卡在
         # STATE_RUNNING、Start 按钮永久禁用。捕获后走统一失败路径，复位状态。
         try:
+            pipeline_selection = options.to_pipeline_selection()
             adapter.submit_recognition(
                 uploads,
                 priority=JobPriority.BACKGROUND,

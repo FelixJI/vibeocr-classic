@@ -7,6 +7,42 @@ import time
 from vibeocr.classic.managers.pdf_session_manager import PdfSessionManager
 
 
+def test_pdf_mineru_submission_uses_parse_kind_and_typed_config(qapp):
+    from tests.fakes.sync_supervisor_job_client import FakeSyncSupervisorJobClient
+    from vibeocr.classic.mineru_connection import (
+        MINERU_CONNECTION_MODE_LOCAL,
+        MINERU_CONNECTION_MODE_REMOTE,
+        set_active_mineru_connection_mode,
+    )
+    from vibeocr.classic.recognition_settings import OCROptions
+    from vibeocr.runtime_contracts import JobKind
+    from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+
+    client = FakeSyncSupervisorJobClient(lambda _index, _request: {"raw_text": "ok"})
+    manager = PdfSessionManager(parent=qapp, inference_client=client)
+    set_active_mineru_connection_mode(MINERU_CONNECTION_MODE_REMOTE)
+    try:
+        results = manager._recognize_images_via_job(
+            [b"png"],
+            OCROptions(pipeline=OCRPipeline.DOCUMENT_PARSING, effort="high"),
+            cancel_requested=lambda: False,
+        )
+    finally:
+        set_active_mineru_connection_mode(MINERU_CONNECTION_MODE_LOCAL)
+
+    request, attachments = client.submit_calls[0]
+    assert request.kind is JobKind.MINERU_PARSE
+    assert request.pipeline.to_payload()["mineru"] == {
+        "tier": "standard",
+        "ocr_mode": "auto",
+        "page_range": "all",
+        "language": "ch",
+    }
+    assert request.pipeline.options == {}
+    assert attachments == {"page-0": ("image/png", b"png")}
+    assert results[0].raw_text == "ok"
+
+
 class TestPdfMutateLifecycle:
     @staticmethod
     def _manager_with_session(qapp):

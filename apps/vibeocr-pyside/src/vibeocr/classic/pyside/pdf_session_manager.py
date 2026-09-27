@@ -283,7 +283,11 @@ class PdfSessionManager(QObject):
         )
         request = SubmitRequest(
             request_id=request_id,
-            kind=JobKind.RECOGNITION,
+            kind=(
+                JobKind.MINERU_PARSE
+                if pipeline_selection.pipeline_id == "MinerU"
+                else JobKind.RECOGNITION
+            ),
             priority=JobPriority.BACKGROUND,
             pipeline=pipeline_selection,
             items=submit_items,

@@ -15,9 +15,11 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QMessageBox,
     QProgressBar,
@@ -34,6 +36,14 @@ from PySide6.QtWidgets import (
 
 from vibeocr.classic.app_paths import get_bundled_resources_dir
 from vibeocr.classic.machine_cache import is_cache_valid
+from vibeocr.classic.mineru_connection import (
+    MINERU_CONNECTION_EXTRA_KEY,
+    MINERU_CONNECTION_MODE_LOCAL,
+    MINERU_CONNECTION_MODE_REMOTE,
+    build_mineru_connection,
+    parse_mineru_connection,
+    set_active_mineru_connection_mode,
+)
 from vibeocr.classic.pyside import settings_runtime
 from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
@@ -41,6 +51,7 @@ from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
     ENGINE_AVAILABILITY_LABELS,
     ENGINE_AVAILABILITY_READY,
+    MINERU_REMOTE_API_CAPABILITY,
     RuntimeSelectionCatalog,
     RuntimeSelectionError,
     migrate_legacy_feature_ids,
@@ -70,6 +81,17 @@ logger = logging.getLogger(__name__)
 # 高级 OCR 框架组件 id 前缀（paddleocr-*/mineru-*）。win-x64-base 闭包不包含
 # 它们；快照误报 missing 时按"未随当前配置安装"展示，不显示"缺失"。
 _ADVANCED_OCR_PREFIXES = ("paddleocr-", "mineru-")
+
+# MinerU 每管道 TTL 提示：本地模式是进程保活；远程模式必须明确本地
+# TTL/释放不影响远端服务，避免把本地驻留控制误读为管理远程资源。
+_MINERU_LOCAL_TTL_TIP = (
+    "可继承默认 TTL、选择有限 TTL，或设置为持久驻留。"
+    "设置有限 TTL 后，MinerU 闲置到期会停止 API 进程；下次使用时会重新启动。"
+)
+_MINERU_REMOTE_TTL_TIP = (
+    "当前使用远程 MinerU API：这里的驻留 TTL 与释放只作用于本地，"
+    "不管理远程服务；远程资源由自部署服务自行控制。"
+)
 
 # QRunnable 运行期间的进程级强引用。窗口可先于慢 WMIC/PowerShell/RPC 完成销毁；
 # 保留 wrapper 到结果回调，避免 Qt 线程池仍持有 C++ runnable 时 Python 对象被回收。
@@ -150,6 +172,13 @@ class SettingsPageController:
         # 显示真实安装状态（而不是恒显"未安装"）。
         self._runtime_component_states: dict[str, str] = {}
         self._runtime_capabilities: set[str] = set()
+        # MinerU 连接状态：能力目录未达前 fail closed；existing 为 settings
+        # 回读的规范化视图（api_key 仅用于保留旧值，永不回显/入日志）。
+        self._runtime_capabilities_loaded = False
+        self._mineru_existing_connection: dict | None = None
+        self._mineru_key_clear_requested = False
+        self._mineru_remote_prepare_pending = False
+        self._mineru_remote_prepared = False
         self._source_combo_rows: dict[str, QComboBox] = {}
         self._source_combo_row_widgets: list[QWidget] = []
         self._runtime_action = ""
@@ -759,6 +788,7 @@ class SettingsPageController:
         self._init_pipeline_cache_status_label()
         self._refresh_lifecycle_controls()
         self._init_ocr_runtime_group()
+        self._init_mineru_connection_group()
 
     def _init_log_level_control(self) -> None:
         """在应用设置页加入持久化日志级别选择。"""
@@ -906,15 +936,11 @@ class SettingsPageController:
             self._select_ttl_combo(combo, ttls.get(pipeline.value, 0))
             inherit_ttl_tip = "可继承默认 TTL、选择有限 TTL，或设置为持久驻留。"
             combo.setToolTip(inherit_ttl_tip)
-            # MinerU 使用独立 API 进程；有限 TTL 到期会真实停止该进程。
+            # MinerU 使用独立 API 进程；远程连接时的提示由
+            # _apply_mineru_ttl_tip 按当前连接模式覆写。
             if pipeline == OCRPipeline.DOCUMENT_PARSING:
-                mineru_tip = (
-                    f"{inherit_ttl_tip}"
-                    "设置有限 TTL 后，MinerU 闲置到期会停止 API 进程；"
-                    "下次使用时会重新启动。"
-                )
-                label.setToolTip(mineru_tip)
-                combo.setToolTip(mineru_tip)
+                label.setToolTip(_MINERU_LOCAL_TTL_TIP)
+                combo.setToolTip(_MINERU_LOCAL_TTL_TIP)
             # 默认绑定 pipeline.value；lambda 显式捕获避免闭包晚绑定陷阱。
             combo.currentIndexChanged.connect(
                 lambda _idx, name=pipeline.value, c=combo: (
@@ -1106,9 +1132,14 @@ class SettingsPageController:
 
         adapter = self._connect_runtime_adapter()
         if adapter.is_started:
+            # 新 Supervisor 会话先失效旧模式，直到其 settings 回读成功。
+            set_active_mineru_connection_mode(None)
             # Runtime 总体 ready 不代表已保存的 OCR 引擎可运行。首个任务前
             # 主动读取实时 catalog，以便中断安装后恢复到可用 Base 引擎。
             adapter.fetch_health()
+            # 尽早回读 settings：既为全量 PUT 守卫准备快照，也让已保存的
+            # MinerU 连接模式在首次提交前生效。
+            adapter.fetch_settings()
             # 启动前的环境快照尚未连接 Supervisor，就绪后同步服务状态。
             self._refresh_env_maintenance_state()
         if ConfigManager.instance().get_preload_enabled():
@@ -1118,6 +1149,9 @@ class SettingsPageController:
 
     def _on_preload_now_clicked(self) -> None:
         """把选中的管道交给 Supervisor 顺序预加载。"""
+        if self._mineru_remote_prepare_pending or self._preload_selected:
+            self._update_preload_status("已有预加载正在进行，请等待完成")
+            return
         adapter = self._connect_runtime_adapter()
         if not adapter.is_started:
             self._update_preload_status("预加载失败：Supervisor 未连接")
@@ -1166,6 +1200,14 @@ class SettingsPageController:
     def _on_preload_completed(self, status: object) -> None:
         if self._closing:
             return
+        if self._mineru_remote_prepare_pending:
+            # 远程连接准备完成：刷新能力目录让 tier/可用性如实更新。
+            self._finish_mineru_remote_prepare()
+            self._mineru_remote_prepared = True
+            self._update_mineru_connection_status(
+                "远程 MinerU 服务准备完成；正在刷新能力状态…"
+            )
+            self._connect_runtime_adapter().fetch_health()
         selected = self._preload_selected
         self._preload_poll_timer.stop()
         self._preload_selected = ()
@@ -1200,6 +1242,11 @@ class SettingsPageController:
     def _on_preload_error(self, error: str) -> None:
         if self._closing:
             return
+        if self._mineru_remote_prepare_pending:
+            self._finish_mineru_remote_prepare()
+            self._update_mineru_connection_status(
+                f"远程服务准备失败：{error}；请检查地址与 Key 后重试"
+            )
         selected_count = len(self._preload_selected)
         loaded_count = self._preload_loaded_count
         self._preload_poll_timer.stop()
@@ -2232,16 +2279,44 @@ class SettingsPageController:
     def _on_settings_updated(self, snapshot: object) -> None:
         if self._closing or not isinstance(snapshot, SettingsSnapshot):
             return
+        action = self._runtime_action
         self._runtime_settings_snapshot = snapshot
         self._runtime_action = "settings"
+        if action == "mineru-connection":
+            # 成功回读：刷新连接 UI 与能力目录；连通性未验证，不得宣称
+            # 已就绪，远程模式需先准备才能提交解析任务。
+            self._apply_mineru_connection_snapshot(snapshot)
+            if (self._mineru_existing_connection or {}).get(
+                "mode"
+            ) == MINERU_CONNECTION_MODE_REMOTE:
+                self._update_mineru_connection_status(
+                    "远程连接配置已保存并回读成功；连通性与凭据未验证，"
+                    "首次使用前请点击「验证并准备远程服务」。"
+                )
+            else:
+                self._update_mineru_connection_status(
+                    "已切换为本地 MinerU 并回读成功。"
+                )
+            self._connect_runtime_adapter().fetch_health()
+            self._runtime_action = ""
+            self._update_release_status("MinerU 连接已保存，正在刷新驻留状态...")
+            self._connect_runtime_adapter().refresh_residency()
+            return
         self._update_release_status("TTL 已更新，正在刷新驻留状态...")
         self._connect_runtime_adapter().refresh_residency()
 
     def _on_settings_error(self, error: str) -> None:
         if self._closing:
             return
+        action = self._runtime_action
         self._runtime_action = ""
         self._pending_ttl_sync = False
+        if action == "mineru-connection":
+            # 保存失败：Backend 原配置保持生效，不碰本地面板状态。
+            self._update_mineru_connection_status(
+                f"保存失败：{error}；原配置保持生效，可修改后重试"
+            )
+            return
         self._update_release_status(f"TTL 更新失败：{error}")
 
     # ----------------------------------------------------------------
@@ -2385,6 +2460,7 @@ class SettingsPageController:
         capabilities = health.get("capabilities")
         capabilities = set(capabilities) if isinstance(capabilities, list) else set()
         self._runtime_capabilities = capabilities
+        self._runtime_capabilities_loaded = True
         try:
             catalog = parse_capability_catalogs(descriptors)
         except RuntimeSelectionError as exc:
@@ -2405,6 +2481,7 @@ class SettingsPageController:
         self._render_offline_features()
         self._render_download_sources(capabilities)
         self._refresh_selection_availability()
+        self._refresh_mineru_connection_controls()
 
     def _on_health_error(self, error: str) -> None:
         if self._closing:
@@ -2417,6 +2494,7 @@ class SettingsPageController:
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
         if status is not None:
             status.setText(f"下载源读取失败：{error}")
+        self._refresh_mineru_connection_controls()
 
     # 可选能力树状态列：actual_state → 展示文案。无状态证据时显示"未知"，
     # 不能恒显"未安装"——GPU profile 等能力的组件可能已在 Backend 中就绪。
@@ -2784,6 +2862,7 @@ class SettingsPageController:
         if self._closing or not isinstance(snapshot, SettingsSnapshot):
             return
         self._runtime_settings_snapshot = snapshot
+        self._apply_mineru_connection_snapshot(snapshot)
         selected = set(snapshot.download_source_ids)
         for _kind, combo in self._source_combo_rows.items():
             combo.setCurrentIndex(0)
@@ -2800,6 +2879,361 @@ class SettingsPageController:
                     or "Backend 内置默认源（未覆盖）"
                 )
             )
+
+    # ----------------------------------------------------------------
+    # MinerU 连接（本地 / 自部署远程 API）
+    # ----------------------------------------------------------------
+
+    def _init_mineru_connection_group(self) -> None:
+        """在「识别设置」页动态加入 MinerU 连接分组。
+
+        分组按 capability ``ocr.mineru-remote-api.v1`` fail closed：未声明
+        该能力的 Backend 整组禁用并说明原因，不构造远程配置请求。远程解析
+        由 Backend 执行，前端不发起任何远程 HTTP 连接。
+        """
+        if self._ui.findChild(QWidget, "groupMineruConnection") is not None:
+            return
+        page_layout = self._ui.findChild(QVBoxLayout, "pageRecognitionLayout")
+        if page_layout is None:
+            return
+        group = QGroupBox("MinerU 连接", self._ui)
+        group.setObjectName("groupMineruConnection")
+        group_layout = QVBoxLayout(group)
+        group_layout.setSpacing(8)
+
+        hint = QLabel(group)
+        hint.setObjectName("labelMineruConnectionHint")
+        hint.setWordWrap(True)
+        hint.setText(
+            "连接自部署 MinerU 4 服务的 HTTP API（/v1 完整解析）；"
+            "不适用于 MinerU 云端套餐或 OpenAI 兼容推理接口。"
+            "远程模式由 Backend 调用远端服务，无需本地 MinerU 组件、"
+            "模型或 GPU；本地模式继续使用本机安装的 MinerU。"
+            "PaddleOCR 与 MinerU 相互独立选装，互不影响。"
+        )
+        group_layout.addWidget(hint)
+
+        mode_row = QWidget(group)
+        mode_row.setObjectName("mineruConnectionModeRow")
+        mode_row_layout = QHBoxLayout(mode_row)
+        mode_row_layout.setContentsMargins(0, 0, 0, 0)
+        mode_row_layout.setSpacing(8)
+        mode_label = QLabel("连接方式：", mode_row)
+        mode_combo = QComboBox(mode_row)
+        mode_combo.setObjectName("comboMineruConnectionMode")
+        mode_combo.addItem("本地 MinerU（本机组件）", MINERU_CONNECTION_MODE_LOCAL)
+        mode_combo.addItem(
+            "远程 MinerU API（自部署服务）", MINERU_CONNECTION_MODE_REMOTE
+        )
+        mode_combo.currentIndexChanged.connect(self._on_mineru_connection_mode_changed)
+        mode_row_layout.addWidget(mode_label)
+        mode_row_layout.addWidget(mode_combo, 1)
+        group_layout.addWidget(mode_row)
+
+        url_row = QWidget(group)
+        url_row.setObjectName("mineruConnectionUrlRow")
+        url_row_layout = QHBoxLayout(url_row)
+        url_row_layout.setContentsMargins(0, 0, 0, 0)
+        url_row_layout.setSpacing(8)
+        url_label = QLabel("服务根地址：", url_row)
+        url_edit = QLineEdit(url_row)
+        url_edit.setObjectName("editMineruApiUrl")
+        url_edit.setPlaceholderText("https://mineru.example.com/（可含反向代理路径）")
+        url_edit.setClearButtonEnabled(True)
+        url_row_layout.addWidget(url_label)
+        url_row_layout.addWidget(url_edit, 1)
+        group_layout.addWidget(url_row)
+
+        key_row = QWidget(group)
+        key_row.setObjectName("mineruConnectionKeyRow")
+        key_row_layout = QHBoxLayout(key_row)
+        key_row_layout.setContentsMargins(0, 0, 0, 0)
+        key_row_layout.setSpacing(8)
+        key_label = QLabel("API Key：", key_row)
+        key_edit = QLineEdit(key_row)
+        key_edit.setObjectName("editMineruApiKey")
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        key_edit.setClearButtonEnabled(True)
+        clear_key_button = QPushButton("清除已保存 Key", key_row)
+        clear_key_button.setObjectName("btnClearMineruApiKey")
+        clear_key_button.setToolTip(
+            "显式删除 Backend 已保存的 API Key；仅修改地址时无需清除"
+        )
+        clear_key_button.clicked.connect(self._on_clear_mineru_api_key_clicked)
+        clear_key_button.setVisible(False)
+        key_edit.textEdited.connect(self._on_mineru_api_key_edited)
+        key_row_layout.addWidget(key_label)
+        key_row_layout.addWidget(key_edit, 1)
+        key_row_layout.addWidget(clear_key_button)
+        group_layout.addWidget(key_row)
+
+        buttons_row = QWidget(group)
+        buttons_row_layout = QHBoxLayout(buttons_row)
+        buttons_row_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_row_layout.setSpacing(8)
+        save_button = QPushButton("保存连接设置", buttons_row)
+        save_button.setObjectName("btnSaveMineruConnection")
+        save_button.clicked.connect(self._on_save_mineru_connection_clicked)
+        prepare_button = QPushButton("验证并准备远程服务", buttons_row)
+        prepare_button.setObjectName("btnPrepareMineruRemote")
+        prepare_button.setToolTip(
+            "通过 Backend 真实验证并准备远程连接（识别模式 mineru_document）；"
+            "完成后刷新能力状态。新保存的远程配置需先准备才能提交解析任务。"
+        )
+        prepare_button.clicked.connect(self._on_prepare_mineru_remote_clicked)
+        prepare_button.setVisible(False)
+        buttons_row_layout.addWidget(save_button)
+        buttons_row_layout.addWidget(prepare_button)
+        buttons_row_layout.addStretch(1)
+        group_layout.addWidget(buttons_row)
+
+        status = QLabel(group)
+        status.setObjectName("labelMineruConnectionStatus")
+        status.setWordWrap(True)
+        group_layout.addWidget(status)
+
+        # health 能力目录到达前 fail closed；_on_health_loaded 再启用。
+        group.setEnabled(False)
+        page_layout.insertWidget(page_layout.count() - 1, group)
+        self._on_mineru_connection_mode_changed()
+        self._sync_mineru_key_field()
+        self._refresh_mineru_connection_controls()
+
+    def _on_mineru_connection_mode_changed(self) -> None:
+        """远程模式才需要服务地址与 Key；本地模式禁用输入避免误填。"""
+        combo = self._ui.findChild(QComboBox, "comboMineruConnectionMode")
+        if combo is None:
+            return
+        remote = combo.currentData() == MINERU_CONNECTION_MODE_REMOTE
+        for row_name in ("mineruConnectionUrlRow", "mineruConnectionKeyRow"):
+            row = self._ui.findChild(QWidget, row_name)
+            if row is not None:
+                row.setEnabled(remote)
+        prepare_button = self._ui.findChild(QPushButton, "btnPrepareMineruRemote")
+        if prepare_button is not None:
+            prepare_button.setVisible(remote)
+        self._apply_mineru_ttl_tip(remote)
+
+    def _apply_mineru_ttl_tip(self, remote: bool) -> None:
+        """按连接模式覆写 MinerU TTL 行提示，避免误读为管理远程资源。"""
+        tip = _MINERU_REMOTE_TTL_TIP if remote else _MINERU_LOCAL_TTL_TIP
+        combo = self._ui.findChild(QComboBox, "comboTtl_MinerU")
+        if combo is not None:
+            combo.setToolTip(tip)
+        row = self._ui.findChild(QWidget, "ttlRow_MinerU")
+        if row is not None:
+            row.setToolTip(tip)
+            label = row.findChild(QLabel)
+            if label is not None:
+                label.setToolTip(tip)
+
+    def _on_mineru_api_key_edited(self, _text: str) -> None:
+        """用户输入新 Key 即撤销“清除”请求，避免误删已保存凭据。"""
+        if not self._mineru_key_clear_requested:
+            return
+        self._mineru_key_clear_requested = False
+        self._sync_mineru_key_field()
+
+    def _sync_mineru_key_field(self) -> None:
+        """同步 Key 输入框占位符与清除按钮；已有 Key 永不回显。"""
+        key_edit = self._ui.findChild(QLineEdit, "editMineruApiKey")
+        clear_button = self._ui.findChild(QPushButton, "btnClearMineruApiKey")
+        if key_edit is None:
+            return
+        has_key = bool(
+            self._mineru_existing_connection
+            and self._mineru_existing_connection.get("has_api_key")
+        )
+        if self._mineru_key_clear_requested:
+            placeholder = "已请求清除；保存后删除已保存的 API Key"
+        elif has_key:
+            placeholder = "已保存 API Key（留空保留，输入即替换）"
+        else:
+            placeholder = "可选；服务启用鉴权时填写"
+        key_edit.setPlaceholderText(placeholder)
+        if clear_button is not None:
+            clear_button.setVisible(has_key and not self._mineru_key_clear_requested)
+
+    def _on_clear_mineru_api_key_clicked(self) -> None:
+        """显式清除已保存的 Key；未保存前仅记录意图，不发送请求。"""
+        self._mineru_key_clear_requested = True
+        key_edit = self._ui.findChild(QLineEdit, "editMineruApiKey")
+        if key_edit is not None:
+            key_edit.clear()
+        self._sync_mineru_key_field()
+
+    def _update_mineru_connection_status(self, text: str) -> None:
+        status = self._ui.findChild(QLabel, "labelMineruConnectionStatus")
+        if status is not None:
+            status.setText(text)
+
+    def _mineru_connection_supported(self) -> bool:
+        return (
+            self._runtime_capabilities_loaded
+            and MINERU_REMOTE_API_CAPABILITY in self._runtime_capabilities
+        )
+
+    def _mineru_connection_status_text(self) -> str:
+        if not self._runtime_capabilities_loaded:
+            return "等待 Backend 能力目录…"
+        if not self._mineru_connection_supported():
+            return (
+                "当前 Backend 不支持远程 MinerU API"
+                "（缺少 capability ocr.mineru-remote-api.v1），"
+                "请升级到绑定新版 Backend 的产品版本后重试。"
+            )
+        view = self._mineru_existing_connection
+        if view is None:
+            return "能力已确认；尚未读取当前连接设置"
+        if view.get("mode") == MINERU_CONNECTION_MODE_REMOTE:
+            key_state = (
+                "已保存 API Key" if view.get("has_api_key") else "未设置 API Key"
+            )
+            verified = (
+                "远程服务已通过 Backend 准备"
+                if self._mineru_remote_prepared
+                else "连通性未验证"
+            )
+            return (
+                f"当前生效：远程 MinerU API（{view.get('api_url', '')}，"
+                f"{key_state}；{verified}）"
+            )
+        return "当前生效：本地 MinerU"
+
+    def _refresh_mineru_connection_controls(self) -> None:
+        """按 health capabilities 启停 MinerU 连接分组（fail closed）。"""
+        group = self._ui.findChild(QWidget, "groupMineruConnection")
+        if group is None:
+            return
+        group.setEnabled(self._mineru_connection_supported())
+        if not self._runtime_capabilities_loaded and self._selection_load_error:
+            self._update_mineru_connection_status(
+                f"Backend 能力目录读取失败：{self._selection_load_error}"
+            )
+        else:
+            self._update_mineru_connection_status(self._mineru_connection_status_text())
+        # catalog 重建会重置 TTL 行提示；按当前已知模式补一次远程提示。
+        view = self._mineru_existing_connection
+        if view is not None:
+            self._apply_mineru_ttl_tip(
+                view.get("mode") == MINERU_CONNECTION_MODE_REMOTE
+            )
+
+    def _apply_mineru_connection_snapshot(self, snapshot: SettingsSnapshot) -> None:
+        """把回读的 settings 快照投影到 MinerU 连接 UI（不回显 Key）。"""
+        view = parse_mineru_connection(snapshot.extra)
+        previous = self._mineru_existing_connection
+        config_changed = previous is None or any(
+            view.get(field) != previous.get(field)
+            for field in ("mode", "api_url", "api_key")
+        )
+        self._mineru_existing_connection = view
+        self._mineru_key_clear_requested = False
+        if config_changed:
+            # 配置已变化：上一份准备结果不再可信，重新要求准备。
+            self._mineru_remote_prepared = False
+        set_active_mineru_connection_mode(view["mode"])
+        combo = self._ui.findChild(QComboBox, "comboMineruConnectionMode")
+        if combo is not None:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(view["mode"])))
+            combo.blockSignals(False)
+        url_edit = self._ui.findChild(QLineEdit, "editMineruApiUrl")
+        if url_edit is not None:
+            # URL 不是凭据，回显便于核对；Key 永不回显。
+            url_edit.setText(view["api_url"])
+        key_edit = self._ui.findChild(QLineEdit, "editMineruApiKey")
+        if key_edit is not None:
+            key_edit.clear()
+        self._sync_mineru_key_field()
+        self._on_mineru_connection_mode_changed()
+        self._update_mineru_connection_status(self._mineru_connection_status_text())
+
+    def _on_save_mineru_connection_clicked(self) -> None:
+        """校验输入并通过既有 Settings PUT 保存 mineru_connection。
+
+        全量 PUT 前必须持有现有快照，保留 TTL、其他 extra 与下载源；
+        未读到快照时先触发读取，与下载源保存同一守卫语义。
+        """
+        if self._closing:
+            return
+        adapter = self._connect_runtime_adapter()
+        if not adapter.is_started:
+            self._update_mineru_connection_status("OCR 服务未连接，未保存")
+            return
+        if not self._mineru_connection_supported():
+            return
+        combo = self._ui.findChild(QComboBox, "comboMineruConnectionMode")
+        url_edit = self._ui.findChild(QLineEdit, "editMineruApiUrl")
+        key_edit = self._ui.findChild(QLineEdit, "editMineruApiKey")
+        if combo is None or url_edit is None or key_edit is None:
+            return
+        current = self._runtime_settings_snapshot
+        if current is None:
+            adapter.fetch_settings()
+            self._update_mineru_connection_status("正在读取现有设置，稍后再次点击保存…")
+            return
+        payload, error = build_mineru_connection(
+            str(combo.currentData() or MINERU_CONNECTION_MODE_LOCAL),
+            url_edit.text(),
+            key_edit.text(),
+            clear_key=self._mineru_key_clear_requested,
+            previous=self._mineru_existing_connection,
+        )
+        if error is not None or payload is None:
+            self._update_mineru_connection_status(f"未保存：{error}")
+            return
+        extra = dict(current.extra)
+        extra[MINERU_CONNECTION_EXTRA_KEY] = payload
+        snapshot = SettingsSnapshot(
+            default_ttl_seconds=current.default_ttl_seconds,
+            pipelines=current.pipelines,
+            extra=extra,
+            download_source_ids=current.download_source_ids,
+        )
+        self._runtime_action = "mineru-connection"
+        self._update_mineru_connection_status("正在保存 MinerU 连接设置…")
+        adapter.update_settings(snapshot)
+
+    def _on_prepare_mineru_remote_clicked(self) -> None:
+        """远程模式下的准备入口：复用 Supervisor preload 真实验证连接。
+
+        新保存的远程连接 tier 初始为 preparation_required；不经过
+        /v2/runtime/preload 真实准备无法提交解析任务。这里按
+        pipelines=['MinerU'] + recognition_modes=['mineru_document']
+        复用既有预加载链路，不新建任何前端直连 HTTP。
+        """
+        if self._closing or self._mineru_remote_prepare_pending:
+            return
+        if self._preload_selected:
+            self._update_mineru_connection_status(
+                "已有预加载正在进行，请等待完成后验证远程服务"
+            )
+            return
+        view = self._mineru_existing_connection or {}
+        if view.get("mode") != MINERU_CONNECTION_MODE_REMOTE:
+            self._update_mineru_connection_status(
+                "请先保存远程连接配置，再验证并准备远程服务"
+            )
+            return
+        adapter = self._connect_runtime_adapter()
+        if not adapter.is_started:
+            self._update_mineru_connection_status("OCR 服务未连接，无法准备")
+            return
+        self._mineru_remote_prepare_pending = True
+        prepare_button = self._ui.findChild(QPushButton, "btnPrepareMineruRemote")
+        if prepare_button is not None:
+            prepare_button.setEnabled(False)
+        self._update_mineru_connection_status(
+            "正在验证并准备远程 MinerU 服务（由 Backend 实际调用）…"
+        )
+        adapter.preload(("MinerU",), recognition_modes=("mineru_document",))
+
+    def _finish_mineru_remote_prepare(self) -> None:
+        self._mineru_remote_prepare_pending = False
+        prepare_button = self._ui.findChild(QPushButton, "btnPrepareMineruRemote")
+        if prepare_button is not None:
+            prepare_button.setEnabled(True)
 
     def _refresh_selection_availability(self) -> None:
         """Backend 未声明选择能力时禁用对应 UI，而不是构造请求。"""

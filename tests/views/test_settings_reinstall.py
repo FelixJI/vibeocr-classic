@@ -8,6 +8,10 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QLabel, QTreeWidget, QWidget
 
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
+from vibeocr.classic.mineru_connection import (
+    MINERU_CONNECTION_MODE_LOCAL,
+    set_active_mineru_connection_mode,
+)
 from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
 from vibeocr.runtime_contracts import parse_runtime_status
@@ -97,7 +101,8 @@ def controller(qtbot, tmp_path):
             subprocess_manager=_immediate_invalidation_manager(),
         )
         ctrl.connect_signals()
-    return ctrl, host
+    yield ctrl, host
+    set_active_mineru_connection_mode(MINERU_CONNECTION_MODE_LOCAL)
 
 
 def test_reinstall_python_button_exists(controller):
@@ -681,6 +686,9 @@ class _StartedRuntimeAdapter(QObject):
 
     def fetch_health(self) -> None:
         self.fetch_health_calls += 1
+
+    def fetch_settings(self) -> None:
+        return None
 
     def refresh_residency(self) -> None:
         return None

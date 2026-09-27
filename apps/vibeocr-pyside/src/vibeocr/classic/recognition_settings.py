@@ -11,7 +11,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from vibeocr.runtime_contracts import PipelineSelection
+from vibeocr.runtime_contracts import (
+    MineruConfig,
+    MineruOcrMode,
+    MineruTier,
+    PipelineSelection,
+)
 from vibeocr.runtime_contracts.dtos import OcrEngine
 from vibeocr.runtime_contracts.contracts.mineru import (
     MINERU_BACKEND_DEFAULT,
@@ -178,6 +183,67 @@ class OCROptions:
             for key, value in self.to_dict().items()
             if key in allowed and value is not None
         }
+        if pipeline is OCRPipeline.DOCUMENT_PARSING:
+            from vibeocr.classic.mineru_connection import (
+                active_mineru_connection_mode,
+                mineru_remote_active,
+            )
+
+            if active_mineru_connection_mode() is None:
+                raise ValueError("正在读取 MinerU 连接设置，请稍后重试")
+
+            if mineru_remote_active():
+                # MinerU 4 只接受独立 typed 配置；旧选项只有这些值可等价投影。
+                if (
+                    self.backend != "hybrid-engine"
+                    or self.effort not in {"medium", "high"}
+                    or not self.enable_formula
+                    or not self.enable_table
+                    or len(self.lang_list) > 1
+                ):
+                    raise ValueError(
+                        "远程 MinerU 不支持当前旧解析选项，请重新选择默认解析后端并启用公式和表格识别"
+                    )
+                start, end = self.start_page_id, self.end_page_id
+                if (
+                    type(start) is not int
+                    or start < 0
+                    or (end is not None and (type(end) is not int or end < start))
+                ):
+                    raise ValueError("MinerU 页码范围无效")
+                language = self.lang_list[0] if self.lang_list else "ch"
+                if language not in {
+                    "ch",
+                    "ch_server",
+                    "korean",
+                    "ta",
+                    "te",
+                    "ka",
+                    "th",
+                    "el",
+                    "arabic",
+                    "east_slavic",
+                    "cyrillic",
+                    "devanagari",
+                }:
+                    raise ValueError("远程 MinerU 不支持所选文档语言")
+                try:
+                    ocr_mode = MineruOcrMode(self.parse_method)
+                except ValueError as exc:
+                    raise ValueError("远程 MinerU 不支持所选解析方法") from exc
+                return PipelineSelection(
+                    pipeline.value,
+                    mineru=MineruConfig(
+                        tier=MineruTier.BASIC
+                        if self.effort == "medium"
+                        else MineruTier.STANDARD,
+                        ocr_mode=ocr_mode,
+                        page_range="all"
+                        if start == 0 and end is None
+                        else f"{start + 1}-{end + 1 if end is not None else 'r1'}",
+                        language=language,
+                    ),
+                )
         engine: OcrEngine | None = None
         if pipeline is OCRPipeline.OCR:
             from vibeocr.classic.runtime_selection import resolve_engine_id

@@ -356,6 +356,41 @@ def test_preload_error_prefers_backend_reason(qasync_loop) -> None:
     _drive(qasync_loop, lambda: runtime_adapter.shutdown_drained)
 
 
+def test_preload_forwards_recognition_modes_only_when_provided(qasync_loop) -> None:
+    """远程 MinerU 准备需要 recognition_modes；空时不传关键字保持旧桩兼容。"""
+
+    calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    class ModeAwareClient(FakeSupervisorClient):
+        async def preload(
+            self,
+            pipelines: tuple[str, ...],
+            *,
+            recognition_modes: tuple[str, ...] = (),
+        ) -> ResidencyStatus:
+            calls.append((tuple(pipelines), tuple(recognition_modes)))
+            return await super().preload(pipelines)
+
+    runtime_adapter = SupervisorClientAdapter(
+        client_factory=lambda: ModeAwareClient()
+    )
+    statuses: list[ResidencyStatus] = []
+    runtime_adapter.preload_completed.connect(statuses.append)
+
+    runtime_adapter.preload(
+        ("MinerU",), recognition_modes=("mineru_document",)
+    )
+    runtime_adapter.preload(("OCR",))
+
+    _drive(qasync_loop, lambda: len(statuses) == 2)
+    assert calls == [
+        (("MinerU",), ("mineru_document",)),
+        (("OCR",), ()),
+    ]
+    runtime_adapter.shutdown()
+    _drive(qasync_loop, lambda: runtime_adapter.shutdown_drained)
+
+
 def test_refresh_residency_timeout_emits_error(qasync_loop, monkeypatch) -> None:
     class HangingResidencyClient(FakeSupervisorClient):
         async def residency(self) -> ResidencyStatus:

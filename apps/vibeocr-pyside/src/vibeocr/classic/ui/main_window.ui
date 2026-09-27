@@ -204,12 +204,12 @@
          </item>
          <item>
           <property name="text">
-            <string>运行时与组件</string>
+            <string>运行环境与组件</string>
           </property>
          </item>
          <item>
           <property name="text">
-            <string>模型缓存</string>
+            <string>模型与性能</string>
           </property>
          </item>
         </widget>
@@ -595,7 +595,7 @@
            <item>
             <widget class="QGroupBox" name="groupEnvMaintenance">
              <property name="title">
-               <string>运行时与组件</string>
+               <string>运行环境与组件</string>
              </property>
              <layout class="QVBoxLayout" name="envMaintenanceLayout">
               <property name="spacing">
@@ -661,7 +661,7 @@
               <item>
                <widget class="QTreeWidget" name="treeDepsStatus">
                 <property name="toolTip">
-                  <string>当前运行时与组件状态。展开 Backend 可查看随包组件；异常项可用下方维护操作修复。</string>
+                  <string>当前运行环境与组件状态。展开 Backend 可查看随包组件；异常项可用下方维护操作修复。</string>
                 </property>
                 <property name="editTriggers">
                  <set>QAbstractItemView::NoEditTriggers</set>
@@ -712,7 +712,7 @@
                    <string>校验并修复绑定版本的完整 Runtime profile，不执行逐包依赖变更。</string>
                   </property>
                   <property name="text">
-                   <string>重建完整 Runtime</string>
+                   <string>修复运行环境</string>
                   </property>
                  </widget>
                 </item>
@@ -722,7 +722,7 @@
                    <string>选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。</string>
                   </property>
                   <property name="text">
-                   <string>选择并确保 Runtime profile</string>
+                   <string>安装或调整运行环境</string>
                   </property>
                  </widget>
                 </item>

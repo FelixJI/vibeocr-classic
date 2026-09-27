@@ -653,7 +653,7 @@ class SettingsPageController:
         self._pdf_options.settings_changed.connect(self._on_pdf_settings_changed)
 
     def _init_backend_options_in_group(self) -> None:
-        """把推理后端组件放入「应用设置」页的「推理后端与依赖」分组内。
+        """把计算设备组件放入「运行环境与组件」页。
 
         推理后端（GPU/CPU 选择）与 OCR 依赖安装本质上是同一件事——后端决定
         要装哪些依赖，依赖表格/重装按钮负责查看与维护这些依赖。故合并到同一
@@ -862,14 +862,15 @@ class SettingsPageController:
                 widget.deleteLater()
 
     def _init_pipeline_ttl_combos(self) -> None:
-        """在「模型管理 → 运行时缓存」分组内追加每管道 TTL ComboBox。
+        """在「模型与性能」页的运行时缓存分组内追加每管道 TTL ComboBox。
 
-        原型由 spinPipelineTtl + chkEnablePipelineTtl（单 TTL 适用于所有管道）改为
-        6 个独立 ComboBox，分别对应 OCRPipeline 枚举的每一项。每个 ComboBox 携带
-        相同的 7 档预设（_TTL_PRESETS），选中项经 ConfigManager.set_pipeline_ttl
-        持久化，并通过 _sync_configured_pipeline_ttls 批量下发到 worker。
+        仅为当前 catalog 中已就绪且声明 TTL 管理的识别模式创建行；每个
+        ComboBox 携带 _TTL_PRESETS 预设（不支持固定驻留的管道会去掉
+        「持久驻留」档）。选中项经 ConfigManager.set_pipeline_ttl 持久化，
+        并通过 _sync_configured_pipeline_ttls 批量下发到 worker。
 
-        幂等：重复调用时若已存在任一模式化 TTL 行则直接返回。
+        重建由 _refresh_lifecycle_controls 负责：先 _clear_pipeline_ttl_combos
+        清空旧行再调用本方法，因此本方法自身不检测已有行。
         """
         layout = self._ui.findChild(QVBoxLayout, "runtimeCacheLayout")
         if layout is None:
@@ -1470,8 +1471,8 @@ class SettingsPageController:
         current_backend = self._runtime_backend_or_none()
         if current_backend is None:
             self._show_settings_toast(
-                "尚未确定推理后端（可能仅安装了基础 Runtime），"
-                "请先通过「选择并确保 Runtime profile」安装完整 profile"
+                "尚未确定计算设备（可能仅安装了基础 Runtime），"
+                "请先通过「安装或调整运行环境」准备所需组件"
             )
             return
         self._open_install_dialog(missing_only=True, force_backend=current_backend)
@@ -2483,10 +2484,10 @@ class SettingsPageController:
             return candidates[0], current_accelerator is None
         dialog = QMessageBox()
         dialog.setIcon(QMessageBox.Icon.Question)
-        dialog.setWindowTitle("选择推理后端")
+        dialog.setWindowTitle("选择计算设备")
         dialog.setText(
             "当前 Runtime 尚未选择加速框架（基础 Runtime）。\n"
-            "所选可选能力提供 CPU 与 GPU 组件；请选择要切换的推理后端："
+            "所选可选能力提供 CPU 与 GPU 组件；请选择要应用的计算设备："
         )
         accelerator_by_button: dict[QMessageBox.QAbstractButton, str] = {}
         for accelerator in candidates:

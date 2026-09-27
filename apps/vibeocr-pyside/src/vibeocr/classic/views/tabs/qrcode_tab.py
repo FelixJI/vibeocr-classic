@@ -913,7 +913,7 @@ class QrcodeTab(QWidget):
         if self._qr_capability_blocked():
             self._on_preview_error(
                 generation,
-                RuntimeError("当前 Runtime 未提供二维码能力（qrcode.v2），请先在“设置 → 运行时与组件”中修复 Runtime"),
+                RuntimeError("当前 Runtime 未提供二维码能力（qrcode.v2），请先在“设置 → 运行环境与组件”中修复 Runtime"),
             )
             return
 

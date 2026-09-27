@@ -8,12 +8,7 @@
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
 
-from PySide6.QtCore import (
-    QCoreApplication,
-    QMetaObject,
-    QSize,
-    Qt,
-)
+from PySide6.QtCore import QCoreApplication, QMetaObject, QSize, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -677,13 +672,13 @@ class Ui_MainWindowWidget(object):
         ___qlistwidgetitem2 = self.settingsNavList.item(2)
         ___qlistwidgetitem2.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6", None
+                "MainWindowWidget", "\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6", None
             )
         )
         ___qlistwidgetitem3 = self.settingsNavList.item(3)
         ___qlistwidgetitem3.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u6a21\u578b\u7f13\u5b58", None
+                "MainWindowWidget", "\u6a21\u578b\u4e0e\u6027\u80fd", None
             )
         )
         self.settingsNavList.setSortingEnabled(__sortingEnabled)
@@ -855,7 +850,7 @@ class Ui_MainWindowWidget(object):
         self.labelDownloadSourceStatus.setText("")
         self.groupEnvMaintenance.setTitle(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6", None
+                "MainWindowWidget", "\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6", None
             )
         )
         ___qtreewidgetitem2 = self.treeRuntimeStatus.headerItem()
@@ -886,7 +881,7 @@ class Ui_MainWindowWidget(object):
         self.treeDepsStatus.setToolTip(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u5f53\u524d\u8fd0\u884c\u65f6\u4e0e\u7ec4\u4ef6\u72b6\u6001\u3002\u5c55\u5f00 Backend \u53ef\u67e5\u770b\u968f\u5305\u7ec4\u4ef6\uff1b\u5f02\u5e38\u9879\u53ef\u7528\u4e0b\u65b9\u7ef4\u62a4\u64cd\u4f5c\u4fee\u590d\u3002",
+                "\u5f53\u524d\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6\u72b6\u6001\u3002\u5c55\u5f00 Backend \u53ef\u67e5\u770b\u968f\u5305\u7ec4\u4ef6\uff1b\u5f02\u5e38\u9879\u53ef\u7528\u4e0b\u65b9\u7ef4\u62a4\u64cd\u4f5c\u4fee\u590d\u3002",
                 None,
             )
         )
@@ -902,7 +897,7 @@ class Ui_MainWindowWidget(object):
         # endif // QT_CONFIG(tooltip)
         self.btnReinstallPython.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u91cd\u5efa\u5b8c\u6574 Runtime", None
+                "MainWindowWidget", "\u4fee\u590d\u8fd0\u884c\u73af\u5883", None
             )
         )
         # if QT_CONFIG(tooltip)
@@ -917,7 +912,7 @@ class Ui_MainWindowWidget(object):
         self.btnReinstallDeps.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u9009\u62e9\u5e76\u786e\u4fdd Runtime profile",
+                "\u5b89\u88c5\u6216\u8c03\u6574\u8fd0\u884c\u73af\u5883",
                 None,
             )
         )

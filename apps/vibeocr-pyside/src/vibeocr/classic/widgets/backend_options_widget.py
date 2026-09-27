@@ -1,4 +1,4 @@
-"""设置页「推理后端」组件。
+"""设置页「计算设备与加速方式」组件。
 
 物理 GPU 只决定选项是否可用；实际运行后端以 Runtime Installer ``inspect``
 返回的 accelerator + 组件 desired_state 为权威，并区分三态：GPU profile /
@@ -132,7 +132,7 @@ def _release_gpu_detect_worker(worker: _GpuDetectWorker) -> None:
 
 
 class BackendOptionsWidget(QWidget):
-    """推理后端设置组件"""
+    """计算设备设置组件"""
 
     backend_change_requested = Signal(str)
     gpu_capability_resolved = Signal(bool)
@@ -166,11 +166,13 @@ class BackendOptionsWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        group = QGroupBox("推理后端")
+        group = QGroupBox("计算设备与加速方式")
         group_layout = QVBoxLayout(group)
 
-        self._current_label = QLabel("当前后端：检测中...")
+        self._current_label = QLabel("当前生效：检测中...")
         group_layout.addWidget(self._current_label)
+        self._pending_label = QLabel("待应用：检测中...")
+        group_layout.addWidget(self._pending_label)
 
         # 硬件信息展示（GPU 型号/显存/CUDA 或未检测到）
         # 探测完成前显示"检测中..."，由 _apply_detected_state 回填。
@@ -190,7 +192,7 @@ class BackendOptionsWidget(QWidget):
         self._gpu_radio.setToolTip(
             "通常需要下载数 GB 依赖，识别更快，需兼容的 NVIDIA GPU"
         )
-        self._cpu_radio = QRadioButton("CPU 模式")
+        self._cpu_radio = QRadioButton("CPU 计算")
         self._cpu_radio.setToolTip("完整文档解析 profile 通常超过 1 GB，兼容性较广")
         # 探测完成前禁用，避免基于未知硬件状态误操作后端切换。
         self._base_radio.setEnabled(False)
@@ -218,7 +220,7 @@ class BackendOptionsWidget(QWidget):
         self._status_label.setStyleSheet(f"color: {theme.Colors.text_muted};")
         group_layout.addWidget(self._status_label)
 
-        self._apply_button = QPushButton("切换并安装…")
+        self._apply_button = QPushButton("应用计算设备…")
         self._apply_button.clicked.connect(self._apply)
         group_layout.addWidget(self._apply_button)
 
@@ -227,12 +229,15 @@ class BackendOptionsWidget(QWidget):
 
         # 单选变化时更新应用按钮状态
         self._gpu_radio.toggled.connect(self._update_apply_state)
+        self._cpu_radio.toggled.connect(self._update_apply_state)
+        self._base_radio.toggled.connect(self._update_apply_state)
 
     def _show_detecting_state(self) -> None:
         self._current = None
         self._runtime_installed = False
         self._runtime_profile = ""
-        self._current_label.setText("当前后端：检测中...")
+        self._current_label.setText("当前生效：检测中...")
+        self._pending_label.setText("待应用：检测中...")
         self._hw_label.setText("硬件检测中...")
         self._status_label.setText("")
         self._base_radio.setEnabled(False)
@@ -358,7 +363,8 @@ class BackendOptionsWidget(QWidget):
         if not self._has_gpu:
             self._gpu_radio.setToolTip("未检测到 NVIDIA GPU")
             self._hw_label.setText(
-                "未检测到符合 CUDA 条件的 NVIDIA GPU（文档解析 MinerU 与 VL 模型不可用）"
+                "未检测到符合 CUDA 条件的 NVIDIA GPU；GPU 计算设备不可选，"
+                "文档解析等能力以「设置 → 识别设置」的目录状态为准"
             )
         else:
             gpu_name = info.get("name") or "NVIDIA GPU"
@@ -421,13 +427,13 @@ class BackendOptionsWidget(QWidget):
         """按三态（未安装/基础 Runtime/已选择框架）渲染当前后端与提示。"""
 
         if not self._runtime_installed:
-            self._current_label.setText("当前后端：尚未安装")
+            self._current_label.setText("当前生效：尚未安装")
             self._status_label.setText(
-                "请选择推理后端；确认后才会联网下载并安装完整 Runtime profile。"
+                "请选择计算设备；确认后才会联网下载并安装完整运行环境。"
             )
             return
         if self._current is None:
-            self._current_label.setText("当前后端：基础 Runtime（未选择加速框架）")
+            self._current_label.setText("当前生效：基础 Runtime（未选择计算设备）")
             self._status_label.setText(
                 "基础 Runtime 已就绪（快速 OCR 可用）；安装完整 profile 后可启用"
                 "文档解析、表格、公式等高级能力。"
@@ -439,7 +445,7 @@ class BackendOptionsWidget(QWidget):
             if self._current == "gpu" and cuda
             else self._current.upper()
         )
-        self._current_label.setText(f"当前后端：{name}")
+        self._current_label.setText(f"当前生效：{name}")
         self._status_label.setText("")
 
     def current_backend(self) -> str | None:
@@ -459,7 +465,20 @@ class BackendOptionsWidget(QWidget):
         return target != self._current
 
     def _update_apply_state(self) -> None:
-        self._apply_button.setEnabled(self._can_apply())
+        can_apply = self._can_apply()
+        self._apply_button.setEnabled(can_apply)
+        if self._gpu_radio.isChecked():
+            target = "GPU 加速"
+        elif self._cpu_radio.isChecked():
+            target = "CPU"
+        elif self._base_radio.isChecked():
+            target = "基础 Runtime（保持现状）"
+        else:
+            target = "未选择"
+        if self._change_in_progress:
+            self._pending_label.setText(f"待应用：{target}（等待确认）")
+        else:
+            self._pending_label.setText(f"待应用：{target}" if can_apply else "待应用：无变更")
 
     def _apply(self) -> None:
         if not self._can_apply():

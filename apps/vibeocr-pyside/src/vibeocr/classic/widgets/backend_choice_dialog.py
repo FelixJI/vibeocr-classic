@@ -101,7 +101,7 @@ class BackendChoiceDialog(QDialog):
         self._detect_and_set_default()
 
     def _setup_ui(self) -> None:
-        self.setWindowTitle("选择 OCR 推理后端")
+        self.setWindowTitle("选择计算设备")
         self.setMinimumSize(560, 520)
         # 非模态：设置页重装时不阻塞主窗口（首启路径由 main_window.exec() 调起，
         # exec() 自身是模态事件循环，与 setModal 无关，首启仍阻塞，符合预期）。
@@ -118,12 +118,12 @@ class BackendChoiceDialog(QDialog):
         layout.addWidget(self._hw_label)
 
         # 后端选择区
-        choice_group = QGroupBox("选择推理后端")
+        choice_group = QGroupBox("选择计算设备")
         choice_layout = QVBoxLayout(choice_group)
 
         self._radio_group = QButtonGroup(self)
         self._gpu_radio = QRadioButton("GPU 加速（推荐）")
-        self._cpu_radio = QRadioButton("CPU 模式")
+        self._cpu_radio = QRadioButton("CPU 计算")
         self._radio_group.addButton(self._gpu_radio)
         self._radio_group.addButton(self._cpu_radio)
         choice_layout.addWidget(self._gpu_radio)
@@ -209,7 +209,7 @@ class BackendChoiceDialog(QDialog):
         else:
             self._hw_label.setText(
                 "⚠️ 未检测到符合 CUDA 条件的 NVIDIA GPU。\n"
-                "将使用 CPU 模式；各识别模式是否可用以 Backend 能力目录为准。"
+                "将使用 CPU 计算；各识别模式是否可用以 Backend 能力目录为准。"
             )
 
         if self._has_gpu:

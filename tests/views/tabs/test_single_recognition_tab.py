@@ -6,6 +6,11 @@ import pytest
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget
 
+from vibeocr.classic.runtime_selection import (
+    RecognitionModeEntry,
+    RecognitionModeLifecycle,
+    RuntimeSelectionCatalog,
+)
 from vibeocr.classic.views.tabs.base_tab import BaseOcrTab
 from vibeocr.classic.views.tabs.single_recognition_tab import SingleRecognitionTab
 
@@ -258,6 +263,86 @@ class TestPasteAndStartFeedback:
         assert warnings, "文件不存在应弹警告"
         assert "无法识别" in warnings[0][0]
         assert "deleted.png" in warnings[0][1]
+
+
+@pytest.fixture
+def doc_gate_pdf(tmp_path):
+    """存在且被判定为文档类型的临时 PDF。"""
+    pdf = tmp_path / "sample.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    return pdf
+
+
+def _mineru_catalog(availability: str = "ready"):
+    return RuntimeSelectionCatalog(
+        modes=(
+            RecognitionModeEntry(
+                "rapid_text",
+                "text",
+                "OCR",
+                "rapidocr",
+                "base_runtime",
+                "ready",
+                RecognitionModeLifecycle("unmanaged", False, False, False, False),
+            ),
+            RecognitionModeEntry(
+                "mineru_document",
+                "document",
+                "MinerU",
+                None,
+                "advanced_component",
+                availability,
+                RecognitionModeLifecycle("process_keep_alive", True, True, False, True),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
+
+
+class TestProcessFileDocumentGate:
+    """文档文件门控以 mode catalog availability 为权威，而非旧 GPU 布尔。"""
+
+    @pytest.fixture(autouse=True)
+    def _capture_dialogs(self, monkeypatch):
+        self.dialogs: list[tuple] = []
+
+        class FakeQMessageBox:
+            @staticmethod
+            def warning(parent, title, text):
+                self.dialogs.append(("warning", title, text))
+
+            @staticmethod
+            def information(parent, title, text):
+                self.dialogs.append(("information", title, text))
+
+        monkeypatch.setattr("PySide6.QtWidgets.QMessageBox", FakeQMessageBox)
+
+    def test_ready_mode_allows_cpu_document_file(self, qapp, doc_gate_pdf):
+        tab = SingleRecognitionTab()
+        tab._preprocess_options.set_recognition_catalog(_mineru_catalog("ready"))
+        tab._preprocess_options.apply_gpu_gating(False)
+        dispatched: list = []
+        tab._run_ocr_with_file = dispatched.append
+
+        tab.process_file(str(doc_gate_pdf))
+
+        assert dispatched == [doc_gate_pdf]
+        assert self.dialogs == []
+
+    def test_unavailable_mode_still_blocks_submission(self, qapp, doc_gate_pdf):
+        tab = SingleRecognitionTab()
+        tab._preprocess_options.set_recognition_catalog(
+            _mineru_catalog("unavailable")
+        )
+        dispatched: list = []
+        tab._run_ocr_with_file = dispatched.append
+
+        tab.process_file(str(doc_gate_pdf))
+
+        assert dispatched == []
+        assert len(self.dialogs) == 1
+        kind, _title, _text = self.dialogs[0]
+        assert kind == "warning"
 
 
 def _make_table_result():

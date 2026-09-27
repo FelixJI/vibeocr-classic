@@ -25,6 +25,7 @@ from vibeocr.classic.pyside.batch_budget import (
     image_pixel_count,
     partition_batches,
 )
+from vibeocr.classic.runtime_selection import document_parsing_availability_notice
 from vibeocr.classic.ui import theme
 from vibeocr.classic.utils.export_jobs import (
     BatchExportReport,
@@ -486,43 +487,38 @@ class BatchRecognitionTab(BaseOcrTab):
         has_document = any(is_document_file(f["path"]) for f in files)
         self._has_document_files = has_document
         if has_document:
-            # 这里只消费 MainWindow 后台探测后写入的三态缓存，绝不能在文件
-            # 变化这一 GUI 槽内 shell-out。None 表示探测尚未完成。
-            gpu_capability = self._preprocess_options.gpu_capability
-            if gpu_capability is False:
-                from PySide6.QtWidgets import QMessageBox
-
-                QMessageBox.warning(
-                    self,
-                    "文档解析不可用",
-                    "当前为 CPU 后端，文档解析(MinerU)需要 GPU 支持。\n"
-                    "请移除文档文件，或在设置页切换到 GPU 后端后重启。",
-                )
-            reason = (
-                "正在检测 GPU 能力，文档解析暂未就绪"
-                if gpu_capability is None
-                else "队列含文档文件，仅支持文档解析"
-            )
+            # 这里只消费 MainWindow 后台探测与 mode catalog 的共享判定
+            # （PreprocessOptionsWidget.document_parsing_availability），
+            # 绝不能在文件变化这一 GUI 槽内 shell-out。目录存在时 CPU
+            # 计算设备不拦截已就绪的 MinerU；未就绪/不可用保持拦截。
+            availability = self._preprocess_options.document_parsing_availability()
+            notice = document_parsing_availability_notice(availability)
+            if notice is None:
+                reason = "队列含文档文件，仅支持文档解析"
+            else:
+                kind, title, message = notice
+                reason = title
+                if kind == "information":
+                    self._progress_label.setText(title)
+                else:
+                    QMessageBox.warning(self, title, message)
             self._preprocess_options.lock_to_document_parsing(reason)
-            if gpu_capability is None:
-                self._progress_label.setText("正在检测 GPU 能力，文档解析暂未就绪")
         else:
             self._preprocess_options.unlock_pipeline()
 
     def refresh_gpu_capability(self) -> None:
-        """Refresh document-queue status after the shared async probe resolves."""
+        """Refresh document-queue status after the shared probe/catalog resolves."""
         if not self._has_document_files or self._shutting_down:
             return
-        capability = self._preprocess_options.gpu_capability
-        if capability is None:
-            reason = "正在检测 GPU 能力，文档解析暂未就绪"
-            status = reason
-        elif capability:
+        notice = document_parsing_availability_notice(
+            self._preprocess_options.document_parsing_availability()
+        )
+        if notice is None:
             reason = "队列含文档文件，仅支持文档解析"
             status = f"0/{self._file_list_widget.get_pending_count()}"
         else:
-            reason = "CPU 后端不支持文档解析"
-            status = reason
+            _kind, title, _message = notice
+            reason = status = title
         self._preprocess_options.lock_to_document_parsing(reason)
         if self._worker is None and self._export_job is None:
             self._progress_label.setText(status)
@@ -546,18 +542,17 @@ class BatchRecognitionTab(BaseOcrTab):
             return
 
         if self._has_document_files:
-            gpu_capability = self._preprocess_options.gpu_capability
-            if gpu_capability is not True:
-                if gpu_capability is None:
-                    title = "文档解析检测中"
-                    message = "正在检测 GPU 能力，请稍候再开始文档解析。"
+            # 文档文件可用性以 mode catalog 权威判定（共享入口）；未就绪/
+            # 检测中均不放行，仅旧 Backend 保持 GPU 三态兼容。
+            notice = document_parsing_availability_notice(
+                self._preprocess_options.document_parsing_availability()
+            )
+            if notice is not None:
+                kind, title, message = notice
+                if kind == "information":
+                    QMessageBox.information(self, title, message)
                 else:
-                    title = "文档解析不可用"
-                    message = (
-                        "当前为 CPU 后端，文档解析(MinerU)需要 GPU 支持。\n"
-                        "请移除文档文件，或在设置页切换到 GPU 后端后重启。"
-                    )
-                QMessageBox.information(self, title, message)
+                    QMessageBox.warning(self, title, message)
                 return
             # 不预探测/预下载 MinerU 模型：mineru-api 不依赖模型即可启动，模型在
             # 首次解析时由 mineru 自己按需下载。我们只保证识别超时够长

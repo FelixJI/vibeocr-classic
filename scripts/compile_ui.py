@@ -34,26 +34,21 @@ def _resolve_uic_command() -> list[str]:
 
 
 def compile_ui_file(ui_path: Path, output_path: Path) -> bool:
-    """编译单个 UI 文件"""
+    """编译 UI，并在生成流程内应用仓库既有的导入清理与格式规范。"""
     print(f"编译: {ui_path.name} -> {output_path.name}")
-
-    result = subprocess.run(
-        [
-            *_resolve_uic_command(),
-            "-g",
-            "python",
-            str(ui_path),
-            "-o",
-            str(output_path),
-        ],
-        capture_output=True,
-        text=True,
+    ruff = shutil.which("ruff")
+    if not ruff:
+        raise FileNotFoundError("未找到 Ruff，请通过项目开发环境运行 UI 生成脚本。")
+    commands = (
+        [*_resolve_uic_command(), "-g", "python", str(ui_path), "-o", str(output_path)],
+        [ruff, "check", "--select", "F401", "--fix", str(output_path)],
+        [ruff, "format", str(output_path)],
     )
-
-    if result.returncode != 0:
-        print(f"错误: {result.stderr}")
-        return False
-
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"错误: {result.stderr or result.stdout}")
+            return False
     print(f"成功: {output_path}")
     return True
 

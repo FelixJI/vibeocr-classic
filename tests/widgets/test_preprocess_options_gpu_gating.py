@@ -3,12 +3,20 @@
 
 覆盖需求：无 CUDA GPU（或用户选了 CPU 后端）时，禁用文档解析(MinerU)与
 PaddleOCR-VL 两个重管道；门控与上下文锁定正交、不被 unlock_pipeline 冲掉。
+协商到识别模式目录后，mode availability 是唯一权威，旧 GPU 布尔不再覆盖。
 """
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
 from vibeocr.runtime_contracts.contracts.pipelines import OCRPipeline
+from vibeocr.classic.runtime_selection import (
+    ENGINE_AVAILABILITY_READY,
+    ENGINE_AVAILABILITY_UNAVAILABLE,
+    RecognitionModeEntry,
+    RecognitionModeLifecycle,
+    RuntimeSelectionCatalog,
+)
 from vibeocr.classic.widgets.preprocess_options_widget import PreprocessOptionsWidget
 
 
@@ -26,15 +34,61 @@ def widget(app, qtbot):
 
 
 def _enabled_map(widget):
-    """返回 {pipeline: enabled} 映射。"""
+    """返回 {pipeline: enabled} 映射（目录态 itemData 是 mode id，需经 widget 解析）。"""
     result = {}
     for i in range(widget._pipeline_combo.count()):
-        p = OCRPipeline(widget._pipeline_combo.itemData(i))
-        result[p] = widget._pipeline_combo.model().item(i).isEnabled()
+        p = widget._pipeline_for_item_data(widget._pipeline_combo.itemData(i))
+        if p is not None:
+            result[p] = widget._pipeline_combo.model().item(i).isEnabled()
     return result
 
 
 GPU_PIPELINES = {OCRPipeline.DOCUMENT_PARSING, OCRPipeline.PADDLEOCR_VL}
+
+
+def _mode(mode_id, family, pipeline_id, provisioning, availability, lifecycle):
+    return RecognitionModeEntry(
+        mode_id,
+        family,
+        pipeline_id,
+        None,
+        provisioning,
+        availability,
+        RecognitionModeLifecycle(*lifecycle),
+    )
+
+
+def _mode_catalog(mineru_availability="ready", vl_availability="ready"):
+    """构造仅含文档类模式的目录；其余模式与门控无关。"""
+    return RuntimeSelectionCatalog(
+        modes=(
+            _mode(
+                "rapid_text",
+                "text",
+                "OCR",
+                "base_runtime",
+                "ready",
+                ("unmanaged", False, False, False, False),
+            ),
+            _mode(
+                "mineru_document",
+                "document",
+                "MinerU",
+                "advanced_component",
+                mineru_availability,
+                ("process_keep_alive", True, True, False, True),
+            ),
+            _mode(
+                "paddle_document_vl",
+                "document",
+                "PaddleOCR-VL",
+                "advanced_component",
+                vl_availability,
+                ("model_residency", True, True, True, True),
+            ),
+        ),
+        has_recognition_mode_catalog=True,
+    )
 
 
 class TestGpuGating:
@@ -115,3 +169,36 @@ class TestGpuGating:
         w.apply_gpu_gating(True)
         assert w.gpu_capability is True
         assert all(_enabled_map(w).values())
+
+
+class TestModeCatalogAuthority:
+    """目录存在时不被旧 gpu flag 覆盖；无目录保持旧三态兼容。"""
+
+    def test_ready_mode_overrides_legacy_gpu_disable(self, widget):
+        """catalog 已就绪的文档/VL 模式在 CPU 计算设备下仍可选。"""
+        widget.set_recognition_catalog(_mode_catalog())
+        widget.apply_gpu_gating(False)
+        em = _enabled_map(widget)
+        assert em[OCRPipeline.DOCUMENT_PARSING] is True
+        assert em[OCRPipeline.PADDLEOCR_VL] is True
+        # 探测结果仍被如实记录，供其他展示层使用。
+        assert widget.gpu_capability is False
+
+    def test_catalog_arrival_re_enables_previously_gated_items(self, widget):
+        """GPU 探测先回 False、catalog 后到时，必须重新评估门控。"""
+        widget.apply_gpu_gating(False)
+        assert _enabled_map(widget)[OCRPipeline.DOCUMENT_PARSING] is False
+        widget.set_recognition_catalog(_mode_catalog())
+        assert _enabled_map(widget)[OCRPipeline.DOCUMENT_PARSING] is True
+
+    def test_gate_reports_ready_for_cpu_mineru(self, widget):
+        widget.set_recognition_catalog(_mode_catalog())
+        widget.apply_gpu_gating(False)
+        assert widget.document_parsing_availability() == ENGINE_AVAILABILITY_READY
+
+    def test_gate_fails_closed_on_unavailable_mode(self, widget):
+        """未就绪/不可用不得被无条件放行。"""
+        widget.set_recognition_catalog(_mode_catalog(mineru_availability="unavailable"))
+        widget.apply_gpu_gating(False)
+        assert _enabled_map(widget)[OCRPipeline.DOCUMENT_PARSING] is False
+        assert widget.document_parsing_availability() == ENGINE_AVAILABILITY_UNAVAILABLE

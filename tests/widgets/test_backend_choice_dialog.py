@@ -39,6 +39,7 @@ def test_gpu_available_defaults_to_gpu(_cleanup, qtbot, tmp_path):
     """有 GPU 时默认选 GPU，两项启用"""
     dlg = _make_dialog(tmp_path, qtbot, has_gpu=True)
     qtbot.addWidget(dlg)
+    assert dlg.windowTitle() == "选择计算设备"
     assert dlg._gpu_radio.isChecked()
     assert dlg._gpu_radio.isEnabled()
     assert dlg._cpu_radio.isEnabled()

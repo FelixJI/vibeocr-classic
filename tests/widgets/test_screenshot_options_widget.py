@@ -163,3 +163,51 @@ class TestGpuGating:
             assert widget._groups[pipeline].box.isEnabled() is True, (
                 f"{pipeline} 不应受 GPU 门控影响"
             )
+
+
+class TestModeCatalogAuthority:
+    """协商到识别模式目录后，mode availability 是权威，旧 GPU 布尔不再覆盖。"""
+
+    @staticmethod
+    def _vl_catalog(availability: str = "ready"):
+        from vibeocr.classic.runtime_selection import (
+            RecognitionModeEntry,
+            RecognitionModeLifecycle,
+            RuntimeSelectionCatalog,
+        )
+
+        return RuntimeSelectionCatalog(
+            modes=(
+                RecognitionModeEntry(
+                    "paddle_document_vl",
+                    "document",
+                    "PaddleOCR-VL",
+                    None,
+                    "advanced_component",
+                    availability,
+                    RecognitionModeLifecycle("model_residency", True, True, True, True),
+                ),
+            ),
+            has_recognition_mode_catalog=True,
+        )
+
+    def test_catalog_ready_keeps_vl_group_enabled_without_gpu(self, widget):
+        widget.set_recognition_catalog(self._vl_catalog())
+        widget.apply_gpu_gating(False)
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is True
+
+    def test_unavailable_mode_disables_vl_group(self, widget):
+        """目录声明不可用的模式不得被无条件放行。"""
+        widget.set_recognition_catalog(self._vl_catalog("unavailable"))
+        widget.apply_gpu_gating(False)
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is False
+
+    def test_catalog_arrival_re_enables_previously_gated_group(self, widget):
+        widget.apply_gpu_gating(False)
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is False
+        widget.set_recognition_catalog(self._vl_catalog())
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is True
+
+    def test_legacy_without_catalog_still_disables(self, widget):
+        widget.apply_gpu_gating(False)
+        assert widget._groups[OCRPipeline.PADDLEOCR_VL].box.isEnabled() is False

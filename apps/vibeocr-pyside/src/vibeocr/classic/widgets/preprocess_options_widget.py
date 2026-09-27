@@ -16,7 +16,12 @@ from PySide6.QtWidgets import (
 )
 
 from vibeocr.classic.recognition_settings import OCROptions
-from vibeocr.classic.runtime_selection import RuntimeSelectionCatalog
+from vibeocr.classic.runtime_selection import (
+    ENGINE_AVAILABILITY_UNAVAILABLE,
+    RuntimeSelectionCatalog,
+    document_parsing_availability,
+    gpu_gating_applies,
+)
 from vibeocr.classic.ui import theme
 from vibeocr.classic.widgets.collapsible_group_box import CollapsibleGroupBox
 from vibeocr.runtime_contracts.contracts.mineru import (
@@ -60,9 +65,11 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         # 上下文锁定允许的管道集合（仅 _pipeline_locked 为 True 时有效）。
         # 由 lock_to_pipelines 写入，_apply_pipeline_enabled_states 读取。
         self._locked_allowed: set[OCRPipeline] = set()
-        # GPU 门控禁用的管道集合（正交于上下文锁定）。
-        # 无 GPU 或 CPU 后端时 = _GPU_REQUIRED_PIPELINES，有 GPU 后端时为空集。
-        # apply_gpu_gating 写入，_apply_pipeline_enabled_states 读取；
+        # GPU 门控禁用的管道集合（正交于上下文锁定）。仅在未协商识别模式
+        # 目录时作为保守兼容门控：无 GPU / CPU 计算设备时 =
+        # _GPU_REQUIRED_PIPELINES，有 GPU 或目录存在时为空集（此时由 mode
+        # availability 权威决定可用性）。apply_gpu_gating /
+        # set_recognition_catalog 写入，_apply_pipeline_enabled_states 读取；
         # 与上下文锁定取并集禁用，且不被 unlock_pipeline 冲掉。
         self._gpu_disabled_pipelines: set[OCRPipeline] = set()
         self._gpu_capability: bool | None = None
@@ -135,7 +142,7 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
                 item = self._pipeline_combo.model().item(
                     self._pipeline_combo.count() - 1
                 )
-                if mode.availability == "unavailable" and item is not None:
+                if mode.availability == ENGINE_AVAILABILITY_UNAVAILABLE and item is not None:
                     item.setEnabled(False)
             self._apply_pipeline_enabled_states()
             return
@@ -155,6 +162,8 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         self._populate_pipeline_combo()
         self._pipeline_combo.blockSignals(False)
         self.set_options(current)
+        # 目录到达会翻转旧 GPU 门控判定，必须重算禁用集。
+        self._recompute_gpu_disabled_pipelines()
 
     def set_advanced_mode_install_callback(self, callback) -> None:
         """Install guidance is supplied by the host that owns Runtime Installer."""
@@ -853,8 +862,9 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
 
     _DOCUMENT_PIPELINES = {OCRPipeline.DOCUMENT_PARSING, OCRPipeline.PADDLEOCR_VL}
 
-    # 需 GPU 后端的重 VLM 管道：MinerU（VLM 引擎依赖 vLLM/lmdeploy，CUDA-only）、
-    # PaddleOCR-VL（重 VLM 模型）。CPU 后端下禁用以避免不可用/体验极差。
+    # 需 GPU 计算设备的重 VLM 管道：MinerU（VLM 引擎依赖 vLLM/lmdeploy，
+    # CUDA-only）、PaddleOCR-VL（重 VLM 模型）。仅在未协商识别模式目录的
+    # 旧 Backend 上作为保守兼容门控；目录存在时由 mode availability 权威决定。
     _GPU_REQUIRED_PIPELINES = {OCRPipeline.DOCUMENT_PARSING, OCRPipeline.PADDLEOCR_VL}
 
     def lock_to_pipelines(
@@ -936,8 +946,8 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
     def unlock_pipeline(self) -> None:
         """解除管道锁定，恢复自由选择。
 
-        注意：解除上下文锁定后仍会重新应用 GPU 门控（CPU 后端下文档解析/VL
-        保持禁用），不会无条件全部恢复。
+        注意：解除上下文锁定后仍会重新应用 GPU 门控（未协商目录的旧
+        Backend 下文档解析/VL 保持禁用），不会无条件全部恢复。
         """
         if not self._pipeline_locked:
             return
@@ -961,26 +971,23 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         return self._gpu_capability
 
     def apply_gpu_gating(self, has_gpu: bool) -> None:
-        """根据运行时是否使用 GPU 后端，禁用/启用需 GPU 的重管道。
+        """记录运行时探测结果，并按目录权威决定是否禁用需 GPU 的重管道。
 
-        与上下文锁定（lock_to_pipelines/unlock_pipeline）正交：二者取并集禁用，
-        且 GPU 门控不会被 unlock_pipeline 冲掉（unlock 后仍重新应用）。
-
-        无 GPU 或 CPU 后端时禁用 MinerU(文档解析)/PaddleOCR-VL；有 GPU 后端时
-        恢复可选。由 MainWindow 在依赖检测完成后及懒加载构造后显式广播。
+        与上下文锁定（lock_to_pipelines/unlock_pipeline）正交：二者取并集
+        禁用，且 GPU 门控不会被 unlock_pipeline 冲掉（unlock 后仍重新应用）。
+        已协商识别模式目录时，mode availability 是唯一权威，本探测布尔
+        不再覆盖它；无目录（旧 Backend / health 未达）才禁用 MinerU/VL。
+        由 MainWindow 在依赖检测完成后及懒加载构造后显式广播。
 
         Args:
-            has_gpu: 运行时是否使用 GPU 后端。
+            has_gpu: 运行时是否使用 GPU 计算设备。
         """
         self._gpu_capability = bool(has_gpu)
-        self._gpu_disabled_pipelines = (
-            set() if has_gpu else set(self._GPU_REQUIRED_PIPELINES)
-        )
-        self._apply_pipeline_enabled_states()
+        self._recompute_gpu_disabled_pipelines()
 
         # 若当前选中的管道被 GPU 门控禁用，回退到下拉框中第一个可选项，
         # 避免停留在灰色不可用项上（与 lock_to_pipelines 的回退逻辑一致）。
-        if not has_gpu:
+        if self._gpu_disabled_pipelines:
             current = self.get_current_pipeline()
             if current in self._gpu_disabled_pipelines:
                 fallback = self._first_enabled_pipeline()
@@ -1002,6 +1009,23 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
                         self._pipeline_combo.blockSignals(False)
                         self._update_tab_visibility()
 
+    def _recompute_gpu_disabled_pipelines(self) -> None:
+        """按目录权威重算 GPU 门控禁用集（探测结果或目录更新后调用）。"""
+        if self._gpu_capability is False and gpu_gating_applies(
+            self._recognition_catalog
+        ):
+            self._gpu_disabled_pipelines = set(self._GPU_REQUIRED_PIPELINES)
+        else:
+            self._gpu_disabled_pipelines = set()
+        self._apply_pipeline_enabled_states()
+
+    def document_parsing_availability(self) -> str | None:
+        """共享门控入口：单次/批量 tab 据此判定文档文件可否提交。"""
+
+        return document_parsing_availability(
+            self._recognition_catalog, self._gpu_capability
+        )
+
     def _first_enabled_pipeline(self) -> OCRPipeline | None:
         """返回下拉框中第一个启用的管道（用于 GPU 门控回退）。"""
         for i in range(self._pipeline_combo.count()):
@@ -1015,21 +1039,28 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
         return None
 
     def _apply_pipeline_enabled_states(self) -> None:
-        """统一重算下拉项启用状态（上下文锁定 ∪ GPU 门控）
+        """统一重算下拉项启用状态（目录 unavailable ∪ GPU 门控 ∪ 上下文锁定）
 
-        每项 pipeline 的启用条件 = 同时满足：
-        - 不在 GPU 门控禁用集合内（_gpu_disabled_pipelines）
+        每项的启用条件 = 同时满足：
+        - 目录声明的 mode availability 不是 unavailable（catalog 存在时）
+        - 不在 GPU 门控禁用集合内（_gpu_disabled_pipelines，仅无目录时生效）
         - 上下文锁定未激活，或在锁定允许集合内（_locked_allowed）
 
-        二者任一为禁用则禁用。被 GPU 门控禁用的项附加说明性 tooltip。
+        任一为禁用则禁用。被 GPU 门控禁用的项附加说明性 tooltip。
         """
         for i in range(self._pipeline_combo.count()):
-            pipeline = self._pipeline_for_item_data(self._pipeline_combo.itemData(i))
+            data = self._pipeline_combo.itemData(i)
+            pipeline = self._pipeline_for_item_data(data)
             if pipeline is None:
                 continue
+            mode = self._mode_entries.get(data) if isinstance(data, str) else None
 
             item = self._pipeline_combo.model().item(i)
             gpu_disabled = pipeline in self._gpu_disabled_pipelines
+            mode_unavailable = (
+                mode is not None
+                and mode.availability == ENGINE_AVAILABILITY_UNAVAILABLE
+            )
             # 上下文锁定未激活时视为"允许所有"（仅由 GPU 门控决定）
             context_disabled = (
                 self._pipeline_locked and pipeline not in self._locked_allowed
@@ -1038,9 +1069,14 @@ class PreprocessOptionsWidget(CollapsibleGroupBox):
             if gpu_disabled:
                 item.setEnabled(False)
                 item.setToolTip(
-                    "当前设备未满足此高级识别模式的 CUDA GPU 要求。\n"
-                    "请准备该模式所需组件后重试。"
+                    "当前 Runtime 版本未声明此模式的能力目录，"
+                    "仅支持在 GPU 计算设备下运行。\n"
+                    "请在设置页切换计算设备后重试。"
                 )
+            elif mode_unavailable:
+                # 目录明确不可用的项保持禁用，不被其他重算路径重新启用。
+                item.setEnabled(False)
+                item.setToolTip("")
             elif context_disabled:
                 item.setEnabled(False)
                 item.setToolTip("")

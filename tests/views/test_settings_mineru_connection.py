@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QGroupBox,
     QLabel,
@@ -558,6 +559,63 @@ def test_prepare_button_hidden_until_remote_mode_saved(mineru_controller) -> Non
     prepare_button.click()
     assert adapter.preload_calls == []
     assert "请先保存远程连接配置" in _status_text(host)
+
+
+def test_local_preload_completion_cannot_mark_remote_ready(mineru_controller) -> None:
+    controller, host, adapter = mineru_controller
+    controller._on_health_loaded(_health_payload(with_mineru_remote=True))
+    controller._on_settings_loaded(
+        _snapshot(
+            {
+                MINERU_CONNECTION_EXTRA_KEY: {
+                    "mode": MINERU_CONNECTION_MODE_REMOTE,
+                    "api_url": "https://m.example.com/",
+                }
+            }
+        )
+    )
+    controller._selection_catalog = _ready_catalog()
+    controller._refresh_lifecycle_controls()
+    host.findChild(QCheckBox, "chkPreload_PP_STRUCTURE_V3").setChecked(True)
+    controller._on_preload_now_clicked()
+    assert adapter.preload_calls == [(("PP-StructureV3",), ())]
+
+    controller._on_prepare_mineru_remote_clicked()
+    assert adapter.preload_calls == [(("PP-StructureV3",), ())]
+    assert "已有预加载" in _status_text(host)
+    adapter.preload_completed.emit(ResidencyStatus(default_ttl_seconds=300))
+    assert controller._mineru_remote_prepared is False
+    assert "连通性未验证" in controller._mineru_connection_status_text()
+
+    controller._on_prepare_mineru_remote_clicked()
+    assert adapter.preload_calls == [
+        (("PP-StructureV3",), ()),
+        (("MinerU",), ("mineru_document",)),
+    ]
+
+
+def test_remote_prepare_blocks_regular_preload_until_result(mineru_controller) -> None:
+    controller, host, adapter = mineru_controller
+    controller._on_health_loaded(_health_payload(with_mineru_remote=True))
+    controller._on_settings_loaded(
+        _snapshot(
+            {
+                MINERU_CONNECTION_EXTRA_KEY: {
+                    "mode": MINERU_CONNECTION_MODE_REMOTE,
+                    "api_url": "https://m.example.com/",
+                }
+            }
+        )
+    )
+
+    controller._on_prepare_mineru_remote_clicked()
+    controller._on_preload_now_clicked()
+    assert adapter.preload_calls == [(("MinerU",), ("mineru_document",))]
+    assert "已有预加载" in host.findChild(QLabel, "labelPreloadStatus").text()
+
+    adapter.preload_error.emit("connection refused")
+    assert controller._mineru_remote_prepared is False
+    assert "准备失败" in _status_text(host)
 
 
 def test_supervisor_ready_also_reads_settings_for_connection_mode(

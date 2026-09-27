@@ -1149,6 +1149,9 @@ class SettingsPageController:
 
     def _on_preload_now_clicked(self) -> None:
         """把选中的管道交给 Supervisor 顺序预加载。"""
+        if self._mineru_remote_prepare_pending or self._preload_selected:
+            self._update_preload_status("已有预加载正在进行，请等待完成")
+            return
         adapter = self._connect_runtime_adapter()
         if not adapter.is_started:
             self._update_preload_status("预加载失败：Supervisor 未连接")
@@ -3201,6 +3204,11 @@ class SettingsPageController:
         复用既有预加载链路，不新建任何前端直连 HTTP。
         """
         if self._closing or self._mineru_remote_prepare_pending:
+            return
+        if self._preload_selected:
+            self._update_mineru_connection_status(
+                "已有预加载正在进行，请等待完成后验证远程服务"
+            )
             return
         view = self._mineru_existing_connection or {}
         if view.get("mode") != MINERU_CONNECTION_MODE_REMOTE:

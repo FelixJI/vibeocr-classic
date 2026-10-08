@@ -65,6 +65,7 @@
 ## 项目架构与独特约束
 
 - 本仓是仅 Windows 的 PySide6 Classic 桌面 shell，应用位于 `apps/vibeocr-pyside/`，包含 QtPdf、WebEngine、WebChannel、qasync 与打包入口；不要把 Backend 推理实现重新嵌入前端。
+- 2026-10-08 起，已归档的 `vibeocr-backend` 仓库源码（v0.15.1，`8969b48`）以保留历史的方式整体并入 `apps/vibeocr-backend/`（subtree 合并，内部布局与自身 tests/scripts/release 保持原样，其子目录内更深的 `AGENTS.md` 仍按原规则生效）。并入的源码供阅读、开发与追溯；不改变运行时 Protocol v2 进程边界，也不改变 CI 消费正式 Backend Release 的组件契约。
 - `.ci/project.json` 是权威入口：先用 `scripts/resolve_component_releases.py` 解析最新正式 Backend 及其绑定 Protocol 到 `build/automation/release-input`，再安装/验证输入；quality 跑 pytest，E2E 验证上游 release/attestation，随后 PowerShell release build 和 smoke。
 - 组件解析必须 fail closed：最新正式 Backend 不兼容、缺 capability、manifest/hash/attestation 不一致时直接失败，不回退旧 Backend。支持 Protocol major 2 且 minor-compatible；前端 Python SDK 当前声明 `>=2.9.0,<3.0.0`，由独立 `frontend-protocol-lock.json` 精确约束；Backend Runtime 的 Protocol 则继续由组件锁和已验证资产独立精确约束。
 - 版本源包括 `version.txt`、应用 package TOML、package fallback `__version__` 与 `repository.json`，必须由 release prepare 同步。发布资产精确为 `VibeOCRClassic-{version}-full.nupkg`、`VibeOCRClassic-v{version}-win-x64.zip`、`releases.win.json`、`component-lock.json`、`frontend-protocol-lock.json` 与 SPDX SBOM；额外资产 fail closed。Portable-only：两次 vpk pack 均使用 `--noInst`，不生成或发布 Setup 与 checksum sidecar；NUPKG/feed 仅服务 Velopack 自更新（Portable 与安装模式共用 check/download/apply）。不再发布 legacy ZIP 或独立 updater。
@@ -74,7 +75,7 @@
 
 ## 六仓关系
 
-- 本仓不从 `vibeocr-protocol` 或 `vibeocr-backend` 源码构建；CI 消费最新正式 Backend Release，并严格验证其绑定的 Protocol Release。
+- 本仓不从 `vibeocr-protocol` 或 `vibeocr-backend` 源码构建；CI 消费最新正式 Backend Release，并严格验证其绑定的 Protocol Release。`vibeocr-backend` 已归档且源码已并入本仓 `apps/vibeocr-backend/`，其既有正式 Release 继续作为组件解析来源。
 - 与 `vibeocr-next` 共享 Protocol v2 major/minor-compatible 和 required capabilities，但实现、UI、版本与 Release 完全独立，不做跨仓级联发版。
 - Backend 升级若仍在 Protocol v2 且 capabilities 满足，本仓应由 CI 自动跟踪；major 改变必须先修改本仓兼容声明与实现。
 - `file-toolbox`、`vibetable` 与本仓无运行时依赖，仅共享自动化治理。

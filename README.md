@@ -17,11 +17,15 @@
 VibeOCR Classic 是 VibeOCR 的 PySide6 桌面外壳，提供截图识别、图片/文档工作流与运行时安装体验。
 OCR/PDF 推理由独立的 VibeOCR Backend 进程执行，Classic 通过绑定的 Protocol client 与它通信。
 
+> 2026-10-08 起，后端源码已从已归档的 `FelixJI/vibeocr-backend` 仓库（v0.15.1，`8969b48`）整体并入
+> 本仓 `apps/vibeocr-backend/`，并保留其完整提交历史；前后端在同一个仓库内开发，不再分仓维护。
+> 运行时架构不变：仍通过 Protocol v2 与独立 Backend 进程通信。
+
 ![VibeOCR Classic 运行时安装进度](docs/runtime-install-progress.png)
 
 > [!IMPORTANT]
-> Classic 仅支持 Windows 10/11 x64。Release 会绑定经过验证的 Backend 与 Protocol 组件；不要用邻仓
-> editable/path dependency 替代正式组件边界。
+> Classic 仅支持 Windows 10/11 x64。Release 会绑定经过验证的 Backend 与 Protocol 组件；不要用仓库内
+> Backend 源码的 editable/path dependency 替代正式组件边界。
 
 ## 主要能力
 
@@ -116,6 +120,8 @@ apps/vibeocr-pyside/
     ├── views/main_window.py     # 主窗口与生命周期组合
     ├── pyside/supervisor_adapter.py # Backend/Protocol 边界
     └── widgets/                 # 截图等交互组件
+apps/vibeocr-backend/            # 并入的 Backend 源码（含 packages/vibeocr-backend、
+                                 #   tests、scripts、release，内部布局保持原样）
 tests/                           # UI、worker、adapter 与组件测试
 scripts/
 ├── resolve_component_releases.py

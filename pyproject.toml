@@ -1,3 +1,9 @@
+[tool.uv.workspace]
+members = [
+    "apps/vibeocr-pyside",
+    "apps/vibeocr-backend/packages/vibeocr-backend",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-m 'not slow'"

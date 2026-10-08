@@ -25,16 +25,16 @@ dependencies = [
     "python-multipart>=0.0.32",
 ]
 
-[project.optional-dependencies]
-# Engine environments are installed separately by the runtime installer.
-cpu = ["mineru==4.0.2", "opencv-python>=4.11"]
-gpu-cu126 = ["mineru[torch]==4.0.2", "opencv-python>=4.11"]
-paddle-cpu = ["paddlepaddle>=3.3.1", "paddleocr[doc-parser]>=3.7.0"]
-paddle-cu126 = ["paddlepaddle-gpu>=3.3.1", "paddleocr[doc-parser]>=3.7.0"]
+# 引擎环境（MinerU CPU/GPU、Paddle CPU/GPU）不作为本包 extras 分发：
+# 桌面端按 runtime-profiles/ 下的带哈希锁清单用 uv 创建独立环境安装。
+# GPU 版 paddle/torch wheel 不在默认包索引，extras 声明会破坏 workspace 解析。
 
 [project.scripts]
 vibeocr-supervisor = "vibeocr.backend.supervisor.main:main"
 vibeocr-runtime-installer = "vibeocr.backend.runtime_installer:main"
+
+[tool.uv.sources]
+vibeocr-runtime-contracts = { url = "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_contracts-2.9.0-py3-none-any.whl" }
 
 [build-system]
 requires = ["hatchling==1.27.0"]
@@ -45,3 +45,6 @@ packages = ["src/vibeocr"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/vibeocr/backend/dependency_profiles.json" = "vibeocr/backend/dependency_profiles.json"
+# 引擎环境的依赖清单（uv 按此创建 Paddle/MinerU 独立环境）随包分发，
+# 桌面端与独立安装两种形态都能定位到同一份清单。
+"runtime-profiles" = "vibeocr/backend/runtime-profiles"

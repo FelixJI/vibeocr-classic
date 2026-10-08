@@ -9,7 +9,8 @@ OCR 子进程、WebEngine、nvidia-smi 探测等重资源。
   ``QLocalServer.removeServer`` 仍调用作跨平台清理（Unix 下清理残留文件）。
 - 必须在 ``QApplication`` 创建之后调用（QLocalServer 依赖 Qt 事件循环分发
   ``newConnection``）。
-- socket 名固定为 ``VibeOCR``（不绑版本），保证升级后新旧版本互认同为同一应用。
+- socket 名固定为 ``VibeOCRClassic``（不绑版本），保证升级后新旧版本互认；
+  名称带 Classic 后缀与 VibeOCR Next 隔离，两个产品可同时运行。
 """
 
 from __future__ import annotations

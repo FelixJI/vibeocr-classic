@@ -498,13 +498,13 @@ class SettingsPageController:
         layout.addWidget(row)
 
     def _on_create_desktop_shortcut(self) -> None:
-        """在桌面创建 VibeOCR 快捷方式。"""
+        """在桌面创建 VibeOCR Classic 快捷方式。"""
         if not _is_bundled():
             self._show_settings_toast("仅在打包版本中可用")
             return
 
         desktop = Path(os.environ.get("USERPROFILE", "")) / "Desktop"
-        lnk = str(desktop / "VibeOCR.lnk")
+        lnk = str(desktop / "VibeOCR Classic.lnk")
         target = sys.executable
         icon = _resolve_shortcut_icon_path()
         wd = str(Path(sys.executable).parent)
@@ -514,7 +514,7 @@ class SettingsPageController:
         )
 
     def _on_create_start_menu_shortcut(self) -> None:
-        """在开始菜单创建 VibeOCR 快捷方式。"""
+        """在开始菜单创建 VibeOCR Classic 快捷方式。"""
         if not _is_bundled():
             self._show_settings_toast("仅在打包版本中可用")
             return
@@ -525,9 +525,9 @@ class SettingsPageController:
             / "Windows"
             / "Start Menu"
             / "Programs"
-            / "VibeOCR"
+            / "VibeOCR Classic"
         )
-        lnk = str(start_menu / "VibeOCR.lnk")
+        lnk = str(start_menu / "VibeOCR Classic.lnk")
         target = sys.executable
         icon = _resolve_shortcut_icon_path()
         wd = str(Path(sys.executable).parent)

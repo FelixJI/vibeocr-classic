@@ -1,21 +1,20 @@
-"""跨产品互斥锁（Windows 命名 Mutex 实现）。
+"""本产品运行标识锁（Windows 命名 Mutex 实现）。
 
-确保同一登录会话内，PySide Classic 与 WinUI Next 两套 VibeOCR 产品互斥运行：
-任一产品运行时，启动另一产品只显示退出提示，不启动第二个 WorkerHost。
+Classic 与 VibeOCR Next 是两个独立产品，允许同时运行；本锁只承载 Classic
+自身的会话级运行标识，用于在极端竞态（同产品单实例管道尚未建立时）兜底
+拒绝第二个 Classic 实例，不再与任何其它产品互斥。
 
-设计依据：ADR §6（启动互斥与一一对应）、DUAL_UI_IMPLEMENTATION_PLAN.md §6.1。
-
-为什么用命名 Mutex 而非进程名扫描：
-- 创建 Mutex 是原子操作，不受 exe 改名、PID 复用和两个产品同时启动的竞态影响；
+为什么保留命名 Mutex 作为兜底：
+- 创建 Mutex 是原子操作，不受 exe 改名、PID 复用和同时启动的竞态影响；
 - 前端崩溃后由操作系统自动释放（无需额外清理子进程）；
-- 不建立产品间通信通道（与同产品单实例的 activation pipe 解耦）。
+- 与同产品单实例（``utils/single_instance.py``）的 activation pipe 解耦。
 
 与同产品单实例（``utils/single_instance.py``）的关系：
-- 同产品第二实例：转发参数到已有实例后退出（保留现有语义）；
-- 不同产品：不转发、不激活对方，只提示"另一套 VibeOCR 正在运行，请退出后重试"。
+- 同产品第二实例：优先由 activation pipe 拦截（转发参数后退出）；
+- 本锁仅在管道路径失效时兜底，提示"另一个 VibeOCR Classic 正在运行"。
 
 本模块**不依赖 PySide6/Qt**，可在 ``QApplication`` 创建之前调用，确保 Mutex
-成功前绝不启动 WorkerHost。
+成功前绝不启动后端。
 """
 
 from __future__ import annotations
@@ -28,31 +27,33 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 跨产品互斥 Mutex 名称。前缀 ``Local\`` 限定在当前登录会话（不计入全局）。
-# 两套前端（Python / C#）必须使用同一字符串，否则互斥失效。
-EXCLUSIVE_MUTEX_NAME = r"Local\VibeOCR.Frontend.Exclusive.v2"
+# Classic 专属运行标识 Mutex 名称。前缀 ``Local\`` 限定在当前登录会话。
+# 该名称仅在本产品（Classic）内使用；VibeOCR Next 不共享此字符串，
+# 因此两个产品可以同时运行。历史上这里曾是跨产品互斥名
+# ``Local\VibeOCR.Frontend.Exclusive.v2``，2026-10 起按产品隔离。
+EXCLUSIVE_MUTEX_NAME = r"Local\VibeOCRClassic.Frontend.Exclusive.v1"
 
 # Windows GetLastError 错误码：表示命名对象已存在（即另一个进程持有 Mutex）。
 _ERROR_ALREADY_EXISTS = 183
 
 
 class FrontendExclusiveLock:
-    """跨产品独占锁，基于 Windows 命名 Mutex。
+    """本产品会话级运行标识锁，基于 Windows 命名 Mutex。
 
     用法::
 
         lock = FrontendExclusiveLock()
         if not lock.try_acquire():
-            # 另一套 VibeOCR 正在运行，提示用户退出后重试
+            # 另一个 VibeOCR Classic 实例正在运行，提示后退出
             return 1
-        # 本产品独占运行；退出时调用 lock.release() 或依赖上下文管理器
+        # 本实例独占运行；退出时调用 lock.release() 或依赖上下文管理器
 
     也可作为上下文管理器使用::
 
         with FrontendExclusiveLock() as acquired:
             if not acquired:
                 show_another_running_message(); return 1
-            # ... 启动主窗口与 WorkerHost ...
+            # ... 启动主窗口与后端 ...
 
     线程安全：单实例使用，不在多线程中共享。Mutex 句柄在 ``release`` 或
     对象析构时关闭；进程崩溃时由 OS 回收，不会产生孤儿。
@@ -72,11 +73,11 @@ class FrontendExclusiveLock:
         return self._acquired
 
     def try_acquire(self) -> bool:
-        """尝试原子获取跨产品互斥 Mutex。
+        """尝试原子获取本产品运行标识 Mutex。
 
         Returns:
-            True  —— 本产品成功获得独占（当前会话内无另一套产品运行）；
-            False —— 另一套 VibeOCR 已持有该 Mutex，本实例应提示退出。
+            True  —— 本实例成功获得运行标识（当前会话内无另一个 Classic 实例）；
+            False —— 另一个 VibeOCR Classic 实例已持有该 Mutex，本实例应提示退出。
         """
         if self._acquired:
             return True
@@ -88,7 +89,7 @@ class FrontendExclusiveLock:
 
         handle = _create_mutex(self._name)
         if handle == 0:
-            # 无法证明独占时必须 fail closed；否则两个产品可能同时启动 Backend。
+            # 无法证明独占时必须 fail closed；否则可能启动第二个后端。
             logger.error("[FrontendExclusiveLock] CreateMutex 失败，拒绝启动")
             self._acquired = False
             return False
@@ -97,14 +98,14 @@ class FrontendExclusiveLock:
         self._handle = handle
         if already_exists:
             logger.info(
-                "[FrontendExclusiveLock] 另一套 VibeOCR 正在运行，本实例退出"
+                "[FrontendExclusiveLock] 另一个 VibeOCR Classic 实例正在运行，本实例退出"
             )
             # 释放刚创建的句柄——本实例不持有锁，只是确认了对方存在。
             self._close()
             return False
 
         self._acquired = True
-        logger.debug("[FrontendExclusiveLock] 已获得跨产品独占 Mutex")
+        logger.debug("[FrontendExclusiveLock] 已获得本产品运行标识 Mutex")
         return True
 
     def release(self) -> None:

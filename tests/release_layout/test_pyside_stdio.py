@@ -56,8 +56,8 @@ def test_t6_smoke_uses_process_unique_startup_locks(monkeypatch) -> None:
 
     single_instance, exclusive_mutex = main_module._startup_lock_names()
 
-    assert single_instance == "VibeOCR-SelfTest-4321"
-    assert exclusive_mutex == r"Local\VibeOCR.Frontend.Exclusive.SelfTest.4321"
+    assert single_instance == "VibeOCRClassic-SelfTest-4321"
+    assert exclusive_mutex == r"Local\VibeOCRClassic.Frontend.Exclusive.SelfTest.4321"
 
 
 def test_production_uses_stable_startup_locks(monkeypatch) -> None:
@@ -65,5 +65,19 @@ def test_production_uses_stable_startup_locks(monkeypatch) -> None:
 
     single_instance, exclusive_mutex = main_module._startup_lock_names()
 
-    assert single_instance == "VibeOCR"
+    assert single_instance == "VibeOCRClassic"
     assert exclusive_mutex is None
+
+
+def test_production_identity_is_classic_scoped_for_next_coexistence(
+    monkeypatch,
+) -> None:
+    """Classic 的运行标识必须带 Classic 命名空间，与 VibeOCR Next 隔离。"""
+    from vibeocr.classic.utils.frontend_exclusive_lock import EXCLUSIVE_MUTEX_NAME
+
+    monkeypatch.delenv("VIBEOCR_SELF_TEST_SMOKE", raising=False)
+    single_instance, _ = main_module._startup_lock_names()
+    assert "Classic" in single_instance
+    assert "Classic" in EXCLUSIVE_MUTEX_NAME
+    # 历史跨产品互斥名（与 Next 共享）必须不再使用，否则两产品无法同时运行。
+    assert EXCLUSIVE_MUTEX_NAME != r"Local\VibeOCR.Frontend.Exclusive.v2"

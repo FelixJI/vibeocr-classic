@@ -2,13 +2,16 @@
 
 支持 Windows、macOS 和 Linux 的开机自启配置。
 
-Windows 采用「启动文件夹快捷方式（Startup\\VibeOCR.lnk）」而非注册表
+Windows 采用「启动文件夹快捷方式（Startup\\VibeOCR Classic.lnk）」而非注册表
 ``HKCU\\...\\Run``：后者是杀软启发式重点关注的自启点，前者对杀软更友好，
 且同样会被任务管理器/Windows 设置的"启动"标签页识别，用户可统一管理。
+快捷方式名带 Classic 后缀，与 VibeOCR Next 的自启项互不干扰。
 
-存量用户若曾用旧版本通过注册表设置自启，由
-:func:`migrate_legacy_autostart` 在新版首次启动时静默迁移到 .lnk 并删除
-旧注册表项，避免双自启与告警。
+存量迁移：
+- 曾用旧版本通过注册表设置自启的，由 :func:`migrate_legacy_autostart`
+  在新版首次启动时静默迁移到 .lnk 并删除旧注册表项；
+- 曾用旧命名 ``VibeOCR.lnk`` 的，在启用/关闭自启时若确认指向本产品则
+  一并迁移/清理，避免双自启与告警。
 """
 
 import logging
@@ -122,19 +125,52 @@ def migrate_legacy_autostart() -> None:
 
 _WIN_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_APP_NAME = "VibeOCR"
-_WIN_LNK_NAME = "VibeOCR.lnk"
+_WIN_LNK_NAME = "VibeOCR Classic.lnk"
+# 2026-10 前的旧命名；启动文件夹里若仍存在且指向本产品则迁移，避免双自启。
+_WIN_LEGACY_LNK_NAME = "VibeOCR.lnk"
 
 
 def _win32_shortcut_path() -> Path:
     return get_windows_startup_dir() / _WIN_LNK_NAME
 
 
+def _win32_legacy_shortcut_path() -> Path:
+    return get_windows_startup_dir() / _WIN_LEGACY_LNK_NAME
+
+
+def _legacy_shortcut_is_ours() -> bool:
+    """判断旧命名 .lnk 是否指向本产品（Classic）。
+
+    只在目标路径包含本产品 exe 名时认定；VibeOCR Next 等其它应用创建的
+    同名快捷方式不会被删除。
+    """
+    from vibeocr.classic.utils.shortcuts import read_windows_shortcut_target
+
+    legacy = _win32_legacy_shortcut_path()
+    if not legacy.exists():
+        return False
+    target = read_windows_shortcut_target(str(legacy)).lower()
+    return "vibeocr" in target
+
+
+def _remove_legacy_shortcut_if_ours() -> None:
+    if _legacy_shortcut_is_ours():
+        try:
+            _win32_legacy_shortcut_path().unlink(missing_ok=True)
+            logger.info("已移除旧命名的启动快捷方式（VibeOCR.lnk → VibeOCR Classic.lnk）")
+        except OSError as e:
+            logger.warning(f"移除旧命名启动快捷方式失败: {e}")
+
+
 def _win32_is_enabled() -> bool:
-    return _win32_shortcut_path().exists()
+    if _win32_shortcut_path().exists():
+        return True
+    # 旧命名快捷方式仍有效（升级前已开启自启），视为已启用。
+    return _legacy_shortcut_is_ours()
 
 
 def _win32_ensure_shortcut() -> bool:
-    """创建启动文件夹 .lnk（若已存在则覆盖）。"""
+    """创建启动文件夹 .lnk（若已存在则覆盖），并清理指向本产品的旧命名。"""
     target = _get_exe_path()
     # 工作目录用目标可执行文件所在目录；开发态 target 形如 '"py" -m ...'，
     # 取不到稳定目录，传空让快捷方式使用默认。
@@ -142,12 +178,15 @@ def _win32_ensure_shortcut() -> bool:
         working_dir = str(Path(sys.executable).resolve().parent)
     except (OSError, ValueError):
         working_dir = ""
-    return create_windows_shortcut(
+    created = create_windows_shortcut(
         target=target,
         shortcut_path=str(_win32_shortcut_path()),
-        description="VibeOCR",
+        description="VibeOCR Classic",
         working_dir=working_dir,
     )
+    if created:
+        _remove_legacy_shortcut_if_ours()
+    return created
 
 
 def _win32_set(enabled: bool) -> bool:
@@ -156,13 +195,23 @@ def _win32_set(enabled: bool) -> bool:
             return False
         logger.debug(f"已创建启动文件夹快捷方式: {_win32_shortcut_path()}")
     else:
-        lnk = _win32_shortcut_path()
-        try:
-            lnk.unlink(missing_ok=True)
+        removed_any = False
+        for lnk in (_win32_shortcut_path(),):
+            try:
+                lnk.unlink(missing_ok=True)
+                removed_any = True
+            except OSError as e:
+                logger.error(f"移除启动文件夹快捷方式失败: {e}")
+                return False
+        # 关闭自启时也一并移除指向本产品的旧命名快捷方式。
+        if _legacy_shortcut_is_ours():
+            try:
+                _win32_legacy_shortcut_path().unlink(missing_ok=True)
+                removed_any = True
+            except OSError as e:
+                logger.warning(f"移除旧命名启动快捷方式失败: {e}")
+        if removed_any:
             logger.debug("已移除启动文件夹快捷方式")
-        except OSError as e:
-            logger.error(f"移除启动文件夹快捷方式失败: {e}")
-            return False
     return True
 
 

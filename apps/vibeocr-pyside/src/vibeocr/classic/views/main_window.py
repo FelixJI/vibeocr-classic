@@ -249,7 +249,7 @@ class MainWindow(QMainWindow):
         )
 
         # 设置窗口属性
-        self.setWindowTitle("VibeOCR")
+        self.setWindowTitle("VibeOCR Classic")
         self.resize(900, 600)
 
         # 创建状态栏

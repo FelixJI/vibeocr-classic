@@ -1,8 +1,8 @@
 {
   "backend": {
-    "channel": "stable",
+    "channel": "workspace",
     "accelerator": "cpu",
-    "repository": "FelixJI/vibeocr-backend"
+    "repository": "FelixJI/vibeocr-classic"
   },
   "protocol": {
     "repository": "FelixJI/vibeocr-protocol",

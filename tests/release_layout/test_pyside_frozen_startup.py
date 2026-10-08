@@ -110,17 +110,16 @@ def test_frozen_startup_smoke_requires_t6_in_isolated_environment(
     assert not (tmp_path / ".startup-smoke-result.json").exists()
 
 
-def test_frozen_startup_smoke_uses_ensured_base_runtime_python(
+def test_frozen_startup_smoke_uses_packaged_backend_wheel(
     monkeypatch, tmp_path: Path
 ) -> None:
-    """T6 must launch Supervisor from the offline Base Runtime closure."""
+    """T6 必须用产品内 backend wheel 解出的 import 根启动 Supervisor smoke。"""
     verifier = _load_verifier()
     (tmp_path / "VibeOCR.exe").write_bytes(b"MZ")
-    runtime_python = tmp_path / "state" / "runtime" / "python.exe"
-    runtime_python.parent.mkdir(parents=True)
-    runtime_python.write_bytes(b"MZ")
-    runtime_site_packages = runtime_python.parent / "Lib" / "site-packages"
-    runtime_site_packages.mkdir(parents=True)
+    smoke_python = tmp_path / "tools" / "python.exe"
+    smoke_python.parent.mkdir(parents=True)
+    smoke_python.write_bytes(b"MZ")
+    smoke_site = tmp_path / ".smoke-runtime" / "site-packages"
     captured = {}
 
     def fake_run(command, **kwargs):
@@ -131,36 +130,33 @@ def test_frozen_startup_smoke_uses_ensured_base_runtime_python(
             json.dumps({f"T{index}": index / 10 for index in range(7)}) + "\n",
             encoding="utf-8",
         )
-        module_file = runtime_site_packages / "vibeocr" / "backend" / "main.py"
-        module_file.parent.mkdir(parents=True)
-        module_file.write_text("# ensured backend\n", encoding="utf-8")
+        module_file = smoke_site / "vibeocr" / "backend" / "supervisor" / "main.py"
+        module_file.parent.mkdir(parents=True, exist_ok=True)
+        module_file.write_text("# packaged backend\n", encoding="utf-8")
         Path(kwargs["env"]["VIBEOCR_SELF_TEST_RESULT"]).write_text(
             json.dumps(
                 {
                     "supervisor_ready": True,
                     "module_file": str(module_file),
-                    "python_executable": str(runtime_python),
+                    "python_executable": str(smoke_python),
                 }
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode=0, stderr="")
 
     monkeypatch.setattr(verifier.subprocess, "run", fake_run)
     monkeypatch.setattr(
         verifier,
         "_prepare_smoke_python",
-        lambda root: pytest.fail("wheel-only smoke Python must not be prepared"),
+        lambda root: (smoke_python, smoke_site),
     )
 
-    verifier._verify_frozen_startup(
-        tmp_path,
-        runtime_python=runtime_python,
-    )
+    verifier._verify_frozen_startup(tmp_path)
 
     assert captured["command"] == [str(tmp_path / "VibeOCR.exe")]
-    assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == str(runtime_python)
-    assert Path(captured["env"]["PYTHONPATH"]) == runtime_site_packages
+    assert captured["env"]["VIBEOCR_SELF_TEST_PYTHON"] == str(smoke_python)
+    assert Path(captured["env"]["PYTHONPATH"]) == smoke_site
 
 
 def test_frozen_startup_smoke_rejects_trace_that_stops_at_t3(
@@ -348,171 +344,3 @@ class _FakeOfflineClient:
         return SimpleNamespace(python_executable=str(runtime / "python.exe"))
 
 
-def test_offline_base_smoke_skips_without_component_selection_capability(
-    monkeypatch, tmp_path: Path, capsys
-) -> None:
-    """v0.12.0 未协商能力：输出原因跳过，不执行任何安装。"""
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(capabilities=("runtime.maintenance.v2",), root=tmp_path)
-
-    status, runtime_python = verifier._verify_offline_base_smoke(
-        tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
-    )
-
-    assert status == "skipped"
-    assert runtime_python is None
-    assert client.ensure_calls == []
-    assert "does not negotiate" in capsys.readouterr().out
-
-
-def test_offline_base_smoke_enforces_offline_intent_and_reuse(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """能力协商通过：三次 base-only ensure 均带显式空安装范围且断网。"""
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(
-        capabilities=(
-            "runtime.maintenance.v2",
-            "runtime.component-selection.v1",
-        ),
-        root=tmp_path,
-    )
-    seen_proxies: list[dict] = []
-
-    real_ensure = client.ensure
-
-    def spy_ensure(**kwargs):
-        seen_proxies.append(
-            {name: os.environ.get(name) for name in ("http_proxy", "https_proxy")}
-        )
-        return real_ensure(**kwargs)
-
-    client.ensure = spy_ensure
-    for name in ("component-lock.json", "frontend-protocol-lock.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    status, runtime_python = verifier._verify_offline_base_smoke(
-        tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
-    )
-
-    assert status == "enforced"
-    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
-    assert len(client.ensure_calls) == 3
-    assert all(call.get("install_component_ids") == () for call in client.ensure_calls)
-    assert all(
-        proxy == "http://127.0.0.1:9"
-        for proxies in seen_proxies
-        for proxy in proxies.values()
-    )
-
-
-def test_offline_base_smoke_runs_supervisor_rapidocr_pdf_probe_twice(
-    tmp_path: Path,
-) -> None:
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(
-        capabilities=(
-            "runtime.maintenance.v2",
-            "runtime.component-selection.v1",
-        ),
-        root=tmp_path,
-    )
-    probes: list[Path] = []
-    for name in ("component-lock.json", "frontend-protocol-lock.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    status, runtime_python = verifier._verify_offline_base_smoke(
-        tmp_path,
-        tmp_path / "installer.exe",
-        client_factory=lambda: client,
-        runtime_probe=lambda _launch, root: probes.append(root),
-    )
-
-    assert status == "enforced"
-    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
-    assert probes == [tmp_path, tmp_path]
-
-
-def test_offline_base_smoke_uses_post_probe_tree_as_reensure_baseline(
-    tmp_path: Path,
-) -> None:
-    """Runtime 首次启动可写入树；未改树的后续 ensure 不应被误报。"""
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(
-        capabilities=("runtime.component-selection.v1",), root=tmp_path
-    )
-    for name in ("component-lock.json", "frontend-protocol-lock.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    def write_runtime_cache(_launch, _root: Path) -> None:
-        runtime_cache = tmp_path / "state" / "runtime" / "runtime-cache.bin"
-        runtime_cache.write_bytes(b"runtime-owned")
-
-    status, runtime_python = verifier._verify_offline_base_smoke(
-        tmp_path,
-        tmp_path / "installer.exe",
-        client_factory=lambda: client,
-        runtime_probe=write_runtime_cache,
-    )
-
-    assert status == "enforced"
-    assert runtime_python == (tmp_path / "state" / "runtime" / "python.exe").resolve()
-    assert len(client.ensure_calls) == 3
-
-
-def test_offline_base_smoke_detects_rewrite_on_reensure(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """幂等 ensure 重写 runtime 树（重复下载）时必须失败。"""
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(
-        capabilities=("runtime.component-selection.v1",), root=tmp_path
-    )
-    calls = {"n": 0}
-    real_ensure = client.ensure
-
-    def grow_ensure(**kwargs):
-        calls["n"] += 1
-        result = real_ensure(**kwargs)
-        if calls["n"] == 2:
-            (tmp_path / "state" / "runtime" / f"extra-{calls['n']}.whl").write_bytes(
-                b"x"
-            )
-        return result
-
-    client.ensure = grow_ensure
-    for name in ("component-lock.json", "frontend-protocol-lock.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="re-download|rewrote"):
-        verifier._verify_offline_base_smoke(
-            tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
-        )
-
-
-def test_offline_base_smoke_detects_same_size_content_rewrite(
-    tmp_path: Path,
-) -> None:
-    """发布边界快照必须发现路径和大小不变的 runtime 内容覆盖。"""
-    verifier = _load_verifier()
-    client = _FakeOfflineClient(
-        capabilities=("runtime.component-selection.v1",), root=tmp_path
-    )
-    calls = {"n": 0}
-    real_ensure = client.ensure
-
-    def rewrite_ensure(**kwargs):
-        calls["n"] += 1
-        result = real_ensure(**kwargs)
-        if calls["n"] == 2:
-            (tmp_path / "state" / "runtime" / "python.exe").write_bytes(b"zz")
-        return result
-
-    client.ensure = rewrite_ensure
-    for name in ("component-lock.json", "frontend-protocol-lock.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="re-download|rewrote"):
-        verifier._verify_offline_base_smoke(
-            tmp_path, tmp_path / "installer.exe", client_factory=lambda: client
-        )

@@ -439,6 +439,27 @@ def _activate_portable_state() -> None:
         "QTWEBENGINE_DISK_CACHE_PATH",
         str(paths.webengine_cache_dir),
     )
+    _activate_engine_env_tooling(executable)
+
+
+def _activate_engine_env_tooling(executable: Path) -> None:
+    """指向随包分发的 uv.exe 与后端 wheel（引擎环境管理用）。
+
+    目录布局由 finalize_product_release 决定：``bin/uv.exe`` 与
+    ``backend/vibeocr_backend-*.whl``。缺省（开发态）不设置任何变量。
+    """
+    try:
+        exe_dir = executable.resolve().parent
+    except OSError:
+        return
+    uv_binary = exe_dir / "bin" / "uv.exe"
+    if uv_binary.is_file():
+        os.environ.setdefault("VIBEOCR_UV_BIN", str(uv_binary))
+    backend_dir = exe_dir / "backend"
+    if backend_dir.is_dir():
+        for wheel in backend_dir.glob("vibeocr_backend-*.whl"):
+            os.environ.setdefault("VIBEOCR_BACKEND_DIST", str(wheel))
+            break
 
 
 if __name__ == "__main__":

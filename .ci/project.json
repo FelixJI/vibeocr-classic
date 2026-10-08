@@ -10,12 +10,11 @@
   },
   "ci": {
     "bootstrap": [
-      ["python", "scripts/resolve_component_releases.py", "--policy", "component-policy.json", "--output-root", "build/automation/release-input"],
-      ["python", "scripts/install_resolved_components.py", "--release-input", "build/automation/release-input"]
+      ["uv", "sync", "--project", "apps/vibeocr-pyside", "--frozen"]
     ],
-    "quality": [["python", "-m", "pytest"]],
-    "e2e": [["python", "scripts/verify_component_release_input.py", "--release-input", "build/automation/release-input"]],
-    "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ReleaseInput", "build/automation/release-input", "-ArtifactsDir", "{artifacts_dir}"]],
+    "quality": [["uv", "run", "--no-sync", "--project", "apps/vibeocr-pyside", "python", "-m", "pytest"]],
+    "e2e": [["uv", "run", "--no-sync", "--project", "apps/vibeocr-pyside", "python", "scripts/verify_inprocess_backend.py"]],
+    "release_build": [["powershell", "-ExecutionPolicy", "Bypass", "-File", "scripts/build-release.ps1", "-Version", "{version}", "-ArtifactsDir", "{artifacts_dir}"]],
     "release_smoke": [
       ["python", "scripts/verify_release_assets.py", "{artifacts_dir}", "--no-checksum-index", "--exact", "--require", "component-lock.json", "--require", "frontend-protocol-lock.json", "--require", "SBOM.spdx.json", "--require", "VibeOCRClassic-v{version}-win-x64.zip", "--require", "releases.win.json", "--require-one", "VibeOCRClassic-*-full.nupkg", "--allow-one", "VibeOCRClassic-*-delta.nupkg"],
       ["python", "scripts/verify_velopack_release.py", "{artifacts_dir}", "--version", "{version}", "--portable-name", "VibeOCRClassic-v{version}-win-x64.zip"]

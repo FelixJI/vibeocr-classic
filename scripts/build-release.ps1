@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
     [string]$Version,
-    [string]$ReleaseInput,
     [string]$ArtifactsDir
 )
 $ErrorActionPreference = 'Stop'
@@ -23,7 +22,6 @@ if (-not $ArtifactsDir) {
 }
 $artifacts = [IO.Path]::GetFullPath($ArtifactsDir)
 $build = Join-Path $root 'build/release'
-$defaultInputs = Join-Path $root '.release-input'
 foreach ($path in @($artifacts, $build)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
@@ -38,56 +36,52 @@ $buildPython = Join-Path $buildVenv 'Scripts/python.exe'
 $buildLock = Join-Path $root 'scripts/requirements-build.lock'
 uv pip sync --python $buildPython $buildLock
 if ($LASTEXITCODE -ne 0) { throw 'release build lock sync failed' }
-$policy = Join-Path $root 'component-policy.json'
-if ($ReleaseInput) {
-    $inputs = (Resolve-Path -LiteralPath $ReleaseInput).Path
-} else {
-    $inputs = $defaultInputs
-    if (Test-Path -LiteralPath $inputs) {
-        Remove-Item -LiteralPath $inputs -Recurse -Force
-    }
-    & $buildPython (Join-Path $root 'scripts/resolve_component_releases.py') `
-      --policy $policy --output-root $inputs
-    if ($LASTEXITCODE -ne 0) { throw 'compatible component resolution failed' }
-    & $buildPython (Join-Path $root 'scripts/verify_component_release_input.py') `
-      --release-input $inputs
-    if ($LASTEXITCODE -ne 0) { throw 'resolved component verification failed' }
+
+# ---------------------------------------------------------------------------
+# 融合形态：后端在本仓库内构建；Protocol SDK wheel 以固定 URL 安装。
+# ---------------------------------------------------------------------------
+$contractsWheelUrl = 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_contracts-2.9.0-py3-none-any.whl'
+$clientWheelUrl = 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_client-2.9.0-py3-none-any.whl'
+uv pip install --no-deps --python $buildPython $contractsWheelUrl $clientWheelUrl
+if ($LASTEXITCODE -ne 0) { throw 'Protocol SDK wheel install failed' }
+
+& $buildPython -m build --wheel --no-isolation `
+  (Join-Path $root 'apps/vibeocr-backend/packages/vibeocr-backend') --outdir $build
+if ($LASTEXITCODE -ne 0) { throw 'vibeocr-backend wheel build failed' }
+$backendWheel = (
+    Get-ChildItem $build -Filter 'vibeocr_backend-*.whl' |
+      Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  ).FullName
+if (-not $backendWheel) { throw 'vibeocr-backend wheel not found after build' }
+uv pip install --no-deps --python $buildPython $backendWheel
+if ($LASTEXITCODE -ne 0) { throw 'vibeocr-backend wheel install failed' }
+
+# 发布身份锁：后端 wheel 哈希写入 component-lock。
+$locksDir = Join-Path $build 'workspace-locks'
+& $buildPython (Join-Path $root 'scripts/generate_workspace_locks.py') `
+  --output-dir $locksDir --backend-wheel $backendWheel `
+  --policy (Join-Path $root 'component-policy.json')
+if ($LASTEXITCODE -ne 0) { throw 'workspace lock generation failed' }
+$lock = Join-Path $locksDir 'component-lock.json'
+$frontendProtocolLock = Join-Path $locksDir 'frontend-protocol-lock.json'
+
+# 随包分发的 uv.exe（引擎环境管理）。
+$uvVersion = '0.12.22'
+$uvSha256 = 'ea1397797a0ca15f63516dd0f49c2dde9776db9be5861cab152ebe8ad199894d'
+$uvZip = Join-Path $build 'uv.zip'
+$uvExtract = Join-Path $build 'uv'
+Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/download/$uvVersion/uv-x86_64-pc-windows-msvc.zip" `
+  -OutFile $uvZip
+$uvActualHash = (Get-FileHash -LiteralPath $uvZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($uvActualHash -ne $uvSha256) {
+    throw "uv.exe archive hash mismatch: $uvActualHash"
 }
-$protocol = Join-Path $inputs 'protocol'
-$protocolSdk = Join-Path $inputs 'protocol-sdk'
-$backend = Join-Path $inputs 'backend'
-$lock = Join-Path $inputs 'component-lock.json'
-$frontendProtocolLock = Join-Path $inputs 'frontend-protocol-lock.json'
-if (-not (Test-Path -LiteralPath $lock -PathType Leaf)) {
-    throw 'resolved component-lock.json is required'
+Expand-Archive -LiteralPath $uvZip -DestinationPath $uvExtract -Force
+$uvBinary = Join-Path $uvExtract 'uv.exe'
+if (-not (Test-Path -LiteralPath $uvBinary -PathType Leaf)) {
+    throw 'uv.exe not found in downloaded archive'
 }
-if (-not (Test-Path -LiteralPath $frontendProtocolLock -PathType Leaf)) {
-    throw 'resolved frontend-protocol-lock.json is required'
-}
-$frontendProtocol = Get-Content -LiteralPath $frontendProtocolLock -Raw |
-  ConvertFrom-Json
-$protocolSdkVersion = [string]$frontendProtocol.version
-function Resolve-ProtocolSdkWheel {
-    param([string]$Distribution)
-    $matches = @(
-        $frontendProtocol.artifacts.PSObject.Properties.Name |
-          Where-Object {
-              $_ -like "$Distribution-$protocolSdkVersion-*.whl"
-          }
-    )
-    if ($matches.Count -ne 1) {
-        throw "frontend Protocol lock must select one $Distribution wheel"
-    }
-    $wheel = Join-Path $protocolSdk $matches[0]
-    if (-not (Test-Path -LiteralPath $wheel -PathType Leaf)) {
-        throw "frontend Protocol SDK wheel is missing: $($matches[0])"
-    }
-    return $wheel
-}
-$contractsWheel = Resolve-ProtocolSdkWheel 'vibeocr_runtime_contracts'
-$clientWheel = Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'
-uv pip install --no-deps --python $buildPython $contractsWheel $clientWheel
-if ($LASTEXITCODE -ne 0) { throw 'verified frontend SDK wheel install failed' }
+
 & $buildPython -m build --wheel --no-isolation `
   (Join-Path $root 'apps/vibeocr-pyside') --outdir $build
 if ($LASTEXITCODE -ne 0) { throw 'Classic wheel build failed' }
@@ -104,6 +98,8 @@ $pyinstallerArgs = @(
     '--workpath', (Join-Path $build 'pyinstaller'),
     '--specpath', (Join-Path $build 'spec'),
     '--collect-submodules', 'vibeocr.classic',
+    '--collect-submodules', 'vibeocr.backend',
+    '--collect-data', 'vibeocr.backend',
     '--collect-submodules', 'vibeocr.runtime_client',
     '--collect-submodules', 'vibeocr.runtime_contracts',
     '--collect-data', 'vibeocr.runtime_contracts',
@@ -129,9 +125,9 @@ $hiddenQtModules = @(
     'PySide6.QtWidgets'
 )
 $excludedModules = @(
-    'torch', 'torchvision', 'paddle', 'cv2', 'scipy', 'sklearn', 'pandas',
-    'pymupdf', 'fitz', 'lxml',
-    'transformers', 'onnxruntime', 'tokenizers', 'safetensors', 'hf_xet',
+    'torch', 'torchvision', 'paddle', 'scipy', 'sklearn', 'pandas',
+    'lxml',
+    'transformers', 'tokenizers', 'safetensors', 'hf_xet',
     'PySide6.Qt3DAnimation', 'PySide6.Qt3DCore', 'PySide6.Qt3DExtras',
     'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DRender',
     'PySide6.QtCharts', 'PySide6.QtDataVisualization', 'PySide6.QtGraphs',
@@ -161,11 +157,9 @@ Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
   --product-root $product --frontend classic --frontend-version $Version `
   --source-commit (git -C $root rev-parse HEAD).Trim() `
   --component-lock $lock --frontend-protocol-lock $frontendProtocolLock `
-  --frontend-protocol-release-dir $protocolSdk `
-  --protocol-release-dir $protocol `
-  --backend-release-dir $backend
+  --backend-wheel $backendWheel --uv-binary $uvBinary
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
-& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product --policy $policy
+& $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product --policy (Join-Path $root 'component-policy.json')
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }
 $velopackProduct = Join-Path $build 'velopack-product'
 & $buildPython (Join-Path $root 'scripts/prepare_velopack_input.py') `

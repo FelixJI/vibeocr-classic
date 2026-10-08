@@ -728,12 +728,153 @@ class SettingsPageController:
 
     def _on_backend_change_requested(self, target: str) -> None:
         """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
         backend_options = self._backend_options
         if target not in {"cpu", "gpu"}:
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
             return
+        if inprocess_backend_enabled():
+            self._switch_engine_device_fused(target)
+            return
         self._open_install_dialog(force_backend=target)
+
+    # ------------------------------------------------------------------
+    # 融合形态：uv 引擎环境（Paddle/MinerU × CPU/GPU）
+    # ------------------------------------------------------------------
+
+    def _engine_env_manager(self):
+        from vibeocr.classic.engine_envs import EngineEnvManager
+
+        return EngineEnvManager(self._project_root / "envs")
+
+    def _install_offline_features_fused(self) -> None:
+        """融合形态的“安装所选能力…”：翻译为引擎环境组合并弹安装对话框。"""
+        from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
+
+        features = set(self._selected_offline_features())
+        if not features:
+            QMessageBox.information(
+                None,
+                "未选择能力",
+                "请先勾选需要安装的识别能力。",
+            )
+            return
+        paddle = "paddleocr" in features
+        mineru = "mineru" in features
+        gpu = ("gpu_runtime" in features) or (self._runtime_backend_or_none() == "gpu")
+
+        target_ids = describe_selection(paddle=paddle, mineru=mineru, gpu=gpu)
+        names = "、".join(get_engine_env_spec(spec_id).display_name for spec_id in target_ids)
+        manager = self._engine_env_manager()
+        states = manager.inspect()
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+        remove_ids = sorted(installed_ids - set(target_ids))
+
+        if not target_ids and not remove_ids:
+            return
+        remove_note = (
+            "\n不再使用的引擎会被移除，释放磁盘空间。" if remove_ids else ""
+        )
+        answer = QMessageBox.question(
+            None,
+            "安装识别引擎",
+            (
+                f"将安装：{names}。\n"
+                "下载量较大，安装期间识别会暂停；进度和日志会实时显示。"
+                f"{remove_note}\n是否继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            ConfigManager.instance().set_offline_component_features(
+                "nvidia_cuda" if gpu else "cpu",
+                sorted(features),
+            )
+        except Exception:
+            pass
+        self._open_engine_env_dialog(target_ids, remove_ids)
+
+    def _switch_engine_device_fused(self, target: str) -> None:
+        """融合形态的计算设备切换：已装引擎家族整体换 CPU/GPU 版本。"""
+        from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
+
+        gpu = target == "gpu"
+        manager = self._engine_env_manager()
+        states = manager.inspect()
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+        families = {sid.split("-")[0] for sid in installed_ids}
+        target_ids = describe_selection(
+            paddle="paddle" in families, mineru="mineru" in families, gpu=gpu
+        )
+        remove_ids = sorted(installed_ids - set(target_ids))
+        to_install = [sid for sid in target_ids if sid not in installed_ids]
+
+        if not to_install and not remove_ids:
+            # 已处于目标形态（例如什么都没装时切换设备）。
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            QMessageBox.information(
+                None,
+                "没有需要安装的引擎",
+                "当前没有安装任何识别引擎，切换设备不会产生下载。\n"
+                "安装引擎时会自动使用这里选择的设备。",
+            )
+            return
+
+        device_label = "GPU（需要 NVIDIA 显卡）" if gpu else "CPU"
+        names = "、".join(get_engine_env_spec(sid).display_name for sid in to_install)
+        answer = QMessageBox.question(
+            None,
+            "切换计算设备",
+            f"已安装的识别引擎将切换到 {device_label} 版本：{names}。\n"
+            "需要重新下载对应版本，安装期间识别会暂停。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            return
+        self._open_engine_env_dialog(to_install, remove_ids)
+
+    def _open_engine_env_dialog(
+        self, install_ids: list[str], remove_ids: list[str]
+    ) -> None:
+        """停止识别服务后弹出引擎环境安装对话框（融合形态）。"""
+        from vibeocr.classic.widgets.engine_env_dialog import EngineEnvDialog
+
+        def _show() -> None:
+            dialog = EngineEnvDialog(
+                self._engine_env_manager(),
+                install_ids,
+                remove_ids,
+                before_start=lambda: True,
+                on_finished=self._on_engine_env_finished,
+                parent=None,
+            )
+            dialog.show()
+
+        # 引擎安装/移除会改动后端正在使用的环境，先停服务再执行。
+        self._run_after_supervisor_invalidated(_show)
+
+    def _on_engine_env_finished(self, success: bool) -> None:
+        backend_options = getattr(self, "_backend_options", None)
+        if backend_options is not None:
+            backend_options.set_change_in_progress(False)
+        callback = (
+            self._install_succeeded_callback
+            if success
+            else self._install_abandoned_callback
+        )
+        if callback is not None:
+            callback()
 
     def _on_pdf_pipeline_switching(self, old_pipeline, options) -> None:
         self._pdf_switching = True
@@ -1485,6 +1626,17 @@ class SettingsPageController:
 
     def _on_reinstall_python(self) -> None:
         """检查并修复已安装闭包，底层统一调用 Runtime Installer repair。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            QMessageBox.information(
+                None,
+                "无需修复",
+                "基础识别能力已内置在主程序里，不需要修复。\n\n"
+                "如果某个识别引擎出了问题，回到“可选识别能力”，"
+                "重新勾选并安装一次即可。",
+            )
+            return
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
@@ -1501,6 +1653,11 @@ class SettingsPageController:
 
     def _on_reinstall_deps(self) -> None:
         """Preview the current engine intent without contracting it to base-only."""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._on_install_offline_features()
+            return
         self._open_install_dialog()
 
     def _on_install_missing(self) -> None:
@@ -2628,6 +2785,11 @@ class SettingsPageController:
         return chosen, True
 
     def _on_install_offline_features(self) -> None:
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._install_offline_features_fused()
+            return
         catalog = self._selection_catalog
         accelerator = self._selection_accelerator
         if catalog is None or accelerator is None:

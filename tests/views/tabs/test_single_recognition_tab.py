@@ -1209,9 +1209,8 @@ class TestSingleRecognitionTabErrorMapping:
         tab._on_ocr_async_error(exc, "OCR")
 
         assert shown == [
-            "所选 OCR 引擎尚未准备完成，需要先安装对应的运行时组件"
-            "（组件：paddleocr-cuda）。请在「设置 → 当前可用的识别能力」"
-            "安装对应组件后重试。"
+            "所选识别引擎还没有安装（paddleocr-cuda）。"
+            "请到「设置 → 可选识别能力」勾选并安装后重试。"
         ]
         assert suffix_calls == []
 

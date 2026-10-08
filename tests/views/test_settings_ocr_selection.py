@@ -202,6 +202,8 @@ def _health_payload(
 
 @pytest.fixture
 def selection_controller(qtbot, tmp_path, monkeypatch):
+    # 本文件的安装动作断言旧安装器目录翻译；置于子进程（遗留）形态。
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     host = QWidget()
     qtbot.addWidget(host)
     ui = Ui_MainWindowWidget()

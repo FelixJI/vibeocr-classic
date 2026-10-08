@@ -12,22 +12,24 @@ from vibeocr.classic.runtime_status_messages import (
 
 
 def test_not_installed_runtime_has_a_clear_profile_label() -> None:
-    assert format_runtime_unavailable(["cpu: not-installed"]) == ("Runtime 未安装：CPU")
+    assert format_runtime_unavailable(["cpu: not-installed"]) == (
+        "识别服务未安装：CPU"
+    )
     assert format_runtime_unavailable(["nvidia_cuda: not-installed"]) == (
-        "Runtime 未安装：NVIDIA CUDA"
+        "识别服务未安装：NVIDIA CUDA"
     )
 
 
 def test_unknown_runtime_error_remains_visible() -> None:
     assert format_runtime_unavailable(["inspect timed out"]) == (
-        "Runtime 不可用：inspect timed out"
+        "识别服务不可用：inspect timed out"
     )
 
 
 def test_supervisor_failure_does_not_claim_dependency_damage() -> None:
     message = supervisor_start_failure_message()
-    assert "就绪握手" in message
-    assert "当前 Runtime profile 未完成安装或验证" in message
+    assert "内置识别服务未能完成启动" in message
+    assert "识别引擎的安装不完整" in message
     assert "依赖损坏" not in message
 
 
@@ -74,7 +76,7 @@ def test_base_only_runtime_is_distinguished_from_cpu_profile() -> None:
     )
     assert accelerator_framework("cpu", base_only) is None
     assert accelerator_display("cpu", "win-x64-base", base_only) == (
-        "基础 Runtime（未选择高级 OCR 框架）"
+        "基础识别（未安装高级识别引擎）"
     )
 
 
@@ -88,7 +90,7 @@ def test_profile_id_is_the_authoritative_framework_evidence() -> None:
     assert accelerator_framework("cpu", None, "win-x64-cpu") == "cpu"
     assert accelerator_framework("cpu", None, "win-x64-cu126") == "gpu"
     assert accelerator_display("cpu", "win-x64-base", None) == (
-        "基础 Runtime（未选择高级 OCR 框架）"
+        "基础识别（未安装高级识别引擎）"
     )
     # profile 优先级高于 accelerator 字段与组件证据。
     assert accelerator_framework("nvidia_cuda", (), "win-x64-base") is None
@@ -142,7 +144,7 @@ def test_host_plan_projection_with_missing_advanced_components_is_base() -> None
     assert accelerator_framework("cpu", host_base_payload, "win-x64-cpu") is None
     assert (
         accelerator_display("cpu", "win-x64-cpu", host_base_payload)
-        == "基础 Runtime（未选择高级 OCR 框架）"
+        == "基础识别（未安装高级识别引擎）"
     )
 
     # 完整 CPU profile：高级组件实际就绪，仍按 profile 判定为 CPU。
@@ -159,13 +161,13 @@ def test_engine_preparation_message_names_required_component() -> None:
     message = engine_preparation_required_message(
         {"required_component": "paddleocr-cuda"}
     )
-    assert "所选 OCR 引擎尚未准备完成" in message
+    assert "所选识别引擎还没有安装" in message
     assert "paddleocr-cuda" in message
-    assert "安装对应组件后重试" in message
+    assert "可选识别能力" in message
 
 
 def test_engine_preparation_message_tolerates_missing_detail() -> None:
     message = engine_preparation_required_message(None)
-    assert "所选 OCR 引擎尚未准备完成" in message
-    assert "组件：" not in message
-    assert "安装对应组件后重试" in message
+    assert "所选识别引擎还没有安装" in message
+    assert "（）" not in message
+    assert "可选识别能力" in message

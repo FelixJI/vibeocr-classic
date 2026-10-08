@@ -3,7 +3,7 @@
 ################################################################################
 ## Form generated from reading UI file 'main_window.ui'
 ##
-## Created by: Qt User Interface Compiler version 6.11.1
+## Created by: Qt User Interface Compiler version 6.12.0
 ##
 ## WARNING! All changes made in this file will be lost when recompiling UI file!
 ################################################################################
@@ -786,7 +786,7 @@ class Ui_MainWindowWidget(object):
         self.labelEngineAvailabilityHint.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u53ea\u8bfb\u6982\u89c8\u3002\u968f\u5305\u5de5\u5177\u65e0\u9700\u5b89\u88c5\uff1b\u9700\u8981\u989d\u5916\u7ec4\u4ef6\u7684\u80fd\u529b\u53ef\u5728\u4e0b\u65b9\u9009\u62e9\u5b89\u88c5\u3002",
+                "\u57fa\u7840\u8bc6\u522b\u5df2\u5185\u7f6e\uff0c\u65e0\u9700\u5b89\u88c5\u3002\u9ad8\u7ea7\u8bc6\u522b\u80fd\u529b\u53ef\u5728\u4e0b\u65b9\u9009\u62e9\u5b89\u88c5\u3002",
                 None,
             )
         )
@@ -811,7 +811,7 @@ class Ui_MainWindowWidget(object):
         self.labelOfflineFeaturesHint.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u4ec5\u5217\u51fa\u9700\u8981\u989d\u5916\u4e0b\u8f7d\u7684\u80fd\u529b\u3002\u52fe\u9009\u540e\u70b9\u51fb\u5b89\u88c5\uff0c\u5df2\u6709\u7684\u968f\u5305\u80fd\u529b\u4e0d\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
+                "\u8fd9\u91cc\u53ea\u5217\u9700\u8981\u989d\u5916\u4e0b\u8f7d\u5b89\u88c5\u7684\u80fd\u529b\u3002\u52fe\u9009\u540e\u70b9\u51fb\u5b89\u88c5\u6309\u94ae\u5373\u53ef\uff1b\u5df2\u5185\u7f6e\u7684\u80fd\u529b\u4e0d\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
                 None,
             )
         )
@@ -881,7 +881,7 @@ class Ui_MainWindowWidget(object):
         self.treeDepsStatus.setToolTip(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u5f53\u524d\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6\u72b6\u6001\u3002\u5c55\u5f00 Backend \u53ef\u67e5\u770b\u968f\u5305\u7ec4\u4ef6\uff1b\u5f02\u5e38\u9879\u53ef\u7528\u4e0b\u65b9\u7ef4\u62a4\u64cd\u4f5c\u4fee\u590d\u3002",
+                "\u5df2\u5b89\u88c5\u7684\u8bc6\u522b\u5f15\u64ce\u4e0e\u7248\u672c\u3002\u51fa\u73b0\u5f02\u5e38\u65f6\uff0c\u53ef\u5728\u201c\u53ef\u9009\u8bc6\u522b\u80fd\u529b\u201d\u91cc\u91cd\u65b0\u5b89\u88c5\u5bf9\u5e94\u5f15\u64ce\u3002",
                 None,
             )
         )
@@ -946,7 +946,7 @@ class Ui_MainWindowWidget(object):
         self.btnUpdateDeps.setToolTip(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "Runtime \u7248\u672c\u968f VibeOCR \u4ea7\u54c1\u66f4\u65b0\u7edf\u4e00\u5347\u7ea7\uff1b\u6b64\u5904\u53ea\u5237\u65b0 component-lock \u7ed1\u5b9a\u72b6\u6001\u3002",
+                "\u8bc6\u522b\u5f15\u64ce\u968f\u5e94\u7528\u66f4\u65b0\u7edf\u4e00\u5347\u7ea7\uff1b\u6b64\u5904\u53ea\u5237\u65b0\u663e\u793a\uff0c\u4e0d\u4f1a\u89e6\u53d1\u4e0b\u8f7d\u3002",
                 None,
             )
         )

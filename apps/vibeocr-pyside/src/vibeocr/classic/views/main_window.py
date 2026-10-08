@@ -1034,13 +1034,13 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         if result == 1:
-            self._statusbar.showMessage("OCR依赖安装成功")
-            # 安装成功后启动子进程 Worker
+            self._statusbar.showMessage("识别引擎安装成功")
+            # 安装成功后启动识别服务
             self._start_supervisor()
             # 双保险刷新设置页（覆盖只发 finished 不发 install_succeeded 的路径）
             self._refresh_settings_env_state()
         else:
-            self._statusbar.showMessage("OCR依赖安装失败")
+            self._statusbar.showMessage("识别引擎安装失败")
 
     @Slot()
     def _on_install_succeeded(self) -> None:
@@ -1048,10 +1048,10 @@ class MainWindow(QMainWindow):
         if self._closing:
             return
         self._ocr_ready = True
-        self._statusbar.showMessage("Base Runtime 已准备，快速 OCR 可直接使用")
-        self._statusbar.set_result("Base Runtime 已验证")
-        # 安装完成后 Python 运行时状态已变，刷新设置页环境维护区 label
-        # （首启时 label 在 Python 未装时写下"未安装"，此处避免重启才更新）
+        self._statusbar.showMessage("识别引擎安装完成")
+        self._statusbar.set_result("识别引擎已就绪")
+        # 安装完成后识别能力状态已变，刷新设置页环境维护区 label
+        # （首启时 label 在引擎未装时写下"未安装"，此处避免重启才更新）
         self._refresh_settings_env_state()
 
     def _refresh_settings_env_state(self) -> None:

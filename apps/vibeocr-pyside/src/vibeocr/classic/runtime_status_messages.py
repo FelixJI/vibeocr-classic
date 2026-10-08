@@ -31,7 +31,7 @@ _PROFILE_FRAMEWORKS = {
 #: 未随 profile 携带 CUDA 变体信息时的兜底显示。
 _GENERIC_GPU_LABEL = "NVIDIA CUDA（版本未知）"
 
-_BASE_RUNTIME_LABEL = "基础 Runtime（未选择高级 OCR 框架）"
+_BASE_RUNTIME_LABEL = "基础识别（未安装高级识别引擎）"
 
 
 def _advanced_framework_states(components: object) -> list[tuple[str, str]] | None:
@@ -145,10 +145,10 @@ def format_runtime_unavailable(reasons: Sequence[str]) -> str:
         not_installed.append(label)
     else:
         if not_installed:
-            return f"Runtime 未安装：{'、'.join(not_installed)}"
+            return f"识别服务未安装：{'、'.join(not_installed)}"
 
     detail = "、".join(reasons)
-    return f"Runtime 不可用：{detail}" if detail else "Runtime 不可用"
+    return f"识别服务不可用：{detail}" if detail else "识别服务不可用"
 
 
 def engine_preparation_required_message(detail: object = None) -> str:
@@ -162,22 +162,21 @@ def engine_preparation_required_message(detail: object = None) -> str:
     if isinstance(detail, Mapping):
         value = detail.get("required_component")
         required = value if isinstance(value, str) and value else None
-    component = f"（组件：{required}）" if required else ""
+    component = f"（{required}）" if required else ""
     return (
-        "所选 OCR 引擎尚未准备完成，需要先安装对应的运行时组件"
-        f"{component}。请在「设置 → 当前可用的识别能力」安装对应组件后重试。"
+        "所选识别引擎还没有安装"
+        f"{component}。请到「设置 → 可选识别能力」勾选并安装后重试。"
     )
 
 
 def supervisor_start_failure_message() -> str:
     return (
-        "OCR Supervisor 子进程未能完成启动和就绪握手。\n\n"
+        "内置识别服务未能完成启动。\n\n"
         "可能原因：\n"
-        "1. 当前 Runtime profile 未完成安装或验证\n"
-        "2. 子进程被安全软件拦截或异常退出\n"
-        "3. 本地通信初始化失败\n\n"
-        "模型尚未开始按需加载，因此通常不是模型下载问题。\n\n"
-        "请查看控制台日志了解详情。"
+        "1. 识别引擎的安装不完整\n"
+        "2. 被安全软件拦截\n"
+        "3. 本地服务初始化失败\n\n"
+        "请查看日志文件了解详情。"
     )
 
 

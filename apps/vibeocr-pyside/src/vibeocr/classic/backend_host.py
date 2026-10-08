@@ -166,6 +166,9 @@ class InProcessBackendHost:
             log_level="info",
             access_log=False,
             workers=1,
+            # 进程内宿主不得重配应用的全局日志（uvicorn 默认会按自己的
+            # LOGGING_CONFIG 调整 root/uvicorn logger，影响宿主进程）。
+            log_config=None,
         )
         server = uvicorn.Server(config)
         thread = threading.Thread(

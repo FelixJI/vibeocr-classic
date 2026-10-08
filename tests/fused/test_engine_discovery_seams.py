@@ -9,7 +9,6 @@ Classic 在进程内承载后端时，Paddle/MinerU/PDF 子进程不再共用运
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 
 from vibeocr.backend.env_manager import get_embedded_python_executable

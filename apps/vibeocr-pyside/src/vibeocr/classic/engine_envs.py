@@ -298,7 +298,7 @@ class EngineEnvManager:
         )
 
         python = _env_python(root)
-        _phase(f"正在下载并安装依赖（体积较大，进度见下方日志）")
+        _phase("正在下载并安装依赖（体积较大，进度见下方日志）")
         self._uv.run(
             [
                 "pip",

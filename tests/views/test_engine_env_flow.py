@@ -1,6 +1,5 @@
 """融合形态（进程内后端 + uv 引擎环境）的设置页安装入口测试。"""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest

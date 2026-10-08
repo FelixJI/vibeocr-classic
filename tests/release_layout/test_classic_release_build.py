@@ -25,9 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_release_build_avoids_collecting_all_of_pyside() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
-    project = (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
-        encoding="utf-8"
-    )
 
     assert "--collect-all PySide6" not in script
     assert "prune_pyside_artifact.py" in script

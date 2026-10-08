@@ -96,7 +96,7 @@ def test_ensure_mineru_skips_backend_install(envs) -> None:
     fake = FakeUvRunner()
     manager._uv = fake
 
-    state = manager.ensure("mineru-gpu")
+    manager.ensure("mineru-gpu")
 
     assert len(fake.commands) == 2
     assert any("cu126" in str(p) for p in fake.commands[1])

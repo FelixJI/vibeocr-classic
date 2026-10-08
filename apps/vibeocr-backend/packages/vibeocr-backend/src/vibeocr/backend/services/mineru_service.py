@@ -180,9 +180,14 @@ class MinerUService(metaclass=SingletonMeta):
         """查找可用的 Python 解释器
 
         查找顺序:
-        1. 嵌入式 Python（便携模式）
-        2. 当前 Python 解释器（开发模式）
+        1. ``VIBEOCR_MINERU_PYTHON``——宿主（桌面端）显式指定的 MinerU 环境解释器
+        2. 嵌入式 Python（便携模式）
+        3. 当前 Python 解释器（开发模式）
         """
+        env_python = os.environ.get("VIBEOCR_MINERU_PYTHON")
+        if env_python and Path(env_python).is_file():
+            return Path(env_python)
+
         from vibeocr.backend.env_manager import get_embedded_python, get_project_root
 
         project_root = get_project_root()

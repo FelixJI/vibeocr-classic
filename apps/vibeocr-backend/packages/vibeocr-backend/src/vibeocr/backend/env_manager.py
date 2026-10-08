@@ -358,8 +358,18 @@ def get_embedded_python_path(project_root: Path) -> Path:
 def get_embedded_python_executable(project_root: Path) -> Path:
     """获取嵌入式Python可执行文件路径
 
-    优先使用 .venv 虚拟环境(开发模式),如果不存在则使用 python/ 目录(便携式部署)
+    查找顺序：
+    1. ``VIBEOCR_BACKEND_PYTHON``——宿主（桌面端）显式指定的后端工具解释器
+       （例如 PDF 子进程使用的环境）；
+    2. ``.venv`` 虚拟环境（开发模式）；
+    3. ``python/`` 目录（便携式部署）。
     """
+    env_python = os.environ.get("VIBEOCR_BACKEND_PYTHON")
+    if env_python:
+        candidate = Path(env_python)
+        if candidate.is_file():
+            return candidate
+
     if _is_active_python_environment_root(project_root):
         return Path(sys.executable).resolve()
 

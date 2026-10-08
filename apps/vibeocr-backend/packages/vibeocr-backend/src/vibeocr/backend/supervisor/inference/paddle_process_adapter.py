@@ -35,19 +35,35 @@ logger = logging.getLogger(__name__)
 
 
 def paddle_python() -> Path | None:
-    root = Path(sys.prefix) / "engines" / "paddle"
-    return next(
-        (
-            p
-            for p in (
-                root / "python.exe",
-                root / "Scripts/python.exe",
-                root / "bin/python",
-            )
-            if p.is_file()
-        ),
-        None,
-    )
+    """Locate the dedicated Paddle engine interpreter.
+
+    Lookup order:
+    1. ``VIBEOCR_PADDLE_HOME`` — explicit root of the Paddle engine environment
+       (set by the embedding host, e.g. the desktop client's uv-managed envs);
+    2. ``<sys.prefix>/engines/paddle`` — legacy layout where the supervisor ran
+       inside the runtime-store interpreter.
+    """
+    candidates_roots: list[Path] = []
+    env_root = os.environ.get("VIBEOCR_PADDLE_HOME")
+    if env_root:
+        candidates_roots.append(Path(env_root))
+    candidates_roots.append(Path(sys.prefix) / "engines" / "paddle")
+    for root in candidates_roots:
+        python = next(
+            (
+                p
+                for p in (
+                    root / "python.exe",
+                    root / "Scripts/python.exe",
+                    root / "bin/python",
+                )
+                if p.is_file()
+            ),
+            None,
+        )
+        if python is not None:
+            return python
+    return None
 
 
 class PaddleProcessAdapter:

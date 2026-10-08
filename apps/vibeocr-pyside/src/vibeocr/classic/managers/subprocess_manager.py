@@ -1,6 +1,6 @@
-"""Supervisor 子进程的 Qt 生命周期管理。
+"""Supervisor 生命周期管理（进程内承载 / 独立子进程两形态）。
 
-本模块只拥有启动任务、Supervisor 进程和就绪令牌。模型加载、TTL、排队与
+本模块只拥有启动任务、Supervisor 承载体和就绪令牌。模型加载、TTL、排队与
 识别状态均由 Supervisor v2 自己管理，不能在 GUI 进程维护第二份状态。
 """
 
@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
+from vibeocr.classic.backend_host import inprocess_backend_enabled
 from vibeocr.classic.runtime_installation import (
     RuntimeInstallerClient,
     RuntimeLaunch,
@@ -33,19 +34,32 @@ class SubprocessStartSignals(QObject):
 
 
 class SupervisorStartTask(QRunnable):
-    """在线程池启动 Supervisor；Qt adapter 由 GUI 线程安装。"""
+    """在线程池启动 Supervisor；Qt adapter 由 GUI 线程安装。
+
+    承载方式二选一：
+    - ``backend_host``：进程内承载（默认），后端服务跑在本进程专用线程；
+    - ``installer_client``/``python_exe``：旧的独立子进程形态（T6 冒烟与
+      ``VIBEOCR_SUPERVISOR_SUBPROCESS=1`` 逃生口）。
+    """
 
     def __init__(
         self,
         python_exe: str | Path | None = None,
         *,
+        backend_host: Any | None = None,
         installer_client: RuntimeInstallerClient | None = None,
         required_capabilities: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
-        if python_exe is None and installer_client is None:
-            raise ValueError("python_exe or installer_client is required")
+        sources = [
+            source
+            for source in (python_exe, backend_host, installer_client)
+            if source is not None
+        ]
+        if not sources:
+            raise ValueError("python_exe, backend_host or installer_client is required")
         self._python_exe = str(python_exe) if python_exe is not None else None
+        self._backend_host = backend_host
         self._installer_client = installer_client
         self.required_capabilities = required_capabilities
         self._cancelled = threading.Event()
@@ -58,44 +72,11 @@ class SupervisorStartTask(QRunnable):
     def run(self) -> None:
         if self._cancelled.is_set():
             return
-        # launch 同时完成进程创建与 ready envelope 握手；明确陈述阶段，
-        # 避免用户误以为模型也在此时加载。
-        self.signals.progress.emit("正在创建子进程并等待就绪握手")
         try:
-            from vibeocr.runtime_client.process import SupervisorProcess
-
-            launch: RuntimeLaunch | None = None
-            if self._installer_client is not None:
-                self.signals.progress.emit("正在确保绑定的 Runtime profile")
-                launch = self._installer_client.ensure(
-                    progress=self.signals.progress.emit,
-                    cancel_event=self._cancelled,
-                    required_capabilities=self.required_capabilities,
-                    # Supervisor 启动只依赖产品随附的 Base Runtime，但期望
-                    # 闭包必须等于当前已安装闭包：Backend ensure 要求
-                    # installed == desired（双向不一致都会按 desired 整仓
-                    # 重装），固定 base-only 会把用户显式安装的完整 profile
-                    # 或高级组件静默缩回 base-only，随后引擎提交以 428
-                    # (OCR_ENGINE_PREPARATION_REQUIRED) 失败。
-                    install_component_ids=(
-                        self._installer_client.startup_install_component_ids()
-                    ),
-                )
-            proc = SupervisorProcess.launch(
-                python_exe=(
-                    launch.python_executable if launch is not None else self._python_exe
-                ),
-                module=(
-                    launch.supervisor_module
-                    if launch is not None
-                    else "vibeocr.backend.supervisor.main"
-                ),
-                extra_env=launch.environment if launch is not None else None,
-                working_directory=(
-                    launch.working_directory if launch is not None else None
-                ),
-            )
-            self.supervisor_proc = proc
+            if self._backend_host is not None:
+                self._run_inprocess()
+            else:
+                self._run_subprocess()
             if self._cancelled.is_set():
                 return
             self.signals.started.emit(True)
@@ -110,6 +91,56 @@ class SupervisorStartTask(QRunnable):
                 self.supervisor_proc = None
             if not self._cancelled.is_set():
                 self.signals.started.emit(False)
+
+    def _run_inprocess(self) -> None:
+        """在本进程内承载后端服务（融合形态）。"""
+        # 组合根构建 + uvicorn 就绪都在本线程完成；明确陈述阶段，
+        # 避免用户误以为模型也在此时加载。
+        self.signals.progress.emit("正在启动内置识别服务")
+        handle = self._backend_host.start(
+            progress=self.signals.progress.emit,
+            cancel_event=self._cancelled,
+        )
+        self.supervisor_proc = handle
+
+    def _run_subprocess(self) -> None:
+        # launch 同时完成进程创建与 ready envelope 握手；明确陈述阶段，
+        # 避免用户误以为模型也在此时加载。
+        self.signals.progress.emit("正在创建子进程并等待就绪握手")
+        from vibeocr.runtime_client.process import SupervisorProcess
+
+        launch: RuntimeLaunch | None = None
+        if self._installer_client is not None:
+            self.signals.progress.emit("正在确保绑定的 Runtime profile")
+            launch = self._installer_client.ensure(
+                progress=self.signals.progress.emit,
+                cancel_event=self._cancelled,
+                required_capabilities=self.required_capabilities,
+                # Supervisor 启动只依赖产品随附的 Base Runtime，但期望
+                # 闭包必须等于当前已安装闭包：Backend ensure 要求
+                # installed == desired（双向不一致都会按 desired 整仓
+                # 重装），固定 base-only 会把用户显式安装的完整 profile
+                # 或高级组件静默缩回 base-only，随后引擎提交以 428
+                # (OCR_ENGINE_PREPARATION_REQUIRED) 失败。
+                install_component_ids=(
+                    self._installer_client.startup_install_component_ids()
+                ),
+            )
+        proc = SupervisorProcess.launch(
+            python_exe=(
+                launch.python_executable if launch is not None else self._python_exe
+            ),
+            module=(
+                launch.supervisor_module
+                if launch is not None
+                else "vibeocr.backend.supervisor.main"
+            ),
+            extra_env=launch.environment if launch is not None else None,
+            working_directory=(
+                launch.working_directory if launch is not None else None
+            ),
+        )
+        self.supervisor_proc = proc
 
 
 class SubprocessManager(QObject):
@@ -127,6 +158,7 @@ class SubprocessManager(QObject):
         super().__init__(parent)
         self._project_root = project_root
         self._installer_client = RuntimeInstallerClient(project_root)
+        self._backend_host: Any | None = None
         self._thread_pool = QThreadPool()
         self._is_ready = False
         self._start_task: SupervisorStartTask | None = None
@@ -176,16 +208,23 @@ class SubprocessManager(QObject):
             return
 
         self._shutdown_requested = False
-        try:
-            required_capabilities = self._installer_client.required_capabilities()
-        except Exception:
-            logger.exception("[SubprocessManager] 产品 capability 锁读取失败")
+        required_capabilities = self._required_capabilities()
+        if required_capabilities is None:
             self.service_ready.emit(False)
             return
         test_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
         if os.environ.get("VIBEOCR_SELF_TEST_SMOKE") == "t6" and test_python:
             task = SupervisorStartTask(
                 test_python,
+                required_capabilities=required_capabilities,
+            )
+        elif inprocess_backend_enabled():
+            from vibeocr.classic.backend_host import InProcessBackendHost
+
+            if self._backend_host is None:
+                self._backend_host = InProcessBackendHost(self._project_root)
+            task = SupervisorStartTask(
+                backend_host=self._backend_host,
                 required_capabilities=required_capabilities,
             )
         else:
@@ -198,6 +237,23 @@ class SubprocessManager(QObject):
         task.signals.progress.connect(self.progress_update.emit)
         self._start_signals_connected = True
         self._thread_pool.start(task)
+
+    def _required_capabilities(self) -> tuple[str, ...] | None:
+        """产品必需 capability；读取失败时按承载方式决定回退。"""
+
+        try:
+            return self._installer_client.required_capabilities()
+        except Exception:
+            if inprocess_backend_enabled():
+                # 融合形态：不再依赖组件锁文件，以后端声明的全集为准。
+                logger.exception(
+                    "[SubprocessManager] 组件锁读取失败，回退为后端全部 capability"
+                )
+                from vibeocr.runtime_contracts.generated import ALL_CAPABILITIES
+
+                return tuple(ALL_CAPABILITIES)
+            logger.exception("[SubprocessManager] 产品 capability 锁读取失败")
+            return None
 
     def _on_started(self, success: bool) -> None:
         task = self._start_task

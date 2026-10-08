@@ -141,7 +141,9 @@ def test_t6_smoke_uses_explicit_test_python(
 def test_production_start_ignores_test_python_override(
     manager: SubprocessManager, monkeypatch, tmp_path
 ) -> None:
+    """进程内默认形态：生产启动忽略自测解释器，也不触碰安装器。"""
     monkeypatch.delenv("VIBEOCR_SELF_TEST_SMOKE", raising=False)
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
     monkeypatch.setenv(
         "VIBEOCR_SELF_TEST_PYTHON", str(tmp_path / "untrusted-python.exe")
     )
@@ -150,6 +152,21 @@ def test_production_start_ignores_test_python_override(
     manager.start_supervisor()
 
     assert manager._start_task._python_exe is None
+    assert manager._start_task._installer_client is None
+    assert manager._start_task._backend_host is manager._backend_host
+
+
+def test_subprocess_escape_hatch_uses_installer_path(
+    manager: SubprocessManager, monkeypatch
+) -> None:
+    """VIBEOCR_SUPERVISOR_SUBPROCESS=1 时回退旧的安装器子进程路径。"""
+    monkeypatch.delenv("VIBEOCR_SELF_TEST_SMOKE", raising=False)
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
+    manager._thread_pool.start = Mock()
+
+    manager.start_supervisor()
+
+    assert manager._start_task._backend_host is None
     assert manager._start_task._installer_client is manager._installer_client
 
 
@@ -193,6 +210,7 @@ def test_state_properties_track_starting_and_unclean_ownership(
 def test_worker_start_keeps_qt_event_loop_responsive(
     manager: SubprocessManager, qapp, qtbot, monkeypatch
 ) -> None:
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     entered = threading.Event()
     release = threading.Event()
     expected_python = manager._project_root / "runtime" / "python.exe"

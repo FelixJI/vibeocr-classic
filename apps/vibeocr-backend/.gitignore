@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.idea/
+.zcode/
+bin/
+obj/
+dist/
+build/
+artifacts/
+dev-overrides.json
+.worktrees/

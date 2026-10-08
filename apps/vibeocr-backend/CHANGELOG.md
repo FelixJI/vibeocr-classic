@@ -1,0 +1,300 @@
+# Changelog
+
+## 0.15.1
+
+### Bug Fixes
+
+- **mineru:** 保留无扩展名上传的媒体类型 (#117) (b730bad)
+
+## 0.15.0
+
+### Features
+
+- **mineru:** 支持无需本地依赖的远程解析 API (#114) (4cd2b27)
+
+## 0.14.2
+
+### Bug Fixes
+
+- **mineru:** 按 CPU 选择隔离子进程 GPU 设备 (#111) (9ae2d22)
+
+## 0.14.1
+
+### Bug Fixes
+
+- **runtime:** 修复并发取消的终态回执 (#106) (a21f141)
+
+### Performance
+
+- **ocr:** 限制默认推理线程预算以改善批量吞吐 (#109) (a8f24bb)
+
+## 0.14.0
+
+### Features
+
+- **runtime:** 实现独立组件安装计划与确认事务 (#103) (e7cb65c)
+- **mineru:** 适配四档配置与异步解析并隔离 Paddle 环境 (#102) (be08548)
+
+### Bug Fixes
+
+- **runtime:** 完善下载进度计量与取消恢复诊断 (#104) (8ae2547)
+- **runtime:** 为依赖解析补充有界进度与进程树清理 (#101) (e35b693)
+
+## 0.13.11
+
+### Features
+
+- **runtime:** 安装命令按行回报子进程状态明细 (#87) (51e98c6)
+
+## 0.13.10
+
+### Bug Fixes
+
+- **runtime:** 修复在线安装 sdist 解析失败并按引擎重组组件目录与下载进度 (#82) (5d35351)
+
+### Performance
+
+- **runtime:** 启动 ensure 复用组件探测结果避免重复导入 (#83) (646a5aa)
+
+## 0.13.9
+
+### Bug Fixes
+
+- **runtime:** 安装命令失败时保留子进程输出尾部 (#80) (3748529)
+
+## 0.13.8
+
+### Bug Fixes
+
+- **runtime:** inspect 与 ensure 按已安装闭包覆盖 profile 回报投影 (#78) (7557152)
+
+## 0.13.7
+
+### Bug Fixes
+
+- **qrcode:** 未知格式返回校验错误并应用 logo/label/invert 选项 (#76) (4cb99c7)
+- **runtime:** 修复 base-only 安装后 inspect 按错误投影误判漂移 (#75) (2420623)
+
+## 0.13.6
+
+### Bug Fixes
+
+- **runtime:** 补齐 winrt Foundation 闭包修复 Windows OCR 挂起 (#73) (c929d55)
+
+## 0.13.5
+
+### Dependencies
+
+- **runtime:** 更新 Python 运行时与依赖 (#71) (ff883e1)
+
+## 0.13.4
+
+### Features
+
+- **runtime:** 明确认识模式与资源生命周期 (#69) (6d46160)
+
+### Bug Fixes
+
+- **runtime:** 禁止提交阶段接受取消 (#68) (c4f3099)
+
+## 0.13.3
+
+### Bug Fixes
+
+- **release:** 规范运行时安装器包文件名 (#66) (5940141)
+
+## 0.13.2
+
+### Bug Fixes
+
+- **runtime:** 恢复模型源浅层选择 (#64) (79dd972)
+- **runtime:** 交还上游模型管理 (#63) (ad82b25)
+
+## 0.13.1
+
+### Bug Fixes
+
+- **runtime:** 闭合模型资产与离线发布门禁 (#58) (9a3ba62)
+
+## 0.13.0
+
+### Features
+
+- **runtime:** 接入 model registry 与持久化模型 acquisition (#56) (d816a1a)
+
+## 0.12.3
+
+### Bug Fixes
+
+- **runtime:** 漂移投影按覆盖 profile 取声明版本与分布绑定 (#54) (9bffd70)
+
+## 0.12.2
+
+### Bug Fixes
+
+- **runtime:** base-only 安装的漂移探测改用覆盖 profile 绑定 (#52) (eca677b)
+
+## 0.12.1
+
+### Features
+
+- **runtime:** 完善协议 2.7 选择与可信镜像链路 (#47) (c13e3dc)
+- **runtime:** 接入 Protocol 2.7.0 组件与下载源选择契约 (#45) (4ce02d3)
+- **ocr:** 接入通用 OCR 引擎选择协议与三引擎适配器 (#43) (451e772)
+- **runtime:** 实现可靠维护控制面 (#26) (a5f95db)
+- **runtime:** 发布可观察的 Runtime 维护状态 (#24) (c923eab)
+- **runtime:** 统一单一 Runtime 与加速方案 (#10) (8c68f90)
+- **ci:** 统一 CI/CD 自动化 (#11) (c7678af)
+- publish VibeOCR Backend 0.7.0 (d76ce23)
+
+### Bug Fixes
+
+- **runtime:** 在 runtime manifest 声明三项选择 capability (#50) (6164559)
+- **runtime:** 修复基础 OCR 运行时契约 (#48) (c1178ab)
+- **supervisor:** 转发 MinerU 管道选项到 file_parse (#46) (ab7b71d)
+- **runtime:** 修复依赖边界与失败语义 (#38) (3eebfb7)
+- **runtime:** 避免 inspect 重复探测组件 (#36) (6194c06)
+- **pdf:** 修复文字层偏移与字号过小 (#35) (9127533)
+- **runtime:** 降低安装进度写入并恢复短暂文件锁 (#33) (bd6862c)
+- **protocol:** 分离兼容范围与构建锁 (#31) (f5ad167)
+- **ci:** 修复镜像标签同步并完善六仓治理 (#30) (4f1ca8c)
+- **runtime:** 修复冻结 Installer 契约资源打包 (#28) (5c6c1fb)
+- **release:** 统一候选派生资产归属 (#20) (a4cac60)
+- **release:** 补齐 Backend 候选资产声明 (#18) (a7791cd)
+- **ci:** 修复发布 tag 推送认证 (#15) (3b93e80)
+- **backend:** 修复运行时并加固质量与发布链路 (#4) (3df965b)
+
+### Performance
+
+- **ci:** 支持统一分片门禁与取消过时 PR 运行 (#23) (b789df0)
+
+### Dependencies
+
+- **protocol:** 升级 Runtime Protocol 至 2.5.0 (#41) (802da7a)
+
+## 0.12.0
+
+### Features
+
+- **runtime:** 完善协议 2.7 选择与可信镜像链路 (#47) (c13e3dc)
+- **runtime:** 接入 Protocol 2.7.0 组件与下载源选择契约 (#45) (4ce02d3)
+- **ocr:** 接入通用 OCR 引擎选择协议与三引擎适配器 (#43) (451e772)
+
+### Bug Fixes
+
+- **runtime:** 修复基础 OCR 运行时契约 (#48) (c1178ab)
+- **supervisor:** 转发 MinerU 管道选项到 file_parse (#46) (ab7b71d)
+
+## 0.11.2
+
+### Bug Fixes
+
+- **runtime:** 修复依赖边界与失败语义 (#38) (3eebfb7)
+
+### Dependencies
+
+- **protocol:** 升级 Runtime Protocol 至 2.5.0 (#41) (802da7a)
+
+## 0.11.1
+
+### Bug Fixes
+
+- **runtime:** 避免 inspect 重复探测组件 (#36) (6194c06)
+- **pdf:** 修复文字层偏移与字号过小 (#35) (9127533)
+- **runtime:** 降低安装进度写入并恢复短暂文件锁 (#33) (bd6862c)
+
+## 0.11.0
+
+### Bug Fixes
+
+- **protocol:** 分离兼容范围与构建锁 (#31) (f5ad167)
+- **ci:** 修复镜像标签同步并完善六仓治理 (#30) (4f1ca8c)
+
+## 0.10.1
+
+### Bug Fixes
+
+- **runtime:** 修复冻结 Installer 契约资源打包 (#28) (5c6c1fb)
+
+## 0.10.0
+
+### Features
+
+- **runtime:** 实现可靠维护控制面 (#26) (a5f95db)
+
+## 0.9.0
+
+### Features
+
+- **runtime:** 发布可观察的 Runtime 维护状态 (#24) (c923eab)
+
+### Performance
+
+- **ci:** 支持统一分片门禁与取消过时 PR 运行 (#23) (b789df0)
+
+## 0.8.2
+
+### Features
+
+- **runtime:** 统一单一 Runtime 与加速方案 (#10) (8c68f90)
+- **ci:** 统一 CI/CD 自动化 (#11) (c7678af)
+
+### Bug Fixes
+
+- **release:** 统一候选派生资产归属 (#20) (a4cac60)
+- **release:** 补齐 Backend 候选资产声明 (#18) (a7791cd)
+- **ci:** 修复发布 tag 推送认证 (#15) (3b93e80)
+
+## 0.8.1
+
+### Features
+
+- **runtime:** 统一单一 Runtime 与加速方案 (#10) (8c68f90)
+- **ci:** 统一 CI/CD 自动化 (#11) (c7678af)
+
+### Bug Fixes
+
+- **release:** 补齐 Backend 候选资产声明 (#18) (a7791cd)
+- **ci:** 修复发布 tag 推送认证 (#15) (3b93e80)
+
+## 0.8.0
+
+### Features
+
+- **runtime:** 统一单一 Runtime 与加速方案 (#10) (8c68f90)
+- **ci:** 统一 CI/CD 自动化 (#11) (c7678af)
+
+### Bug Fixes
+
+- **ci:** 修复发布 tag 推送认证 (#15) (3b93e80)
+
+## [0.7.2](https://github.com/FelixJI/vibeocr-backend/compare/v0.7.1...v0.7.2) (2026-08-02)
+
+
+### Features
+
+* publish VibeOCR Backend 0.7.0 ([d76ce23](https://github.com/FelixJI/vibeocr-backend/commit/d76ce23dc294cd29695367f8fb2548151e04e932))
+
+
+### Bug Fixes
+
+* **backend:** 修复运行时并加固质量与发布链路 ([#4](https://github.com/FelixJI/vibeocr-backend/issues/4)) ([3df965b](https://github.com/FelixJI/vibeocr-backend/commit/3df965bd65919c5c140126902363fdf7eabfb8f5))
+
+
+### Build and Packaging
+
+* **deps-dev:** bump pytest from 9.0.2 to 9.0.3 ([#5](https://github.com/FelixJI/vibeocr-backend/issues/5)) ([358d2a9](https://github.com/FelixJI/vibeocr-backend/commit/358d2a9ce1c23bc4b69ebe61d93a41a3621b90eb))
+
+## [0.7.1](https://github.com/FelixJI/vibeocr-backend/compare/v0.7.0...v0.7.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **backend:** 修复运行时并加固质量与发布链路 ([#4](https://github.com/FelixJI/vibeocr-backend/issues/4)) ([3df965b](https://github.com/FelixJI/vibeocr-backend/commit/3df965bd65919c5c140126902363fdf7eabfb8f5))
+
+
+### Build and Packaging
+
+* **deps-dev:** bump pytest from 9.0.2 to 9.0.3 ([#5](https://github.com/FelixJI/vibeocr-backend/issues/5)) ([358d2a9](https://github.com/FelixJI/vibeocr-backend/commit/358d2a9))
+
+All notable changes to this project will be documented in this file.

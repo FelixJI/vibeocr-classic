@@ -1,0 +1,11 @@
+{
+  "fixture_contract_version": 1,
+  "synthetic": true,
+  "fixtures": [
+    {"name": "mineru-legacy", "file": "mineru-legacy.json", "provider": "mineru-legacy", "provider_version": "synthetic", "source_schema": "mineru-legacy-block", "sha256": "a1f65b392abb430744bead4c5bd90306a076aeb85084c80cd64604b34d4483c9"},
+    {"name": "mineru-v2", "file": "mineru-v2.json", "provider": "mineru-v2", "provider_version": "synthetic", "source_schema": "mineru-v2-block", "sha256": "3d86d92f458c1339bad1e81d160136b99f2fdc25b7edef661af3d474e66bed9e"},
+    {"name": "paddleocr-table-recognition", "file": "paddle-table-recognition.json", "provider": "paddleocr-table-recognition", "provider_version": "synthetic", "source_schema": "paddlex-table-res", "sha256": "a9c029bb4daeac86eb5203c96b117ada3a7f4712682428fe7185099264b751d8"},
+    {"name": "paddleocr-pp-structure", "file": "paddle-pp-structure.json", "provider": "paddleocr-pp-structure", "provider_version": "synthetic", "source_schema": "pp-structure-res", "sha256": "ba66b5bd56d1f010a429f89cf331ca567c435aec05b1022b41278a5b38149c4e"},
+    {"name": "paddleocr-vl", "file": "paddle-vl.json", "provider": "paddleocr-vl", "provider_version": "synthetic", "source_schema": "paddleocr-vl-dual-source", "sha256": "fde4b0f7a72b134a025b9ba0e612ee2eb40cf197e720c7e55167e3d6197d742a"}
+  ]
+}

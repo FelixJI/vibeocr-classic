@@ -125,6 +125,11 @@ class InProcessBackendHost:
         stager_root = self._state_root / "temp" / "supervisor-stager"
         stager_root.mkdir(parents=True, exist_ok=True)
         self._apply_environment(stager_root)
+        # 已安装的引擎环境（Paddle/MinerU）在此刻告知后端；后续安装由
+        # 设置页在停止服务后调用 apply_runtime_env 并重启后端生效。
+        from vibeocr.classic.engine_envs import EngineEnvManager
+
+        EngineEnvManager(self._state_root / "envs").apply_runtime_env()
 
         _emit("正在准备识别服务组件")
         from vibeocr.backend.supervisor.composition import build_supervisor

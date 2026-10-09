@@ -80,3 +80,29 @@ def create_windows_shortcut(
     except Exception:
         logger.exception("PowerShell 创建快捷方式失败")
         return False
+
+
+def read_windows_shortcut_target(shortcut_path: str) -> str:
+    """读取 ``.lnk`` 的目标命令（TargetPath，不含参数）。
+
+    用于判断某个历史快捷方式是否指向本产品（例如迁移旧命名），避免误删
+    其它应用的快捷方式。读取失败（文件不存在/COM 失败）返回空字符串。
+    """
+    script = (
+        "$WshShell = New-Object -ComObject WScript.Shell; "
+        f"$Shortcut = $WshShell.CreateShortcut('{shortcut_path}'); "
+        "Write-Output $Shortcut.TargetPath"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except Exception:
+        logger.exception("PowerShell 读取快捷方式失败")
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()

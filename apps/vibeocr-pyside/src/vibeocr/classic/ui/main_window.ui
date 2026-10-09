@@ -425,7 +425,7 @@
               <item>
                <widget class="QLabel" name="labelEngineAvailabilityHint">
                 <property name="text">
-                  <string>只读概览。随包工具无需安装；需要额外组件的能力可在下方选择安装。</string>
+                  <string>基础识别已内置，无需安装。高级识别能力可在下方选择安装。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -478,7 +478,7 @@
               <item>
                <widget class="QLabel" name="labelOfflineFeaturesHint">
                 <property name="text">
-                  <string>仅列出需要额外下载的能力。勾选后点击安装，已有的随包能力不会出现在这里。</string>
+                  <string>这里只列需要额外下载安装的能力。勾选后点击安装按钮即可；已内置的能力不会出现在这里。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -524,16 +524,16 @@
            <item>
             <widget class="QGroupBox" name="groupDownloadSources">
              <property name="title">
-               <string>下载设置</string>
+               <string>下载来源</string>
              </property>
              <layout class="QVBoxLayout" name="downloadSourcesLayout">
               <property name="spacing">
-               <number>8</number>
+                <number>8</number>
               </property>
               <item>
                <widget class="QLabel" name="labelDownloadSource">
                 <property name="text">
-                  <string>仅影响后续组件下载。每类可选一个；留空时使用 Runtime 默认源。</string>
+                  <string>依赖和模型从哪里下载。更改只影响之后的下载。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -543,7 +543,7 @@
               <item>
                <widget class="QPushButton" name="btnSaveDownloadSources">
                 <property name="text">
-                 <string>保存下载源</string>
+                  <string>保存</string>
                 </property>
                </widget>
               </item>
@@ -661,7 +661,7 @@
               <item>
                <widget class="QTreeWidget" name="treeDepsStatus">
                 <property name="toolTip">
-                  <string>当前运行环境与组件状态。展开 Backend 可查看随包组件；异常项可用下方维护操作修复。</string>
+                  <string>已安装的识别引擎与版本。出现异常时，可在“可选识别能力”里重新安装对应引擎。</string>
                 </property>
                 <property name="editTriggers">
                  <set>QAbstractItemView::NoEditTriggers</set>
@@ -772,7 +772,7 @@
                 <item>
                  <widget class="QPushButton" name="btnUpdateDeps">
                   <property name="toolTip">
-                   <string>Runtime 版本随 VibeOCR 产品更新统一升级；此处只刷新 component-lock 绑定状态。</string>
+                   <string>识别引擎随应用更新统一升级；此处只刷新显示，不会触发下载。</string>
                   </property>
                   <property name="text">
                    <string>刷新产品绑定状态</string>

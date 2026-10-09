@@ -37,7 +37,22 @@ class DependencyCheckTask(QRunnable):
         self.signals = DependencyCheckSignals()
 
     def run(self) -> None:
-        """检查可启动的 Base Runtime，而非可选组件的完整安装状态。"""
+        """检查识别服务是否可启动（融合形态下基础能力内置）。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态：识别服务在前端进程内运行，基础识别能力随主程序
+            # 内置，无需安装独立运行环境；只验证后端组件可导入。
+            try:
+                import vibeocr.backend.supervisor.app  # noqa: F401
+                import vibeocr.backend.supervisor.composition  # noqa: F401
+            except Exception as exc:  # pragma: no cover - 环境损坏
+                logging.warning("[依赖检查] 内置识别服务导入失败: %s", exc)
+                self.signals.finished.emit(False, [str(exc)])
+                return
+            self.signals.finished.emit(True, [])
+            return
+
         try:
             inspection = self._client.inspect()
         except RuntimeInstallerClientError as exc:

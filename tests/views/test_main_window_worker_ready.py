@@ -99,17 +99,17 @@ def test_missing_base_runtime_starts_automatic_base_preparation_after_gui_is_rea
 
     single_shot.assert_called_once()
     window._start_install.assert_called_once_with()
-    window._statusbar.set_result.assert_called_once_with("Runtime 未安装：CPU")
+    window._statusbar.set_result.assert_called_once_with("识别服务未安装：CPU")
 
 
 def test_base_install_success_replaces_stale_not_installed_result() -> None:
     window = _MissingRuntimeWindow()
     window._refresh_settings_env_state = MagicMock()
-    window._statusbar.resultMessage.return_value = "Runtime 未安装：CPU"
+    window._statusbar.resultMessage.return_value = "识别服务未安装：CPU"
 
     window._on_install_succeeded()
 
-    window._statusbar.set_result.assert_called_once_with("Base Runtime 已验证")
+    window._statusbar.set_result.assert_called_once_with("识别引擎已就绪")
 
 
 def test_advanced_component_gaps_never_open_a_first_start_dialog() -> None:
@@ -308,10 +308,9 @@ def test_supervisor_failure_does_not_blame_model_download() -> None:
     window._statusbar.set_result.assert_called_once_with("OCR 暂不可用")
     window._statusbar.clearMessage.assert_called_once_with()
     message = warning.call_args.args[2]
-    assert "就绪握手" in message
-    assert "当前 Runtime profile 未完成安装或验证" in message
+    assert "内置识别服务未能完成启动" in message
+    assert "识别引擎的安装不完整" in message
     assert "依赖损坏" not in message
-    assert "通常不是模型下载问题" in message
 
 
 def test_t6_supervisor_failure_exits_instead_of_opening_modal(

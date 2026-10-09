@@ -164,6 +164,8 @@ class SettingsPageController:
         self._defer_machine_cache_status = defer_machine_cache_status
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._runtime_adapter = None
+        # 引擎环境安装对话框的强引用（无父对象，防 GC 销毁）。
+        self._engine_env_dialog = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
         self._selection_catalog: RuntimeSelectionCatalog | None = None
         self._selection_load_error: str | None = None
@@ -498,13 +500,13 @@ class SettingsPageController:
         layout.addWidget(row)
 
     def _on_create_desktop_shortcut(self) -> None:
-        """在桌面创建 VibeOCR 快捷方式。"""
+        """在桌面创建 VibeOCR Classic 快捷方式。"""
         if not _is_bundled():
             self._show_settings_toast("仅在打包版本中可用")
             return
 
         desktop = Path(os.environ.get("USERPROFILE", "")) / "Desktop"
-        lnk = str(desktop / "VibeOCR.lnk")
+        lnk = str(desktop / "VibeOCR Classic.lnk")
         target = sys.executable
         icon = _resolve_shortcut_icon_path()
         wd = str(Path(sys.executable).parent)
@@ -514,7 +516,7 @@ class SettingsPageController:
         )
 
     def _on_create_start_menu_shortcut(self) -> None:
-        """在开始菜单创建 VibeOCR 快捷方式。"""
+        """在开始菜单创建 VibeOCR Classic 快捷方式。"""
         if not _is_bundled():
             self._show_settings_toast("仅在打包版本中可用")
             return
@@ -525,9 +527,9 @@ class SettingsPageController:
             / "Windows"
             / "Start Menu"
             / "Programs"
-            / "VibeOCR"
+            / "VibeOCR Classic"
         )
-        lnk = str(start_menu / "VibeOCR.lnk")
+        lnk = str(start_menu / "VibeOCR Classic.lnk")
         target = sys.executable
         icon = _resolve_shortcut_icon_path()
         wd = str(Path(sys.executable).parent)
@@ -728,12 +730,208 @@ class SettingsPageController:
 
     def _on_backend_change_requested(self, target: str) -> None:
         """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
         backend_options = self._backend_options
         if target not in {"cpu", "gpu"}:
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
             return
+        if inprocess_backend_enabled():
+            self._switch_engine_device_fused(target)
+            return
         self._open_install_dialog(force_backend=target)
+
+    # ------------------------------------------------------------------
+    # 融合形态：uv 引擎环境（Paddle/MinerU × CPU/GPU）
+    # ------------------------------------------------------------------
+
+    def _engine_env_manager(self):
+        from vibeocr.classic.engine_envs import EngineEnvManager
+
+        return EngineEnvManager(self._project_root / "envs")
+
+    def _install_offline_features_fused(self) -> None:
+        """融合形态的“安装所选能力…”：翻译为引擎环境组合并弹安装对话框。"""
+        from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
+
+        features = set(self._selected_offline_features())
+        manager = self._engine_env_manager()
+        states = manager.inspect()
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+
+        if not features:
+            if installed_ids:
+                # 空选择 + 已装环境 = 明确的全部移除意图（释放磁盘）。
+                answer = QMessageBox.question(
+                    None,
+                    "移除识别引擎",
+                    "未勾选任何识别能力。将移除所有已安装的识别引擎并释放磁盘空间。\n是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._open_engine_env_dialog([], sorted(installed_ids))
+                return
+            QMessageBox.information(
+                None,
+                "未选择能力",
+                "请先勾选需要安装的识别能力。",
+            )
+            return
+        paddle = "paddleocr" in features
+        mineru = "mineru" in features
+        gpu = (
+            ("gpu_runtime" in features)
+            or (self._runtime_backend_or_none() == "gpu")
+            or self._engine_device_preference() == "gpu"
+        )
+
+        target_ids = describe_selection(paddle=paddle, mineru=mineru, gpu=gpu)
+        names = "、".join(get_engine_env_spec(spec_id).display_name for spec_id in target_ids)
+        remove_ids = sorted(installed_ids - set(target_ids))
+
+        if not target_ids and not remove_ids:
+            return
+        remove_note = (
+            "\n不再使用的引擎会被移除，释放磁盘空间。" if remove_ids else ""
+        )
+        answer = QMessageBox.question(
+            None,
+            "安装识别引擎",
+            (
+                f"将安装：{names}。\n"
+                "下载量较大，安装期间识别会暂停；进度和日志会实时显示。"
+                f"{remove_note}\n是否继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+
+            ConfigManager.instance().set_offline_component_features(
+                "nvidia_cuda" if gpu else "cpu",
+                sorted(features),
+            )
+        except Exception:
+            pass
+        self._open_engine_env_dialog(target_ids, remove_ids)
+
+    def _switch_engine_device_fused(self, target: str) -> None:
+        """融合形态的计算设备切换：已装引擎家族整体换 CPU/GPU 版本。"""
+        from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
+
+        gpu = target == "gpu"
+        # 无引擎时也持久化设备偏好，安装流程会读取。
+        self._set_engine_device_preference(target)
+        manager = self._engine_env_manager()
+        states = manager.inspect()
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+        families = {sid.split("-")[0] for sid in installed_ids}
+        target_ids = describe_selection(
+            paddle="paddle" in families, mineru="mineru" in families, gpu=gpu
+        )
+        remove_ids = sorted(installed_ids - set(target_ids))
+        to_install = [sid for sid in target_ids if sid not in installed_ids]
+
+        if not to_install and not remove_ids:
+            # 已处于目标形态（例如什么都没装时切换设备）。
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            QMessageBox.information(
+                None,
+                "没有需要安装的引擎",
+                "当前没有安装任何识别引擎，切换设备不会产生下载。\n"
+                "已记住本次选择：安装引擎时会使用相应设备版本。",
+            )
+            return
+
+        device_label = "GPU（需要 NVIDIA 显卡）" if gpu else "CPU"
+        names = "、".join(get_engine_env_spec(sid).display_name for sid in to_install)
+        answer = QMessageBox.question(
+            None,
+            "切换计算设备",
+            f"已安装的识别引擎将切换到 {device_label} 版本：{names}。\n"
+            "需要重新下载对应版本，安装期间识别会暂停。是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            return
+        self._open_engine_env_dialog(to_install, remove_ids)
+
+    def _engine_device_preference_path(self):
+        return self._project_root / "config" / "engine-device.json"
+
+    def _engine_device_preference(self) -> str | None:
+        """用户在未安装引擎时选择的设备偏好（"cpu"/"gpu"/None）。"""
+        import json
+
+        try:
+            data = json.loads(
+                self._engine_device_preference_path().read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return None
+        value = data.get("device") if isinstance(data, dict) else None
+        return value if value in {"cpu", "gpu"} else None
+
+    def _set_engine_device_preference(self, device: str) -> None:
+        from vibeocr.classic.json_storage import write_json_atomic
+
+        if device not in {"cpu", "gpu"}:
+            return
+        write_json_atomic(
+            self._engine_device_preference_path(),
+            {"schema_version": 1, "device": device},
+        )
+
+    def _open_engine_env_dialog(
+        self, install_ids: list[str], remove_ids: list[str]
+    ) -> None:
+        """停止识别服务后弹出引擎环境安装对话框（融合形态）。"""
+        from vibeocr.classic.widgets.engine_env_dialog import EngineEnvDialog
+
+        def _show() -> None:
+            dialog = EngineEnvDialog(
+                self._engine_env_manager(),
+                install_ids,
+                remove_ids,
+                before_start=lambda: True,
+                on_finished=self._on_engine_env_finished,
+                parent=None,
+            )
+            # 无父对象的顶层窗口必须持有强引用，否则会被 GC 销毁，
+            # 且销毁路径不会可靠触发 on_finished 恢复识别服务。
+            self._engine_env_dialog = dialog
+            dialog.finished.connect(
+                lambda *_args: self._release_engine_env_dialog(dialog)
+            )
+            dialog.show()
+
+        # 引擎安装/移除会改动后端正在使用的环境，先停服务再执行。
+        self._run_after_supervisor_invalidated(_show)
+
+    def _release_engine_env_dialog(self, dialog) -> None:
+        if getattr(self, "_engine_env_dialog", None) is dialog:
+            self._engine_env_dialog = None
+
+    def _on_engine_env_finished(self, success: bool) -> None:
+        backend_options = getattr(self, "_backend_options", None)
+        if backend_options is not None:
+            backend_options.set_change_in_progress(False)
+        callback = (
+            self._install_succeeded_callback
+            if success
+            else self._install_abandoned_callback
+        )
+        if callback is not None:
+            callback()
 
     def _on_pdf_pipeline_switching(self, old_pipeline, options) -> None:
         self._pdf_switching = True
@@ -789,6 +987,11 @@ class SettingsPageController:
         self._refresh_lifecycle_controls()
         self._init_ocr_runtime_group()
         self._init_mineru_connection_group()
+        # 融合形态：下载来源组不依赖 Backend 目录，页面初始化即渲染。
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._render_download_sources_fused()
 
     def _init_log_level_control(self) -> None:
         """在应用设置页加入持久化日志级别选择。"""
@@ -1485,6 +1688,17 @@ class SettingsPageController:
 
     def _on_reinstall_python(self) -> None:
         """检查并修复已安装闭包，底层统一调用 Runtime Installer repair。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            QMessageBox.information(
+                None,
+                "无需修复",
+                "基础识别能力已内置在主程序里，不需要修复。\n\n"
+                "如果某个识别引擎出了问题，回到“可选识别能力”，"
+                "重新勾选并安装一次即可。",
+            )
+            return
         reply = QMessageBox.question(
             None,
             "确认修复 Runtime",
@@ -1501,6 +1715,11 @@ class SettingsPageController:
 
     def _on_reinstall_deps(self) -> None:
         """Preview the current engine intent without contracting it to base-only."""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._on_install_offline_features()
+            return
         self._open_install_dialog()
 
     def _on_install_missing(self) -> None:
@@ -2628,6 +2847,11 @@ class SettingsPageController:
         return chosen, True
 
     def _on_install_offline_features(self) -> None:
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._install_offline_features_fused()
+            return
         catalog = self._selection_catalog
         accelerator = self._selection_accelerator
         if catalog is None or accelerator is None:
@@ -2728,6 +2952,11 @@ class SettingsPageController:
     def _render_download_sources(self, capabilities: set) -> None:
         """按 Backend catalog 渲染每 kind 的下载源单选。"""
 
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._render_download_sources_fused()
+            return
         label = self._ui.findChild(QLabel, "labelDownloadSource")
         layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
@@ -2790,6 +3019,78 @@ class SettingsPageController:
         label.setText(note)
         self._set_source_controls_enabled(True)
 
+    def _render_download_sources_fused(self) -> None:
+        """融合形态：下载来源保存在本地，不依赖 Backend 目录。"""
+
+        from vibeocr.classic.download_sources import (
+            MODEL_SOURCES,
+            PACKAGE_INDEXES,
+            DownloadSourceStore,
+        )
+
+        label = self._ui.findChild(QLabel, "labelDownloadSource")
+        layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
+        save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
+        if label is None or layout is None:
+            return
+        self._clear_source_combo_rows()
+        saved = DownloadSourceStore(self._project_root).load()
+
+        insert_at = (
+            layout.indexOf(save_button) if save_button is not None else layout.count()
+        )
+        rows = (
+            ("package_index", "依赖下载来源：", PACKAGE_INDEXES, saved["package_index_id"]),
+            ("model_registry", "模型下载来源：", MODEL_SOURCES, saved["model_source_id"]),
+        )
+        for offset, (kind, kind_label, catalog_items, selected_id) in enumerate(rows):
+            row = QWidget(self._ui)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(QLabel(kind_label, row))
+            combo = QComboBox(row)
+            combo.setObjectName(f"comboDownloadSource_{kind}")
+            for item in catalog_items:
+                combo.addItem(item.label, item.id)
+            combo.setCurrentIndex(max(0, combo.findData(selected_id)))
+            row_layout.addWidget(combo, 1)
+            layout.insertWidget(insert_at + offset, row)
+            self._source_combo_row_widgets.append(row)
+            self._source_combo_rows[kind] = combo
+        label.setText(
+            "下载来源影响安装识别引擎和首次下载模型的速度；更改只影响之后的下载。"
+        )
+        self._set_source_controls_enabled(True)
+
+    def _save_download_sources_fused(self) -> bool:
+        """融合形态保存：写入本地存储并立即投影模型来源环境变量。"""
+
+        from vibeocr.classic.download_sources import DownloadSourceStore
+
+        package_combo = self._source_combo_rows.get("package_index")
+        model_combo = self._source_combo_rows.get("model_registry")
+        status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+        if package_combo is None or model_combo is None:
+            return False
+        store = DownloadSourceStore(self._project_root)
+        try:
+            store.save(
+                package_index_id=package_combo.currentData(),
+                model_source_id=model_combo.currentData(),
+            )
+            store.apply_model_source_environment()
+        except Exception:
+            logger.exception("[下载来源] 保存失败")
+            if status is not None:
+                status.setText("下载来源保存失败，请查看日志。")
+            return False
+        if status is not None:
+            status.setText(
+                "已保存。依赖来源影响之后的安装；模型来源对新启动的识别任务生效。"
+            )
+        self._show_settings_toast("下载来源已保存")
+        return True
+
     def _set_source_controls_enabled(self, enabled: bool) -> None:
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
         if save_button is not None:
@@ -2814,6 +3115,11 @@ class SettingsPageController:
             return None
 
     def _on_save_download_sources(self) -> None:
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._save_download_sources_fused()
+            return
         adapter = self._connect_runtime_adapter()
         if not adapter.is_started:
             status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
@@ -2863,6 +3169,11 @@ class SettingsPageController:
             return
         self._runtime_settings_snapshot = snapshot
         self._apply_mineru_connection_snapshot(snapshot)
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态的下载来源以本地存储为准，不被 Backend 设置快照覆盖。
+            return
         selected = set(snapshot.download_source_ids)
         for _kind, combo in self._source_combo_rows.items():
             combo.setCurrentIndex(0)

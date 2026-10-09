@@ -24,6 +24,9 @@ from pathlib import Path
 
 import pytest
 
+# 融合并入的后端测试的排除规则位于仓库根 conftest.py（collect_ignore
+# 相对于其所在目录解析）。
+
 # Add all physical workspace source roots to this process and spawned workers.
 repo_root = Path(__file__).parent.parent
 source_paths = [

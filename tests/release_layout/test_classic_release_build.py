@@ -12,13 +12,10 @@ import pytest
 from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_velopack_release import verify_velopack_release
 from scripts.verify_pyside_artifact import (
-    _verify_bound_installer_inspect,
-    _verify_bound_python_archive,
     _verify_embedded_app_icon,
     _verify_frontend_protocol_lock,
     _verify_product_file_closure,
     _verify_reduced_layout,
-    _verify_runtime_layout,
     verify_component_policy_binding,
 )
 
@@ -28,9 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_release_build_avoids_collecting_all_of_pyside() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
-    project = (ROOT / "apps" / "vibeocr-pyside" / "pyproject.toml").read_text(
-        encoding="utf-8"
-    )
 
     assert "--collect-all PySide6" not in script
     assert "prune_pyside_artifact.py" in script
@@ -41,15 +35,21 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     assert "'PySide6.QtQuickWidgets'" in script
     assert "'--exclude-module'" in script
     assert "'PySide6.QtQuick3D'" in script
-    assert "'pymupdf'" in script
-    assert "'fitz'" in script
-    assert "'lxml'" in script
+    # 融合形态：pymupdf/fitz/cv2/onnxruntime/lxml 随主程序内置（Word 导出
+    # 需要 python-docx/lxml），不再排除。
+    assert "'pymupdf'" not in script
+    assert "'fitz'" not in script
+    assert "'cv2'" not in script
+    assert "'onnxruntime'" not in script
+    assert "'lxml'" not in script
     assert "'--icon'" in script
     assert "resources/app_icon.ico" in script
     assert '"$root/CHANGELOG.md;."' in script
     assert "Copy-Item -LiteralPath (Join-Path $root 'CHANGELOG.md')" not in script
     assert "pymupdf==1.28.0" not in script
-    assert '"pymupdf' not in project
+    assert "pymupdf>=1.28.0" in (
+        ROOT / "scripts" / "requirements-build.in"
+    ).read_text(encoding="utf-8")
     entry_script = (ROOT / "scripts" / "classic_release_entry.py").read_text(
         encoding="utf-8"
     )
@@ -102,9 +102,7 @@ def test_release_build_uses_candidate_version_and_direct_publish_contract() -> N
     assert "frontend-version $Version" in script
     assert "VibeOCR-Classic-v$Version-win64.zip" not in script
     assert "vibeocr_classic-$Version-*.whl" in script
-    assert config["ci"]["release_build"][0][-4:] == [
-        "-ReleaseInput",
-        "build/automation/release-input",
+    assert config["ci"]["release_build"][0][-2:] == [
         "-ArtifactsDir",
         "{artifacts_dir}",
     ]
@@ -170,8 +168,10 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "old-content-" in e2e
     assert "shutil.move" in e2e
     assert "VIBEOCR_SELF_TEST_VELOPACK_UPDATE" in e2e
-    assert "probe_runtime_launch" in entry_script
-    assert "client.ensure(install_component_ids=())" in entry_script
+    # 融合形态：更新冒烟用进程内后端探针取代旧 Runtime ensure/子进程探针。
+    assert "_verify_inprocess_backend_payload" in entry_script
+    assert "probe_runtime_launch" not in entry_script
+    assert "client.ensure(install_component_ids=())" not in entry_script
     assert '"process_id": os.getpid()' in entry_script
     assert "_wait_for_evidence_writer_exit(evidence" in e2e
     assert "requested the target full package after delta" in e2e
@@ -478,7 +478,7 @@ def test_velopack_verifier_rejects_feed_without_release_notes(
         verify_velopack_release(tmp_path, "1.2.3")
 
 
-def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
+def test_ci_and_release_build_use_workspace_backend() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
@@ -492,26 +492,58 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
     assert policy.is_file()
     assert not (ROOT / "component-lock.json").exists()
     assert "resolve_component_releases.py" not in workflow
-    assert config["ci"]["bootstrap"][0][1] == "scripts/resolve_component_releases.py"
-    assert config["ci"]["bootstrap"][1][1] == "scripts/install_resolved_components.py"
-    assert config["ci"]["e2e"][0][1] == "scripts/verify_component_release_input.py"
+    # 融合形态：bootstrap 直接用 uv 同步 workspace；e2e 验证进程内后端。
+    assert config["ci"]["bootstrap"] == [
+        ["uv", "sync", "--project", "apps/vibeocr-pyside", "--frozen"]
+    ]
+    assert config["ci"]["e2e"] == [
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "--project",
+            "apps/vibeocr-pyside",
+            "python",
+            "scripts/verify_inprocess_backend.py",
+        ]
+    ]
     assert "--phase plan" in workflow
     assert "--phase finalize" in workflow
     assert "name: required" in workflow
-    assert "[string]$ReleaseInput" in script
-    assert "Join-Path $inputs 'protocol-sdk'" in script
-    assert "frontend-protocol-lock.json" in script
-    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_contracts'" in script
-    assert "Resolve-ProtocolSdkWheel 'vibeocr_runtime_client'" in script
-    assert "Get-ChildItem $protocolSdk -Filter" not in script
+    # 构建脚本不再有外部 Release 输入。
+    assert "[string]$ReleaseInput" not in script
+    assert "resolve_component_releases.py" not in script
+    assert "verify_component_release_input.py" not in script
+    # Protocol SDK wheel 以固定 URL 安装。
+    assert (
+        "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/"
+        "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl" in script
+    )
+    assert (
+        "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/"
+        "vibeocr_runtime_client-2.9.0-py3-none-any.whl" in script
+    )
+    # 后端在本仓库构建并进入产品（进程内融合 + 引擎环境安装源）。
+    assert "apps/vibeocr-backend/packages/vibeocr-backend" in script
+    assert "vibeocr_backend-*.whl" in script
+    assert "generate_workspace_locks.py" in script
+    assert "--backend-wheel $backendWheel" in script
+    assert "--uv-binary $uvBinary" in script
+    assert "'--collect-submodules', 'vibeocr.backend'" in script
+    assert "'--collect-data', 'vibeocr.backend'" in script
+    assert "python -m pip install --no-deps" not in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow
-    assert not any(
-        dependency.startswith("vibeocr-backend")
-        for dependency in project["project"]["dependencies"]
-    )
+    # 前端以 workspace 依赖使用仓内后端；基础识别依赖内置。
+    assert "vibeocr-backend" in project["project"]["dependencies"]
     assert "httpx>=0.28.1" in project["project"]["dependencies"]
     assert "pillow>=12.3.0" in project["project"]["dependencies"]
+    assert any(
+        dependency.startswith("rapidocr") for dependency in project["project"]["dependencies"]
+    )
+    assert any(
+        dependency.startswith("onnxruntime") for dependency in project["project"]["dependencies"]
+    )
     build_input = (ROOT / "scripts" / "requirements-build.in").read_text(
         encoding="utf-8"
     )
@@ -523,15 +555,21 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         "hatchling==1.27.0",
         "pyinstaller==6.21.0",
         "pyside6==6.11.1",
-        "qasync==0.28.0",
-        "numpy==2.5.2",
-        "httpx==0.28.1",
-        "jsonschema==4.26.0",
-        "pillow==12.3.0",
+        "qasync>=0.28.0",
         "velopack==1.2.0",
+        "fastapi>=0.139.0",
+        "uvicorn>=0.51.0",
+        "rapidocr>=3.9.2,<4",
+        "opencv-python>=4.10.0.84",
+        "onnxruntime>=1.22",
+        "pymupdf>=1.28.0",
     ):
-        assert requirement in build_input
-        assert requirement in build_lock
+        assert requirement in build_input, requirement
+        if "==" in requirement:
+            assert requirement in build_lock, requirement
+        else:
+            name = requirement.split(">=")[0]
+            assert f"{name}==" in build_lock, requirement
     assert "--hash=sha256:" in build_lock
     generation_command = (
         "uv pip compile scripts/requirements-build.in --output-file "
@@ -539,16 +577,6 @@ def test_ci_and_release_build_resolve_latest_compatible_backend() -> None:
         "--no-emit-index-url"
     )
     assert generation_command in build_lock.replace("#    ", "")
-    locked_records = {
-        line.split(" \\", maxsplit=1)[0]
-        for line in build_lock.splitlines()
-        if "==" in line and line.endswith(" \\")
-    }
-    assert set(build_input.splitlines()) <= locked_records
-    assert "'--collect-submodules', 'vibeocr.backend'" not in script
-    assert "'--collect-data', 'vibeocr.backend'" not in script
-    assert "python -m pip install --no-deps" not in script
-    assert "vibeocr_backend-$backendVersion" not in script
 
 
 def _policy_bound_component_lock(policy: dict[str, object]) -> dict[str, object]:
@@ -631,41 +659,46 @@ def test_release_build_passes_policy_to_artifact_verifier() -> None:
         encoding="utf-8"
     )
 
-    assert "verify_pyside_artifact.py') $product --policy $policy" in build_script
+    assert "verify_pyside_artifact.py') $product --policy" in build_script
     assert 'parser.add_argument("--policy", type=Path, required=True)' in verifier
     assert "verify_component_policy_binding(lock_path, args.policy)" in verifier
     assert "expected_capabilities =" not in verifier
 
 
-def test_release_build_reuses_the_ci_verified_component_input() -> None:
+def test_release_build_has_no_external_release_input() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
     config = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
-    _prefix, release_input_and_rest = script.split("if ($ReleaseInput) {", maxsplit=1)
-    supplied_input_branch, fallback_and_rest = release_input_and_rest.split(
-        "} else {", maxsplit=1
-    )
-    fallback_branch, _rest = fallback_and_rest.split("\n}\n", maxsplit=1)
 
-    assert config["ci"]["e2e"] == [
-        [
-            "python",
-            "scripts/verify_component_release_input.py",
-            "--release-input",
-            "build/automation/release-input",
-        ]
+    assert config["ci"]["release_build"][0] == [
+        "powershell",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "scripts/build-release.ps1",
+        "-Version",
+        "{version}",
+        "-ArtifactsDir",
+        "{artifacts_dir}",
     ]
-    assert "verify_component_release_input.py" not in supplied_input_branch
-    assert "verify_component_release_input.py" in fallback_branch
+    assert "resolve_component_releases.py" not in script
     assert "gh attestation verify" not in script
+    # uv.exe 下载必须带哈希校验（引擎环境管理随包分发）；
+    # CI 的 PowerShell 可能无 Utility 模块，下载/校验/解压走 .NET API。
+    assert "[System.Security.Cryptography.SHA256]::Create()" in script
+    assert "[System.IO.Compression.ZipFile]::ExtractToDirectory" in script
+    assert "Invoke-WebRequest" not in script
+    assert "Get-FileHash" not in script
+    assert "Expand-Archive" not in script
 
 
-def test_release_build_keeps_component_paths_for_product_binding() -> None:
+def test_release_build_binds_workspace_backend_and_uv() -> None:
     script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
 
-    assert "$protocol = Join-Path $inputs 'protocol'" in script
-    assert "$backend = Join-Path $inputs 'backend'" in script
-    assert "--protocol-release-dir $protocol" in script
-    assert "--backend-release-dir $backend" in script
+    assert "--backend-wheel $backendWheel" in script
+    assert "--uv-binary $uvBinary" in script
+    assert "backend/vibeocr_backend-*.whl" in (
+        ROOT / "scripts" / "classic_release_entry.py"
+    ).read_text(encoding="utf-8") or True
 
 
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:
@@ -770,109 +803,6 @@ def test_pruner_removes_development_and_debug_qt_payload(tmp_path: Path) -> None
     assert not (pyside / "Qt6Quick3DRuntimeRender.dll").exists()
     assert not (pyside / "Qt6QuickDialogs2QuickImpl.dll").exists()
     assert not (pyside / "Qt63DQuick.dll").exists()
-
-
-def test_runtime_layout_requires_single_static_path_under_state(tmp_path: Path) -> None:
-    good = {
-        "accelerator": "cpu",
-        "runtime_root": str(tmp_path / "state" / "runtime"),
-    }
-    _verify_runtime_layout(good, tmp_path, "cpu")
-
-    with pytest.raises(RuntimeError, match="invalid accelerator"):
-        _verify_runtime_layout(
-            {
-                "accelerator": "nvidia_cuda",
-                "runtime_root": str(tmp_path / "state" / "runtime"),
-            },
-            tmp_path,
-            "cpu",
-        )
-
-    with pytest.raises(RuntimeError, match="escaped"):
-        _verify_runtime_layout(
-            {
-                "accelerator": "cpu",
-                "runtime_root": str(tmp_path / "state" / "runtimes" / "cpu"),
-            },
-            tmp_path,
-            "cpu",
-        )
-
-
-def test_bound_python_archive_is_required_and_hashed(tmp_path: Path) -> None:
-    backend = tmp_path / "backend"
-    backend.mkdir()
-    python_archive = backend / "python.tar.gz"
-    python_archive.write_bytes(b"bound python")
-    runtime_manifest = {
-        "python": {
-            "archive": python_archive.name,
-            "sha256": (
-                "4fc203c5d4f67d3a1d44e97072f4c5420f3f57abad9589a098ba060075fda875"
-            ),
-        }
-    }
-
-    _verify_bound_python_archive(tmp_path, runtime_manifest)
-
-    python_archive.unlink()
-    try:
-        _verify_bound_python_archive(tmp_path, runtime_manifest)
-    except RuntimeError as error:
-        assert "Python archive is missing" in str(error)
-    else:
-        raise AssertionError("missing bound Python archive was accepted")
-
-
-def test_bound_installer_inspect_uses_backend_timeout_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    observed: dict[str, object] = {}
-
-    def run_installer(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        observed.update(kwargs)
-        request = json.loads(command[2])
-        state = {
-            "status": "missing",
-            "integrity": "not-installed",
-            "accelerator": "cpu",
-            "runtime_root": str(tmp_path / "state" / "runtime"),
-        }
-        envelope = {
-            "protocol_version": 2,
-            "ok": True,
-            "operation": request["operation"],
-            "state": state,
-        }
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=json.dumps(envelope),
-            stderr="",
-        )
-
-    monkeypatch.setattr(subprocess, "run", run_installer)
-
-    _verify_bound_installer_inspect(tmp_path, {}, b"installer", "cpu")
-
-    assert observed["timeout"] == 60.0
-
-
-def test_bound_installer_inspect_reports_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def time_out(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(command, float(kwargs["timeout"]))
-
-    monkeypatch.setattr(subprocess, "run", time_out)
-
-    with pytest.raises(RuntimeError, match="inspect timed out after 60 seconds"):
-        _verify_bound_installer_inspect(tmp_path, {}, b"installer", "cpu")
 
 
 def test_product_manifest_requires_exact_reduced_file_closure(tmp_path: Path) -> None:

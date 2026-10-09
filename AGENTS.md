@@ -64,17 +64,18 @@
 
 ## 项目架构与独特约束
 
-- 本仓是仅 Windows 的 PySide6 Classic 桌面 shell，应用位于 `apps/vibeocr-pyside/`，包含 QtPdf、WebEngine、WebChannel、qasync 与打包入口；不要把 Backend 推理实现重新嵌入前端。
-- `.ci/project.json` 是权威入口：先用 `scripts/resolve_component_releases.py` 解析最新正式 Backend 及其绑定 Protocol 到 `build/automation/release-input`，再安装/验证输入；quality 跑 pytest，E2E 验证上游 release/attestation，随后 PowerShell release build 和 smoke。
-- 组件解析必须 fail closed：最新正式 Backend 不兼容、缺 capability、manifest/hash/attestation 不一致时直接失败，不回退旧 Backend。支持 Protocol major 2 且 minor-compatible；前端 Python SDK 当前声明 `>=2.9.0,<3.0.0`，由独立 `frontend-protocol-lock.json` 精确约束；Backend Runtime 的 Protocol 则继续由组件锁和已验证资产独立精确约束。
+- 本仓是仅 Windows 的 PySide6 Classic 桌面应用，应用位于 `apps/vibeocr-pyside/`，包含 QtPdf、WebEngine、WebChannel、qasync 与打包入口。2026-10-08 起 Classic 与后端融合：识别服务（`vibeocr.backend`，来自 `apps/vibeocr-backend/`）由 `classic/backend_host.py` 在应用进程内承载（uvicorn 专用线程 + 预绑回环 socket）；前端对后端的直接 import 只允许出现在 `backend_host.py` 与 `managers/dependency_manager.py`（见 `tests/runtime/test_source_dependencies.py` 契约）。`VIBEOCR_SUPERVISOR_SUBPROCESS=1` 保留旧子进程形态作对比调试逃生口。
+- 仓库是 uv workspace：根 `pyproject.toml` 声明成员，前端以 workspace 依赖引用仓内 `vibeocr-backend` 包；Protocol SDK 以固定 URL wheel 引入（`tool.uv.sources`），版本与哈希由 `uv.lock` 锁定。基础识别依赖（opencv/rapidocr/onnxruntime/winrt、pymupdf 等）随主程序内置；Paddle/MinerU 引擎环境由 `classic/engine_envs.py` 用 uv 按仓内 `runtime-profiles` 带哈希清单安装到 `state/envs/`，解释器位置经 `VIBEOCR_PADDLE_HOME` / `VIBEOCR_MINERU_PYTHON` / `VIBEOCR_BACKEND_PYTHON` 注入后端。
+- 运行标识按产品隔离（单实例管道 `VibeOCRClassic`、Mutex `Local\VibeOCRClassic.Frontend.Exclusive.v1`、快捷方式与窗口/托盘名带 Classic），与 VibeOCR Next 可同时运行；改动这些名字前先更新对应契约测试。
+- `.ci/project.json` 是权威入口：bootstrap 用 `uv sync --frozen`，quality 跑 pytest，e2e 跑 `scripts/verify_inprocess_backend.py`（进程内后端组装 + 健康检查 + capability 核对），随后 PowerShell release build 和 smoke。发布身份锁由 `scripts/generate_workspace_locks.py` 从仓内事实生成（protocol 版本取前端 SDK URL，backend 版本取 `apps/vibeocr-backend/version.txt`，wheel 哈希写入 component-lock）；打包产品随包分发 `bin/uv.exe`（构建期下载并校验哈希）与 `backend/vibeocr_backend-*.whl` 供引擎环境使用。
 - 版本源包括 `version.txt`、应用 package TOML、package fallback `__version__` 与 `repository.json`，必须由 release prepare 同步。发布资产精确为 `VibeOCRClassic-{version}-full.nupkg`、`VibeOCRClassic-v{version}-win-x64.zip`、`releases.win.json`、`component-lock.json`、`frontend-protocol-lock.json` 与 SPDX SBOM；额外资产 fail closed。Portable-only：两次 vpk pack 均使用 `--noInst`，不生成或发布 Setup 与 checksum sidecar；NUPKG/feed 仅服务 Velopack 自更新（Portable 与安装模式共用 check/download/apply）。不再发布 legacy ZIP 或独立 updater。
-- PyInstaller onedir 必须保留 QtPdf/WebEngine/WebChannel hidden imports 和 frozen smoke 所需资源，同时排除 ML/runtime 重型依赖。修改 spec、hidden import、资源路径或入口时必须执行真实 frozen smoke。
+- PyInstaller onedir 必须保留 QtPdf/WebEngine/WebChannel hidden imports、collect `vibeocr.backend`（含 runtime-profiles 数据）和 frozen smoke 所需资源，同时排除 torch/paddle 等重型依赖（引擎环境另行安装）。修改 spec、hidden import、资源路径或入口时必须执行真实 frozen smoke。
 - `build/release/` 与 automation artifacts 会由正式构建递归重建；release build 只使用 `scripts/requirements-build.lock` 同步出的 `build/release/release-venv`。更新依赖时修改 `.in` 并用其 lock 头记录的 `uv pip compile` 命令重新生成带 hash 的 lock。不要对仓库外路径复用清理逻辑。pytest 默认排除 slow，CI 声明的完整阶段不能因此删减。
-- Python 3.13/Ruff 行宽与选择集以 `pyproject.toml` 为准。不在文档中假定某个 clone 是否安装 Git hook，按工作开始时的实际检查执行，未安装时运行 Ruff/pytest/组件输入验证。
+- Python 3.13/Ruff 行宽与选择集以 `pyproject.toml` 为准。不在文档中假定某个 clone 是否安装 Git hook，按工作开始时的实际检查执行，未安装时运行 Ruff/pytest/进程内后端验证。
 
 ## 六仓关系
 
-- 本仓不从 `vibeocr-protocol` 或 `vibeocr-backend` 源码构建；CI 消费最新正式 Backend Release，并严格验证其绑定的 Protocol Release。
+- 2026-10-08 起 Classic 不再从 `vibeocr-backend`/`vibeocr-protocol` 仓库源码或 Release 构建：后端在本仓 `apps/vibeocr-backend/` 内融合承载，Protocol SDK 以固定 wheel 引入；发布身份锁描述本仓自身。`vibeocr-protocol` 仓库已归档，仅作 Protocol v2 契约与历史 Release 的追溯来源。
 - 与 `vibeocr-next` 共享 Protocol v2 major/minor-compatible 和 required capabilities，但实现、UI、版本与 Release 完全独立，不做跨仓级联发版。
 - Backend 升级若仍在 Protocol v2 且 capabilities 满足，本仓应由 CI 自动跟踪；major 改变必须先修改本仓兼容声明与实现。
 - `file-toolbox`、`vibetable` 与本仓无运行时依赖，仅共享自动化治理。

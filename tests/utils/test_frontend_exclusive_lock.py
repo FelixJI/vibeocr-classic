@@ -1,11 +1,9 @@
-"""Tests for the cross-product exclusive Mutex (FrontendExclusiveLock).
+"""Tests for the per-product identity Mutex (FrontendExclusiveLock).
 
-Phase 1 of DUAL_UI_IMPLEMENTATION_PLAN.md §6.
-
-These tests verify the mutex semantics that make two VibeOCR frontends
-(PySide Classic + WinUI Next) mutually exclusive within one login session:
+These tests verify the mutex semantics of Classic's own session-scoped
+running identity (shared with no other product; VibeOCR Next coexists):
 - first acquire succeeds;
-- second acquire fails (no orphan WorkerHost should start);
+- second acquire fails (no second backend should start);
 - release allows re-acquire;
 - context-manager protocol works.
 
@@ -108,8 +106,10 @@ def test_try_acquire_after_release_can_reacquire(unique_mutex_name: str) -> None
 
 
 def test_default_mutex_name_matches_contract() -> None:
-    """Mutex 名必须与 C# 端和 ADR 一致，否则互斥失效。"""
-    assert EXCLUSIVE_MUTEX_NAME == r"Local\VibeOCR.Frontend.Exclusive.v2"
+    """Mutex 名必须是 Classic 专属命名空间，保证与 VibeOCR Next 可同时运行。"""
+    assert EXCLUSIVE_MUTEX_NAME == r"Local\VibeOCRClassic.Frontend.Exclusive.v1"
+    # 历史跨产品互斥名（Classic 与 Next 共享同一字符串）不得复用。
+    assert EXCLUSIVE_MUTEX_NAME != r"Local\VibeOCR.Frontend.Exclusive.v2"
 
 
 def test_windows_create_mutex_failure_fails_closed(

@@ -36,13 +36,13 @@ def _immediate_invalidation_manager() -> MagicMock:
 
 
 @pytest.fixture
-def controller(qtbot, tmp_path):
+def controller(qtbot, tmp_path, monkeypatch):
     """构造带真实 UI 的 SettingsPageController
 
-    connect_signals 会触发 _init_backend_options / _init_settings_page，
-    这些会访问 ConfigManager、machine_cache、pipelines、BackendOptionsWidget。
-    为保证测试隔离，patch 掉这些重依赖。
+    本文件覆盖旧安装器（Runtime Installer）流程；统一置于子进程形态。
+    融合形态（uv 引擎环境）的入口在 tests/views/test_engine_env_flow.py。
     """
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     host = QWidget()
     qtbot.addWidget(host)
     ui = Ui_MainWindowWidget()

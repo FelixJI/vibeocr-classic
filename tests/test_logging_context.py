@@ -7,7 +7,9 @@
 - forward_worker_output_line 的空行/非 JSON/缺 message/合法 JSON 分支；
 - configure_worker_stderr_logging 替换 root handlers + 噪声 logger 降级。
 
-隔离约定：function-scope 还原 root logger handlers，避免污染其他测试。
+隔离约定：function-scope 还原 root logger handlers，避免污染其他测试；
+并撤销 uvicorn 注册的全局 "TRACE" 级别名（进程内宿主/uvicorn 一旦被导入并
+构造 Config，就会把 "TRACE" 变成合法级别名，影响 _coerce_level 回退断言）。
 """
 
 import json
@@ -23,6 +25,14 @@ from vibeocr.classic.logging_context import (
     forward_worker_output_line,
     ui_status_extra,
 )
+
+
+@pytest.fixture(autouse=True)
+def _without_uvicorn_trace_level():
+    saved = logging._nameToLevel.pop("TRACE", None)
+    yield
+    if saved is not None:
+        logging._nameToLevel["TRACE"] = saved
 
 
 @pytest.fixture

@@ -95,14 +95,20 @@ def _startup_lock_names() -> tuple[str, str | None]:
     if os.environ.get("VIBEOCR_SELF_TEST_SMOKE") == "t6":
         process_id = os.getpid()
         return (
-            f"VibeOCR-SelfTest-{process_id}",
-            rf"Local\VibeOCR.Frontend.Exclusive.SelfTest.{process_id}",
+            f"VibeOCRClassic-SelfTest-{process_id}",
+            rf"Local\VibeOCRClassic.Frontend.Exclusive.SelfTest.{process_id}",
         )
-    return "VibeOCR", None
+    return "VibeOCRClassic", None
 
 
 def check_production_dependencies() -> bool:
-    """验证产品绑定的 Installer；Runtime 安装必须由 GUI 征得用户同意。"""
+    """启动前验证识别服务依赖。
+
+    融合形态下识别服务内置于本进程，只验证后端组件可导入；旧子进程
+    形态仍走 Runtime Installer inspect。
+    """
+    from vibeocr.classic.backend_host import inprocess_backend_enabled
+
     smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
     if (
         getattr(sys, "frozen", False)
@@ -111,7 +117,15 @@ def check_production_dependencies() -> bool:
         and Path(smoke_python).is_file()
     ):
         # Artifact verifier 会在解压目录内从绑定 wheel 建一个隔离 import 根。
-        # 仅冻结态+t6 双门禁生效，生产启动始终必须通过 Runtime Installer inspect。
+        # 仅冻结态+t6 双门禁生效。
+        return True
+    if inprocess_backend_enabled():
+        try:
+            import vibeocr.backend.supervisor.app  # noqa: F401
+            import vibeocr.backend.supervisor.composition  # noqa: F401
+        except Exception as exc:
+            print(f"[VibeOCR Classic] 内置识别服务导入失败: {exc}")
+            return False
         return True
     client = RuntimeInstallerClient(get_state_root())
     try:
@@ -156,7 +170,7 @@ def _create_tray_icon(app, window, app_settings):
         icon = QIcon(pixmap)
 
     tray = QSystemTrayIcon(icon, app)
-    tray.setToolTip("VibeOCR")
+    tray.setToolTip("VibeOCR Classic")
 
     # 上下文菜单
     menu = QMenu()
@@ -256,7 +270,7 @@ def _setup_app_icon(app) -> None:
         return
 
     app.setWindowIcon(icon)
-    app.setApplicationName("VibeOCR")
+    app.setApplicationName("VibeOCRClassic")
 
 
 def _create_splash(app):
@@ -384,16 +398,16 @@ def _install_qt_translations(app, locale: str | None = None) -> None:
 
 
 def _show_another_product_running_dialog() -> None:
-    """检测到另一套 VibeOCR 产品（WinUI）运行时，提示用户退出后重试。
+    """检测到另一个 VibeOCR Classic 实例运行时，提示用户退出后重试。
 
-    不转发参数、不激活对方、不连接对方的 WorkerHost（ADR §6.2）。
+    仅在同产品单实例管道失效的竞态下出现；不转发参数、不激活对方。
     """
     from PySide6.QtWidgets import QMessageBox
 
     QMessageBox.warning(
         None,
-        "VibeOCR",
-        "另一套 VibeOCR（WinUI 版）正在运行。\n请先退出它，再重试。",
+        "VibeOCR Classic",
+        "另一个 VibeOCR Classic 实例正在运行。\n请先退出它，再重试。",
     )
 
 
@@ -411,7 +425,7 @@ def launch_application() -> int:
     from vibeocr.classic.views.main_window import MainWindow
 
     app = QApplication(sys.argv)
-    app.setApplicationName("VibeOCR")
+    app.setApplicationName("VibeOCRClassic")
     app.setApplicationVersion(__version__)
     record_startup(StartupEvent.SHELL_CREATED)  # T2：Qt 壳创建
 
@@ -420,7 +434,8 @@ def launch_application() -> int:
 
     # 单实例守卫：第二个实例启动时通知本实例提到前台后自身退出。
     # 必须在 QApplication 创建之后调用（QLocalServer 依赖 Qt 事件循环）。
-    # socket 名固定为 "VibeOCR"（不绑版本），保证升级后新旧版本互认同一应用。
+    # socket 名固定为 "VibeOCRClassic"（不绑版本），保证升级后新旧版本互认；
+    # 名称带 Classic 后缀，与 VibeOCR Next 的命名隔离，两个产品可同时运行。
     from vibeocr.classic.utils.single_instance import SingleInstanceGuard
 
     single_instance_name, exclusive_mutex_name = _startup_lock_names()
@@ -429,9 +444,8 @@ def launch_application() -> int:
         # 已有实例在运行，本实例静默退出。
         return 0
 
-    # 跨产品互斥：确保同一登录会话内 PySide Classic 与 WinUI Next 不同时运行。
-    # 在同产品单实例通过后、任何后端/WorkerHost 初始化前获取；失败时提示退出，
-    # 不启动第二个 WorkerHost。Mutex 由 OS 在前端崩溃时自动释放（ADR §6）。
+    # 本产品运行标识：Classic 与 VibeOCR Next 是独立产品、允许同时运行；
+    # 此 Mutex 仅在同产品单实例管道路径失效的竞态下兜底拒绝第二个 Classic 实例。
     from vibeocr.classic.utils.frontend_exclusive_lock import FrontendExclusiveLock
 
     exclusive_lock = (

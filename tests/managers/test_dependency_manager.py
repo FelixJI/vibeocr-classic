@@ -4,11 +4,22 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
+
 from vibeocr.classic.managers.dependency_manager import (
     DependencyCheckSignals,
     DependencyCheckTask,
     DependencyManager,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_subprocess_mode(monkeypatch):
+    """本模块验证安装器路径的检查逻辑；统一切到子进程形态。
+
+    进程内融合形态（默认）的依赖检查在 tests/fused/ 单独覆盖。
+    """
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
 
 
 class TestDependencyCheckSignals:

@@ -4,6 +4,7 @@ version = "0.11.1"
 description = "VibeOCR PySide6 Classic desktop shell"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+    "vibeocr-backend",
     "vibeocr-runtime-contracts>=2.9.0,<3.0.0",
     "vibeocr-runtime-client>=2.9.0,<3.0.0",
     "pyside6>=6.11.1",
@@ -12,10 +13,35 @@ dependencies = [
     "httpx>=0.28.1",
     "pillow>=12.3.0",
     "velopack==1.2.0",
+    # 基础识别能力（RapidOCR + Windows Media OCR）随主程序内置，
+    # 不再单独安装“基础运行环境”。
+    "opencv-python>=4.10.0.84",
+    "rapidocr>=3.9.2,<4",
+    "onnxruntime>=1.22",
+    "winrt-runtime>=3.2,<4",
+    "winrt-Windows.Foundation>=3.2,<4",
+    "winrt-Windows.Foundation.Collections>=3.2,<4",
+    "winrt-Windows.Media.Ocr>=3.2,<4",
+    "winrt-Windows.Globalization>=3.2,<4",
+    "winrt-Windows.Graphics.Imaging>=3.2,<4",
+    "winrt-Windows.Storage.Streams>=3.2,<4",
 ]
+
+[tool.uv.sources]
+vibeocr-backend = { workspace = true }
+# Protocol SDK 以正式 Release wheel 固定（不在公共 PyPI），版本与哈希由 uv.lock 锁定。
+vibeocr-runtime-contracts = { url = "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_contracts-2.9.0-py3-none-any.whl" }
+vibeocr-runtime-client = { url = "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_client-2.9.0-py3-none-any.whl" }
 
 [project.scripts]
 vibeocr = "vibeocr.classic.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.26",
+    "pytest-qt>=4.4",
+]
 
 [build-system]
 requires = ["hatchling==1.27.0"]

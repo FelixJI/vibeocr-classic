@@ -1,4 +1,4 @@
-"""Verify the PySide Classic Velopack input and exact backend-wheel binding."""
+"""Verify the PySide Classic Velopack input and exact backend binding（融合形态）."""
 
 from __future__ import annotations
 
@@ -15,10 +15,27 @@ import sys
 import zipfile
 from pathlib import Path
 
-try:
-    from scripts.resolve_component_releases import ComponentPolicy
-except ModuleNotFoundError:
-    from resolve_component_releases import ComponentPolicy
+
+def _load_policy_summary(policy_path: Path) -> tuple[set[str], str, str]:
+    """读取 component-policy.json 的绑定要素（capabilities/加速/协议版本）。"""
+
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    capabilities = policy.get("required_capabilities")
+    if not isinstance(capabilities, list) or not all(
+        isinstance(capability, str) and capability for capability in capabilities
+    ):
+        raise RuntimeError("component policy required_capabilities is invalid")
+    backend = policy.get("backend", {})
+    accelerator = backend.get("accelerator") if isinstance(backend, dict) else None
+    if not isinstance(accelerator, str) or not accelerator:
+        raise RuntimeError("component policy backend accelerator is invalid")
+    protocol = policy.get("protocol", {})
+    protocol_version = (
+        protocol.get("version") if isinstance(protocol, dict) else None
+    )
+    if not isinstance(protocol_version, str) or not protocol_version:
+        raise RuntimeError("component policy protocol version is invalid")
+    return set(capabilities), accelerator, protocol_version
 
 
 def verify_component_policy_binding(
@@ -50,16 +67,18 @@ def verify_component_policy_binding(
     )
     if protocol_match is None:
         raise RuntimeError("component lock Protocol version is invalid")
-    policy = ComponentPolicy.load(policy_path)
-    if set(required_capabilities) != set(policy.required_capabilities):
+    policy_capabilities, policy_accelerator, policy_protocol = _load_policy_summary(
+        policy_path
+    )
+    if set(required_capabilities) != policy_capabilities:
         raise RuntimeError(
             "Classic component lock capability set differs from component policy"
         )
-    if backend["accelerator"] != policy.accelerator:
+    if backend["accelerator"] != policy_accelerator:
         raise RuntimeError(
             "Classic component lock accelerator differs from component policy"
         )
-    if int(protocol_match.group(1)) != int(policy.protocol_version.split(".", 1)[0]):
+    if int(protocol_match.group(1)) != int(policy_protocol.split(".", 1)[0]):
         raise RuntimeError(
             "Classic component lock Protocol major differs from component policy"
         )
@@ -143,9 +162,6 @@ def _verify_reduced_layout(root: Path) -> None:
         relative = path.relative_to(root).as_posix().casefold()
         if (
             relative.startswith("runtime-installer/")
-            or "/pymupdf" in f"/{relative}"
-            or "/fitz" in f"/{relative}"
-            or "/lxml" in f"/{relative}"
             or "quick3d" in relative
             or "/qmltooling/" in f"/{relative}/"
         ):
@@ -154,143 +170,20 @@ def _verify_reduced_layout(root: Path) -> None:
         raise RuntimeError(f"prohibited reduced-layout files present: {prohibited}")
 
 
-def _verify_bound_python_archive(
-    root: Path, runtime_manifest: dict[str, object]
-) -> None:
-    python = runtime_manifest.get("python")
-    if not isinstance(python, dict):
-        raise RuntimeError("runtime manifest has no bound Python archive")
-    archive = root / "backend" / str(python.get("archive", ""))
-    if not archive.is_file():
-        raise RuntimeError("bound Python archive is missing")
-    actual = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if actual != python.get("sha256"):
-        raise RuntimeError("bound Python archive hash mismatch")
-
-
-def _verify_bound_installer_archive(
-    root: Path, runtime_manifest: dict[str, object]
-) -> bytes:
-    installer = runtime_manifest.get("installer")
-    if not isinstance(installer, dict):
-        raise RuntimeError("runtime manifest has no bound Runtime Installer")
-    archive_path = root / "backend" / str(installer.get("archive", ""))
-    if not archive_path.is_file():
-        raise RuntimeError("bound Runtime Installer archive is missing")
-    if hashlib.sha256(archive_path.read_bytes()).hexdigest() != installer.get("sha256"):
-        raise RuntimeError("bound Runtime Installer archive hash mismatch")
-    try:
-        with zipfile.ZipFile(archive_path) as archive:
-            executable = archive.read(str(installer.get("executable_path", "")))
-    except (KeyError, zipfile.BadZipFile) as error:
-        raise RuntimeError("bound Runtime Installer executable is missing") from error
-    if hashlib.sha256(executable).hexdigest() != installer.get("executable_sha256"):
-        raise RuntimeError("bound Runtime Installer executable hash mismatch")
-    return executable
-
-
-def _verify_bound_installer_inspect(
-    root: Path,
-    runtime_manifest: dict[str, object],
-    executable: bytes,
-    accelerator: str,
-    timeout_seconds: float = 60.0,
-) -> None:
-    """不走 Classic T6 bypass，直接验证本地 layout 的真实 Installer inspect。"""
-    executable_path = (
-        root / "data" / "cache" / "runtime-installer" / "vibeocr-runtime-installer.exe"
-    )
-    executable_path.parent.mkdir(parents=True, exist_ok=True)
-    executable_path.write_bytes(executable)
-    request = {
-        "protocol_version": 2,
-        "operation": "inspect",
-        "product_root": str(root),
-        "component_lock": str(root / "component-lock.json"),
-        "runtime_manifest": str(root / "backend" / "runtime-manifest.json"),
-        "accelerator": accelerator,
-        "layout_manifest": str(root / "product-release-manifest.json"),
-        "product_id": "classic",
-    }
-    try:
-        result = subprocess.run(
-            [str(executable_path), "--request-json", json.dumps(request)],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(
-            "bound Runtime Installer inspect timed out after "
-            f"{timeout_seconds:.0f} seconds"
-        ) from error
-    envelopes = []
-    for line in result.stdout.splitlines():
-        try:
-            value = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(value, dict):
-            envelopes.append(value)
-    envelope = envelopes[-1] if envelopes else {}
-    state = envelope.get("state")
-    if (
-        result.returncode != 0
-        or envelope.get("protocol_version") != 2
-        or envelope.get("ok") is not True
-        or envelope.get("operation") != "inspect"
-        or not isinstance(state, dict)
-        or state.get("status") != "missing"
-    ):
-        raise RuntimeError(
-            "bound Runtime Installer inspect failed: "
-            f"exit={result.returncode}, stdout={result.stdout}, stderr={result.stderr}"
-        )
-    if state.get("integrity") != "not-installed":
-        raise RuntimeError("bound Runtime Installer inspect returned invalid integrity")
-    _verify_runtime_layout(state, root, accelerator)
-    return (
-        root / "data" / "cache" / "runtime-installer" / "vibeocr-runtime-installer.exe"
-    )
-
-
-def _verify_runtime_layout(
-    envelope: dict[str, object],
-    root: Path,
-    accelerator: str,
-) -> None:
-    """Require Backend's single fixed Runtime layout."""
-    if envelope.get("accelerator") != accelerator:
-        raise RuntimeError("bound Runtime Installer returned an invalid accelerator")
-    runtime_root = envelope.get("runtime_root")
-    if not isinstance(runtime_root, str):
-        raise RuntimeError("bound Runtime Installer returned no runtime_root")
-    # shared_root=state：runtime store 固定在 <portable-root>/state/runtime
-    expected = (root / "state" / "runtime").resolve()
-    if Path(runtime_root).resolve() != expected:
-        raise RuntimeError("bound Runtime Installer escaped the state runtime layout")
-
-
 def _prepare_smoke_python(root: Path) -> tuple[Path, Path]:
-    """把产品内绑定 wheel 解到隔离 import 根，供 Supervisor smoke 使用。"""
-    runtime_manifest = json.loads(
-        (root / "backend" / "runtime-manifest.json").read_text(encoding="utf-8")
-    )
-    backend_wheel = root / "backend" / str(runtime_manifest["backend_wheel"])
-    protocol_wheels = sorted((root / "backend").glob("vibeocr_runtime_contracts-*.whl"))
-    if len(protocol_wheels) != 1:
-        raise RuntimeError("frozen smoke requires exactly one contracts wheel")
+    """把产品内绑定 wheel 解到隔离 import 根，供 Supervisor smoke 使用。
+
+    融合形态：产品只带 ``backend/vibeocr_backend-*.whl``（引擎环境安装与
+    smoke 共用）；Protocol contracts 由当前构建环境提供。
+    """
+    backend_wheels = sorted((root / "backend").glob("vibeocr_backend-*.whl"))
+    if len(backend_wheels) != 1:
+        raise RuntimeError("frozen smoke requires exactly one backend wheel")
     smoke_root = root / ".smoke-runtime"
     site_packages = smoke_root / "site-packages"
-    site_packages.mkdir(parents=True)
-    for wheel in (protocol_wheels[0], backend_wheel):
-        with zipfile.ZipFile(wheel) as archive:
-            archive.extractall(site_packages)
+    site_packages.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(backend_wheels[0]) as archive:
+        archive.extractall(site_packages)
     return Path(sys.executable), site_packages
 
 
@@ -304,8 +197,6 @@ def _startup_log_tail(path: Path, *, limit: int = 4096) -> str:
 def _verify_frozen_startup(
     root: Path,
     timeout_seconds: float = 45.0,
-    *,
-    runtime_python: Path | None = None,
 ) -> None:
     """真实启动冻结入口并要求它完成 Supervisor 就绪握手。"""
     exe = root / "VibeOCR.exe"
@@ -318,15 +209,7 @@ def _verify_frozen_startup(
     stdout_log.unlink(missing_ok=True)
     stderr_log.unlink(missing_ok=True)
     smoke_root = root / ".smoke-runtime"
-    if runtime_python is None:
-        smoke_python, smoke_import_root = _prepare_smoke_python(root)
-    else:
-        smoke_python = runtime_python.resolve(strict=True)
-        smoke_import_root = smoke_python.parent / "Lib" / "site-packages"
-        if not smoke_import_root.is_dir():
-            raise RuntimeError(
-                "ensured Base Runtime has no site-packages for frozen smoke"
-            )
+    smoke_python, smoke_import_root = _prepare_smoke_python(root)
     env = os.environ.copy()
     env["VIBEOCR_SELF_TEST_SMOKE"] = "t6"
     env["VIBEOCR_STARTUP_TRACE"] = str(trace)
@@ -667,161 +550,6 @@ _PROXY_BLACKHOLE = "http://127.0.0.1:9"
 _PROXY_VARIABLES = ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY")
 
 
-def _probe_offline_base_runtime(launch, root: Path) -> None:
-    """Launch the ensured Supervisor and execute RapidOCR plus basic PDF work."""
-    from vibeocr.classic.runtime_smoke import probe_runtime_launch
-
-    probe_runtime_launch(launch, root / "state")
-
-
-def _verify_offline_base_smoke(
-    root: Path,
-    installer_executable: Path,
-    *,
-    client_factory=None,
-    runtime_probe=None,
-    timeout_seconds: float = 1200.0,
-) -> tuple[str, Path | None]:
-    """C6：base 禁网安装 + 幂等复用 + 模拟 apply 后 state 保留。
-
-    - 通过先 ``inspect()`` 协商能力；Runtime Host 协商
-      ``runtime.component-selection.v1`` 时强制执行：显式 base-only intent
-      激活内嵌 runtime pack 的 ``--no-index`` 离线路径，出网请求经黑洞代理
-      一律失败——离线安装成功即“base 禁网”证据。
-    - 随后重复 base-only ensure 断言 ``state/runtime`` 安装树不变（幂等
-      复用、不重复下载）；再用同内容重写应用层绑定（backend manifest 与
-      双 lock，模拟 Velopack apply 替换应用文件）后第三次 ensure 仍幂等，
-      且 state 未被触碰——“自更新前后组件复用”。
-    - Backend v0.12.0 尚未协商该能力（manifest capability 缺失，属 C0
-      闸门）时输出原因并跳过；下一版合格 Backend Release 后本 smoke 自动
-      转为强制。
-
-    Returns the enforcement status plus the verified Base Runtime Python.
-    """
-
-    def snapshot_runtime_tree() -> list[tuple[str, int, str]]:
-        """Bind one post-probe tree by path, size and a single content digest."""
-        runtime = root / "state" / "runtime"
-        snapshot: list[tuple[str, int, str]] = []
-        for path in runtime.rglob("*"):
-            if not path.is_file():
-                continue
-            digest = hashlib.sha256()
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            snapshot.append(
-                (
-                    path.relative_to(runtime).as_posix(),
-                    path.stat().st_size,
-                    digest.hexdigest(),
-                )
-            )
-        return sorted(snapshot)
-
-    production_client = client_factory is None
-    if client_factory is None:
-
-        def client_factory():  # noqa: F811 - lazy import keeps tests stdlib-only
-            from vibeocr.classic.runtime_installation import RuntimeInstallerClient
-
-            return RuntimeInstallerClient(
-                root,
-                content_root=root,
-                command=(str(installer_executable),),
-            )
-
-    if runtime_probe is None and production_client:
-        runtime_probe = _probe_offline_base_runtime
-
-    client = client_factory()
-    # Runtime Host 的 negotiated_capabilities 回显请求的 required 集；不带
-    # required 的 inspect 协商结果为空。用产品组件锁的全部必需能力发起
-    # 协商，installer 内部校验 available ⊇ required（v0.12.1 起含三项
-    # 选择能力），任一缺失会 fail closed。
-    try:
-        required = client.required_capabilities()
-    except Exception:  # noqa: BLE001 - 无锁环境退化为仅三项选择能力
-        required = (
-            "ocr.engine-selection.v1",
-            "runtime.component-selection.v1",
-            "runtime.download-sources.v1",
-        )
-    client.inspect(required_capabilities=required)
-    if "runtime.component-selection.v1" not in client.negotiated_capabilities:
-        reason = (
-            "offline base smoke skipped: bound Runtime "
-            "v"
-            + str(
-                json.loads(
-                    (root / "backend" / "runtime-manifest.json").read_text(
-                        encoding="utf-8"
-                    )
-                ).get("backend_version", "?")
-            )
-            + " does not negotiate runtime.component-selection.v1 "
-            "(manifest capability fix ships with the next qualified Backend "
-            "release)"
-        )
-        print(reason)
-        return "skipped", None
-
-    saved_env = {name: os.environ.get(name) for name in _PROXY_VARIABLES}
-    saved_no_proxy = {name: os.environ.get(name) for name in ("no_proxy", "NO_PROXY")}
-    try:
-        for name in _PROXY_VARIABLES:
-            os.environ[name] = _PROXY_BLACKHOLE
-        # External acquisition stays black-holed while the verified Protocol
-        # client can still reach the locally launched Supervisor.
-        os.environ["no_proxy"] = "127.0.0.1,localhost"
-        os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-
-        launch = client.ensure(install_component_ids=())
-        runtime_dir = root / "state" / "runtime"
-        if not runtime_dir.is_dir() or not launch.python_executable:
-            raise RuntimeError("offline base ensure produced no runtime tree")
-        if not Path(launch.python_executable).is_file():
-            raise RuntimeError("offline base ensure python executable missing")
-        if runtime_probe is not None:
-            runtime_probe(launch, root)
-        first_tree = snapshot_runtime_tree()
-
-        launch = client.ensure(install_component_ids=())
-        if snapshot_runtime_tree() != first_tree:
-            raise RuntimeError(
-                "idempotent re-ensure rewrote the runtime tree (re-download)"
-            )
-
-        # 模拟 Velopack apply：应用层绑定被新版本替换，state 不被触碰
-        for bound in (
-            root / "backend" / "runtime-manifest.json",
-            root / "component-lock.json",
-            root / "frontend-protocol-lock.json",
-        ):
-            bound.write_bytes(bound.read_bytes())
-
-        launch = client.ensure(install_component_ids=())
-        if snapshot_runtime_tree() != first_tree:
-            raise RuntimeError(
-                "post-apply ensure rewrote the runtime tree (update did not "
-                "reuse installed components)"
-            )
-        if runtime_probe is not None:
-            runtime_probe(launch, root)
-    finally:
-        for name, value in saved_env.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        for name, value in saved_no_proxy.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-    return "enforced", Path(launch.python_executable).resolve(strict=True)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("product_root", type=Path)
@@ -836,13 +564,15 @@ def main() -> int:
             root / "component-lock.json",
             root / "frontend-protocol-lock.json",
             root / "product-release-manifest.json",
-            root / "backend" / "runtime-manifest.json",
+            root / "bin" / "uv.exe",
         ]
         missing = [
             str(path.relative_to(root)) for path in required if not path.is_file()
         ]
         if missing:
             raise RuntimeError(f"required PySide files missing: {missing}")
+        if not sorted((root / "backend").glob("vibeocr_backend-*.whl")):
+            raise RuntimeError("required PySide files missing: ['backend/*.whl']")
         prohibited = [
             path.name
             for path in root.iterdir()
@@ -884,44 +614,19 @@ def main() -> int:
         backend = lock.get("backend", {})
         verify_component_policy_binding(lock_path, args.policy)
 
-        runtime_manifest_path = root / "backend" / "runtime-manifest.json"
-        runtime_manifest_hash = hashlib.sha256(
-            runtime_manifest_path.read_bytes()
-        ).hexdigest()
-        if runtime_manifest_hash != backend.get("runtime_manifest_sha256"):
-            raise RuntimeError("bound runtime manifest hash mismatch")
-        runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
-        _verify_bound_python_archive(root, runtime_manifest)
-        installer_executable = _verify_bound_installer_archive(root, runtime_manifest)
-        wheel = root / "backend" / str(runtime_manifest.get("backend_wheel", ""))
-        if not wheel.is_file():
-            raise RuntimeError("bound backend wheel is missing")
+        wheel = sorted((root / "backend").glob("vibeocr_backend-*.whl"))[0]
         actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
         if actual != backend.get("artifact_sha256"):
             raise RuntimeError("bound backend wheel hash mismatch")
-        if actual != runtime_manifest.get("backend_sha256"):
-            raise RuntimeError("runtime manifest backend wheel hash mismatch")
         with zipfile.ZipFile(wheel) as wheel_archive:
             members = set(wheel_archive.namelist())
         if "vibeocr/backend/supervisor/main.py" not in members:
             raise RuntimeError("backend wheel has no Supervisor entry")
+        if "vibeocr/backend/runtime-profiles/win-x64-base/requirements.in" not in members:
+            raise RuntimeError("backend wheel has no engine environment manifests")
 
         if os.name == "nt":
-            installer_executable_path = _verify_bound_installer_inspect(
-                root,
-                runtime_manifest,
-                installer_executable,
-                str(backend.get("accelerator", "")),
-            )
-            offline_status, runtime_python = _verify_offline_base_smoke(
-                root,
-                installer_executable_path,
-            )
-            if offline_status != "enforced" or runtime_python is None:
-                raise RuntimeError(
-                    "frozen startup smoke requires an ensured Base Runtime"
-                )
-            _verify_frozen_startup(root, runtime_python=runtime_python)
+            _verify_frozen_startup(root)
             _verify_frozen_pdf(root)
             _verify_frozen_webengine(root)
             _verify_portable_state_smoke(root)

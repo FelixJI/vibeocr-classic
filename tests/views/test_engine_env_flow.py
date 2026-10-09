@@ -1,0 +1,427 @@
+"""融合形态（进程内后端 + uv 引擎环境）的设置页安装入口测试。"""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QWidget
+
+from vibeocr.classic.engine_envs import (
+    ENGINE_ENV_SPECS,
+    EngineEnvState,
+)
+from vibeocr.classic.mineru_connection import (
+    MINERU_CONNECTION_MODE_LOCAL,
+    set_active_mineru_connection_mode,
+)
+from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
+from vibeocr.classic.views.settings_page_controller import SettingsPageController
+
+
+class _ImmediateInvalidationEmitter(QObject):
+    invalidation_finished = Signal(bool, str)
+
+
+def _immediate_invalidation_manager() -> MagicMock:
+    manager = MagicMock()
+    emitter = _ImmediateInvalidationEmitter()
+    manager.invalidation_finished = emitter.invalidation_finished
+
+    def invalidate_supervisor() -> bool:
+        emitter.invalidation_finished.emit(True, "")
+        return True
+
+    manager.invalidate_supervisor.side_effect = invalidate_supervisor
+    return manager
+
+
+def _state(spec_id: str, installed: bool, tmp_path) -> EngineEnvState:
+    root = tmp_path / "envs" / spec_id
+    return EngineEnvState(
+        spec_id=spec_id,
+        installed=installed,
+        env_root=root,
+        python=root / "Scripts" / "python.exe" if installed else None,
+    )
+
+
+@pytest.fixture
+def fused_controller(qtbot, tmp_path, monkeypatch):
+    """默认（进程内）形态的控制器；引擎环境管理器全部 mock。"""
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+    host = QWidget()
+    qtbot.addWidget(host)
+    ui = Ui_MainWindowWidget()
+    ui.setupUi(host)
+
+    with (
+        patch(
+            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
+        ),
+        patch(
+            "vibeocr.classic.views.settings_page_controller.is_cache_valid",
+            return_value=(False, None),
+        ),
+        patch(
+            "vibeocr.classic.managers.config_manager.ConfigManager"
+        ) as mock_cm,
+        patch(
+            "vibeocr.classic.views.settings_page_controller.RuntimeInstallerClient"
+        ),
+    ):
+        mock_cm.instance.return_value = MagicMock(
+            get_pipeline_ttls=MagicMock(return_value={}),
+        )
+        ctrl = SettingsPageController(
+            ui=host,
+            project_root=tmp_path,
+            status_callback=lambda msg: None,
+            ocr_ready_callback=lambda: True,
+            subprocess_manager=_immediate_invalidation_manager(),
+        )
+        engine_manager = MagicMock()
+
+        def _inspect():
+            return {
+                spec.id: _state(spec.id, False, tmp_path) for spec in ENGINE_ENV_SPECS
+            }
+
+        engine_manager.inspect.side_effect = _inspect
+        ctrl._engine_env_manager = lambda: engine_manager  # type: ignore[method-assign]
+        ctrl.connect_signals()
+        yield ctrl, host, engine_manager
+    set_active_mineru_connection_mode(MINERU_CONNECTION_MODE_LOCAL)
+
+
+def _check_feature(host, feature_id: str) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTreeWidget
+
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    assert tree is not None
+    for index in range(tree.topLevelItemCount()):
+        item = tree.topLevelItem(index)
+        if item.data(0, Qt.ItemDataRole.UserRole) == feature_id:
+            item.setCheckState(0, Qt.CheckState.Checked)
+            return
+    # 目录未加载（无后端状态）时动态补一行，验证纯前端翻译逻辑。
+    from PySide6.QtWidgets import QTreeWidgetItem
+
+    item = QTreeWidgetItem([feature_id])
+    item.setData(0, Qt.ItemDataRole.UserRole, feature_id)
+    item.setCheckState(0, Qt.CheckState.Checked)
+    tree.addTopLevelItem(item)
+
+
+def test_install_offline_features_opens_engine_env_dialog(
+    fused_controller, monkeypatch
+) -> None:
+    controller, host, _manager = fused_controller
+    _check_feature(host, "paddleocr")
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub()
+
+        def __init__(self, manager, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+
+    controller._on_install_offline_features()
+
+    assert opened == [(["paddle-cpu"], [])]
+
+
+def test_install_offline_features_keeps_gpu_when_gpu_runtime_checked(
+    fused_controller, monkeypatch
+) -> None:
+    controller, host, _manager = fused_controller
+    _check_feature(host, "mineru")
+    _check_feature(host, "gpu_runtime")
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub()
+
+        def __init__(self, manager, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+
+    controller._on_install_offline_features()
+
+    assert opened == [(["mineru-gpu"], [])]
+
+
+def test_install_offline_features_declined_does_not_open_dialog(
+    fused_controller, monkeypatch
+) -> None:
+    controller, host, _manager = fused_controller
+    _check_feature(host, "paddleocr")
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.No
+    )
+    opened: list = []
+
+    class _SignalStub2:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub2()
+
+        def __init__(self, *args, **kwargs):
+            opened.append(kwargs)
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+
+    controller._on_install_offline_features()
+    assert opened == []
+
+
+def test_backend_change_switches_installed_engine_flavor(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    controller, _host, manager = fused_controller
+    # 已安装 paddle-cpu；切换到 GPU 应装 paddle-gpu 并移除 paddle-cpu。
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-cpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub3:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub3()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+
+    controller._on_backend_change_requested("gpu")
+
+    assert opened == [(["paddle-gpu"], ["paddle-cpu"])]
+
+
+def test_engine_env_finished_invokes_succeeded_callback(fused_controller) -> None:
+    controller, _host, _manager = fused_controller
+    calls: list[str] = []
+    controller._install_succeeded_callback = lambda: calls.append("ok")  # type: ignore[assignment]
+    controller._install_abandoned_callback = lambda: calls.append("abandoned")  # type: ignore[assignment]
+
+    controller._on_engine_env_finished(True)
+    controller._on_engine_env_finished(False)
+
+    assert calls == ["ok", "abandoned"]
+
+
+def test_reinstall_python_in_fused_mode_shows_info(
+    fused_controller, monkeypatch
+) -> None:
+    controller, _host, _manager = fused_controller
+    from PySide6.QtWidgets import QMessageBox
+
+    shown: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *args, **kwargs: shown.append(args) or QMessageBox.StandardButton.Ok,
+    )
+
+    controller._on_reinstall_python()
+
+    assert len(shown) == 1
+    controller._subprocess_manager.invalidate_supervisor.assert_not_called()
+
+
+def test_download_sources_render_and_save_fused(fused_controller) -> None:
+    """融合形态：下载来源组本地渲染、保存到本地存储并投影模型源环境变量。"""
+    import json as json_module
+    import os
+
+    from PySide6.QtWidgets import QComboBox, QLabel
+
+    controller, host, _manager = fused_controller
+    # connect_signals -> _init_settings_page 已按融合形态渲染下载来源组。
+
+    package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
+    model_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
+    assert package_combo is not None and model_combo is not None
+    # 默认值与存储默认一致。
+    assert package_combo.currentData() == "tuna"
+    assert model_combo.currentData() == "huggingface"
+
+    package_combo.setCurrentIndex(package_combo.findData("pypi"))
+    model_combo.setCurrentIndex(model_combo.findData("modelscope"))
+
+    saved = controller._save_download_sources_fused()
+    assert saved is True
+
+    store_path = controller._project_root / "config" / "download-sources.json"
+    data = json_module.loads(store_path.read_text(encoding="utf-8"))
+    assert data["package_index_id"] == "pypi"
+    assert data["model_source_id"] == "modelscope"
+    assert os.environ["MINERU_MODEL_SOURCE"] == "modelscope"
+
+    status = host.findChild(QLabel, "labelDownloadSourceStatus")
+    assert status is not None and "已保存" in status.text()
+
+
+def test_on_save_download_sources_dispatches_to_fused(fused_controller) -> None:
+    controller, _host, _manager = fused_controller
+    calls: list[bool] = []
+    controller._save_download_sources_fused = (  # type: ignore[method-assign]
+        lambda: calls.append(True) or True
+    )
+
+    controller._on_save_download_sources()
+
+    assert calls == [True]
+
+
+def test_device_preference_persisted_and_used_by_install(
+    fused_controller, monkeypatch
+) -> None:
+    """未装引擎时切换设备要持久化；安装流程读取该偏好。"""
+    import json as json_module
+
+    from PySide6.QtWidgets import QMessageBox
+
+    controller, host, _manager = fused_controller
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda *a, **kw: QMessageBox.StandardButton.Ok,
+    )
+    controller._switch_engine_device_fused("gpu")
+
+    data = json_module.loads(
+        (controller._project_root / "config" / "engine-device.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert data["device"] == "gpu"
+    assert controller._engine_device_preference() == "gpu"
+
+    # 只勾选 PaddleOCR（不勾 GPU 运行时）也应安装 GPU 版。
+    _check_feature(host, "paddleocr")
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub()
+
+        def __init__(self, manager, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *a, **kw: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+    controller._on_install_offline_features()
+    assert opened == [(["paddle-gpu"], [])]
+
+
+def test_empty_selection_with_installed_envs_offers_removal(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-cpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    from PySide6.QtWidgets import QMessageBox
+
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub3:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeDialog:
+        finished = _SignalStub3()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *a, **kw: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeDialog
+    )
+
+    # 不勾选任何能力：确认后应弹出“移除全部”计划。
+    controller._on_install_offline_features()
+
+    assert opened == [([], ["paddle-cpu"])]

@@ -55,8 +55,8 @@ class TestMainWindow:
     """测试 MainWindow 集成功能。"""
 
     def test_window_title(self, main_window):
-        """窗口标题正确。"""
-        assert main_window.windowTitle() == "VibeOCR"
+        """窗口标题带 Classic 标识，与 VibeOCR Next 区分。"""
+        assert main_window.windowTitle() == "VibeOCR Classic"
 
     def test_close_polls_gui_owners_before_backend_and_widget_cleanup(
         self, main_window, qtbot, monkeypatch

@@ -930,6 +930,11 @@ class SettingsPageController:
         self._refresh_lifecycle_controls()
         self._init_ocr_runtime_group()
         self._init_mineru_connection_group()
+        # 融合形态：下载来源组不依赖 Backend 目录，页面初始化即渲染。
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._render_download_sources_fused()
 
     def _init_log_level_control(self) -> None:
         """在应用设置页加入持久化日志级别选择。"""
@@ -2890,6 +2895,11 @@ class SettingsPageController:
     def _render_download_sources(self, capabilities: set) -> None:
         """按 Backend catalog 渲染每 kind 的下载源单选。"""
 
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._render_download_sources_fused()
+            return
         label = self._ui.findChild(QLabel, "labelDownloadSource")
         layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
@@ -2952,6 +2962,78 @@ class SettingsPageController:
         label.setText(note)
         self._set_source_controls_enabled(True)
 
+    def _render_download_sources_fused(self) -> None:
+        """融合形态：下载来源保存在本地，不依赖 Backend 目录。"""
+
+        from vibeocr.classic.download_sources import (
+            MODEL_SOURCES,
+            PACKAGE_INDEXES,
+            DownloadSourceStore,
+        )
+
+        label = self._ui.findChild(QLabel, "labelDownloadSource")
+        layout = self._ui.findChild(QVBoxLayout, "downloadSourcesLayout")
+        save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
+        if label is None or layout is None:
+            return
+        self._clear_source_combo_rows()
+        saved = DownloadSourceStore(self._project_root).load()
+
+        insert_at = (
+            layout.indexOf(save_button) if save_button is not None else layout.count()
+        )
+        rows = (
+            ("package_index", "依赖下载来源：", PACKAGE_INDEXES, saved["package_index_id"]),
+            ("model_registry", "模型下载来源：", MODEL_SOURCES, saved["model_source_id"]),
+        )
+        for offset, (kind, kind_label, catalog_items, selected_id) in enumerate(rows):
+            row = QWidget(self._ui)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.addWidget(QLabel(kind_label, row))
+            combo = QComboBox(row)
+            combo.setObjectName(f"comboDownloadSource_{kind}")
+            for item in catalog_items:
+                combo.addItem(item.label, item.id)
+            combo.setCurrentIndex(max(0, combo.findData(selected_id)))
+            row_layout.addWidget(combo, 1)
+            layout.insertWidget(insert_at + offset, row)
+            self._source_combo_row_widgets.append(row)
+            self._source_combo_rows[kind] = combo
+        label.setText(
+            "下载来源影响安装识别引擎和首次下载模型的速度；更改只影响之后的下载。"
+        )
+        self._set_source_controls_enabled(True)
+
+    def _save_download_sources_fused(self) -> bool:
+        """融合形态保存：写入本地存储并立即投影模型来源环境变量。"""
+
+        from vibeocr.classic.download_sources import DownloadSourceStore
+
+        package_combo = self._source_combo_rows.get("package_index")
+        model_combo = self._source_combo_rows.get("model_registry")
+        status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
+        if package_combo is None or model_combo is None:
+            return False
+        store = DownloadSourceStore(self._project_root)
+        try:
+            store.save(
+                package_index_id=package_combo.currentData(),
+                model_source_id=model_combo.currentData(),
+            )
+            store.apply_model_source_environment()
+        except Exception:
+            logger.exception("[下载来源] 保存失败")
+            if status is not None:
+                status.setText("下载来源保存失败，请查看日志。")
+            return False
+        if status is not None:
+            status.setText(
+                "已保存。依赖来源影响之后的安装；模型来源对新启动的识别任务生效。"
+            )
+        self._show_settings_toast("下载来源已保存")
+        return True
+
     def _set_source_controls_enabled(self, enabled: bool) -> None:
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
         if save_button is not None:
@@ -2976,6 +3058,11 @@ class SettingsPageController:
             return None
 
     def _on_save_download_sources(self) -> None:
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            self._save_download_sources_fused()
+            return
         adapter = self._connect_runtime_adapter()
         if not adapter.is_started:
             status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
@@ -3025,6 +3112,11 @@ class SettingsPageController:
             return
         self._runtime_settings_snapshot = snapshot
         self._apply_mineru_connection_snapshot(snapshot)
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态的下载来源以本地存储为准，不被 Backend 设置快照覆盖。
+            return
         selected = set(snapshot.download_source_ids)
         for _kind, combo in self._source_combo_rows.items():
             combo.setCurrentIndex(0)

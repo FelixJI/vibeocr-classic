@@ -262,3 +262,48 @@ def test_reinstall_python_in_fused_mode_shows_info(
 
     assert len(shown) == 1
     controller._subprocess_manager.invalidate_supervisor.assert_not_called()
+
+
+def test_download_sources_render_and_save_fused(fused_controller) -> None:
+    """融合形态：下载来源组本地渲染、保存到本地存储并投影模型源环境变量。"""
+    import json as json_module
+    import os
+
+    from PySide6.QtWidgets import QComboBox, QLabel
+
+    controller, host, _manager = fused_controller
+    # connect_signals -> _init_settings_page 已按融合形态渲染下载来源组。
+
+    package_combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
+    model_combo = host.findChild(QComboBox, "comboDownloadSource_model_registry")
+    assert package_combo is not None and model_combo is not None
+    # 默认值与存储默认一致。
+    assert package_combo.currentData() == "tuna"
+    assert model_combo.currentData() == "huggingface"
+
+    package_combo.setCurrentIndex(package_combo.findData("pypi"))
+    model_combo.setCurrentIndex(model_combo.findData("modelscope"))
+
+    saved = controller._save_download_sources_fused()
+    assert saved is True
+
+    store_path = controller._project_root / "config" / "download-sources.json"
+    data = json_module.loads(store_path.read_text(encoding="utf-8"))
+    assert data["package_index_id"] == "pypi"
+    assert data["model_source_id"] == "modelscope"
+    assert os.environ["MINERU_MODEL_SOURCE"] == "modelscope"
+
+    status = host.findChild(QLabel, "labelDownloadSourceStatus")
+    assert status is not None and "已保存" in status.text()
+
+
+def test_on_save_download_sources_dispatches_to_fused(fused_controller) -> None:
+    controller, _host, _manager = fused_controller
+    calls: list[bool] = []
+    controller._save_download_sources_fused = (  # type: ignore[method-assign]
+        lambda: calls.append(True) or True
+    )
+
+    controller._on_save_download_sources()
+
+    assert calls == [True]

@@ -832,20 +832,18 @@ class Ui_MainWindowWidget(object):
         )
         self.groupDownloadSources.setTitle(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u4e0b\u8f7d\u8bbe\u7f6e", None
+                "MainWindowWidget", "\u4e0b\u8f7d\u6765\u6e90", None
             )
         )
         self.labelDownloadSource.setText(
             QCoreApplication.translate(
                 "MainWindowWidget",
-                "\u4ec5\u5f71\u54cd\u540e\u7eed\u7ec4\u4ef6\u4e0b\u8f7d\u3002\u6bcf\u7c7b\u53ef\u9009\u4e00\u4e2a\uff1b\u7559\u7a7a\u65f6\u4f7f\u7528 Runtime \u9ed8\u8ba4\u6e90\u3002",
+                "\u4f9d\u8d56\u548c\u6a21\u578b\u4ece\u54ea\u91cc\u4e0b\u8f7d\u3002\u66f4\u6539\u53ea\u5f71\u54cd\u4e4b\u540e\u7684\u4e0b\u8f7d\u3002",
                 None,
             )
         )
         self.btnSaveDownloadSources.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u4fdd\u5b58\u4e0b\u8f7d\u6e90", None
-            )
+            QCoreApplication.translate("MainWindowWidget", "\u4fdd\u5b58", None)
         )
         self.labelDownloadSourceStatus.setText("")
         self.groupEnvMaintenance.setTitle(

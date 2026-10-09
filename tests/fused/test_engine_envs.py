@@ -82,6 +82,10 @@ def test_ensure_paddle_runs_full_command_sequence(envs) -> None:
     second = fake.commands[1]
     assert second[0] == "pip"
     assert "--require-hashes" in second
+    assert "--default-index" in second
+    # 缺省使用保存的/默认依赖下载源（清华镜像）。
+    index_url = second[second.index("--default-index") + 1]
+    assert index_url == "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
     assert any(str(p).endswith("requirements-win-x64-paddle-cpu.lock") for p in second)
     third = fake.commands[2]
     assert "--no-deps" in third
@@ -89,6 +93,18 @@ def test_ensure_paddle_runs_full_command_sequence(envs) -> None:
     assert fourth[-1].startswith("vibeocr-runtime-contracts @ ")
     assert "Resolved 90 packages" in logs
     assert any("安装完成" in phase for phase in phases)
+
+
+def test_ensure_respects_explicit_package_index(envs) -> None:
+    manager, _ = envs
+    fake = FakeUvRunner()
+    manager._uv = fake
+
+    manager.ensure("mineru-cpu", package_index_id="pypi")
+
+    second = fake.commands[1]
+    index_url = second[second.index("--default-index") + 1]
+    assert index_url == "https://pypi.org/simple"
 
 
 def test_ensure_mineru_skips_backend_install(envs) -> None:

@@ -235,6 +235,16 @@ class EngineEnvManager:
         self._root = Path(envs_root)
         self._uv = uv or UvRunner()
 
+    @property
+    def envs_root(self) -> Path:
+        return self._root
+
+    @property
+    def state_root(self) -> Path:
+        """环境根的上级（即 state 根）；下载来源等共享配置存于此。"""
+
+        return self._root.parent
+
     def env_root(self, spec_id: str) -> Path:
         return self._root / get_engine_env_spec(spec_id).id
 
@@ -262,8 +272,24 @@ class EngineEnvManager:
         on_phase: Callable[[str], None] | None = None,
         on_log: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None,
+        package_index_id: str | None = None,
     ) -> EngineEnvState:
-        """安装（或修复）一个引擎环境；输出逐行转发到 ``on_log``。"""
+        """安装（或修复）一个引擎环境；输出逐行转发到 ``on_log``。
+
+        ``package_index_id`` 选择依赖下载源（见 ``download_sources``）；
+        缺省时读取用户已保存的选择。清单带哈希锁，换源只影响下载速度
+        与出处，不改变安装内容。
+        """
+
+        from vibeocr.classic.download_sources import (
+            DownloadSourceStore,
+            get_package_index,
+        )
+
+        if package_index_id is None:
+            # envs_root 是 <state_root>/envs；下载来源保存在 state 下。
+            package_index_id = DownloadSourceStore(self._root.parent).package_index_id
+        index = get_package_index(package_index_id)
 
         spec = get_engine_env_spec(spec_id)
         root = self.env_root(spec.id)
@@ -298,7 +324,7 @@ class EngineEnvManager:
         )
 
         python = _env_python(root)
-        _phase("正在下载并安装依赖（体积较大，进度见下方日志）")
+        _phase(f"正在下载并安装依赖（来源：{index.label}；进度见下方日志）")
         self._uv.run(
             [
                 "pip",
@@ -306,6 +332,8 @@ class EngineEnvManager:
                 "--python",
                 str(python),
                 "--require-hashes",
+                "--default-index",
+                index.url,
                 "-r",
                 str(lock_file),
             ],

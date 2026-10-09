@@ -524,16 +524,16 @@
            <item>
             <widget class="QGroupBox" name="groupDownloadSources">
              <property name="title">
-               <string>下载设置</string>
+               <string>下载来源</string>
              </property>
              <layout class="QVBoxLayout" name="downloadSourcesLayout">
               <property name="spacing">
-               <number>8</number>
+                <number>8</number>
               </property>
               <item>
                <widget class="QLabel" name="labelDownloadSource">
                 <property name="text">
-                  <string>仅影响后续组件下载。每类可选一个；留空时使用 Runtime 默认源。</string>
+                  <string>依赖和模型从哪里下载。更改只影响之后的下载。</string>
                 </property>
                 <property name="wordWrap">
                  <bool>true</bool>
@@ -543,7 +543,7 @@
               <item>
                <widget class="QPushButton" name="btnSaveDownloadSources">
                 <property name="text">
-                 <string>保存下载源</string>
+                  <string>保存</string>
                 </property>
                </widget>
               </item>

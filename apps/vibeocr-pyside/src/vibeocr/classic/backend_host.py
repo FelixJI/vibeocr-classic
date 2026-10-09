@@ -253,7 +253,9 @@ class InProcessBackendHost:
         """为本进程与后端派生的子进程准备运行环境变量。
 
         只设置缺失的键，不覆盖用户/测试显式提供的值；缓存目录全部收口
-        到 state，避免落到用户全局位置。
+        到 state，避免落到用户全局位置。模型下载来源（HuggingFace/
+        ModelScope）投影为引擎识别的环境变量，引擎子进程据此决定从哪里
+        准备模型。
         """
 
         cache_root = self._state_root / "cache"
@@ -270,6 +272,10 @@ class InProcessBackendHost:
         }
         for key, value in defaults.items():
             os.environ.setdefault(key, value)
+
+        from vibeocr.classic.download_sources import DownloadSourceStore
+
+        DownloadSourceStore(self._state_root).apply_model_source_environment()
 
 
 def generate_fallback_token() -> str:

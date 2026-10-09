@@ -47,11 +47,14 @@ class EngineEnvWorker(QThread):
         install_ids: list[str],
         remove_ids: list[str],
         parent: QWidget | None = None,
+        *,
+        package_index_id: str | None = None,
     ) -> None:
         super().__init__(parent)
         self._manager = manager
         self._install_ids = list(install_ids)
         self._remove_ids = list(remove_ids)
+        self._package_index_id = package_index_id
         self._cancel_event = threading.Event()
 
     def request_cancel(self) -> None:
@@ -72,6 +75,7 @@ class EngineEnvWorker(QThread):
                     ),
                     on_log=self.log_line.emit,
                     cancel_event=self._cancel_event,
+                    package_index_id=self._package_index_id,
                 )
         except EngineEnvError as exc:
             self.failed.emit(str(exc))
@@ -107,7 +111,7 @@ class EngineEnvDialog(QDialog):
 
         self.setWindowTitle("安装识别引擎")
         self.setModal(False)
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(640, 520)
 
         layout = QVBoxLayout(self)
 
@@ -119,6 +123,8 @@ class EngineEnvDialog(QDialog):
         self._plan_tree.setHeaderLabels(["项目", "说明"])
         self._plan_tree.setRootIsDecorated(False)
         layout.addWidget(self._plan_tree, 2)
+
+        self._build_source_selectors(layout)
 
         self._phase_label = QLabel("确认后开始安装。")
         self._phase_label.setWordWrap(True)
@@ -135,6 +141,40 @@ class EngineEnvDialog(QDialog):
         layout.addWidget(self._confirm_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self._populate_plan()
+
+    def _build_source_selectors(self, layout: QVBoxLayout) -> None:
+        """安装时可临时选择下载来源；选择会保存为之后的默认。"""
+        from PySide6.QtWidgets import QComboBox, QFormLayout
+
+        from vibeocr.classic.download_sources import (
+            MODEL_SOURCES,
+            PACKAGE_INDEXES,
+            DownloadSourceStore,
+        )
+
+        store = DownloadSourceStore(self._manager.state_root)
+        saved = store.load()
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 4)
+
+        self._package_index_combo = QComboBox()
+        for index in PACKAGE_INDEXES:
+            self._package_index_combo.addItem(index.label, index.id)
+        self._package_index_combo.setCurrentIndex(
+            max(0, self._package_index_combo.findData(saved["package_index_id"]))
+        )
+        form.addRow("依赖下载来源：", self._package_index_combo)
+
+        self._model_source_combo = QComboBox()
+        for source in MODEL_SOURCES:
+            self._model_source_combo.addItem(source.label, source.id)
+        self._model_source_combo.setCurrentIndex(
+            max(0, self._model_source_combo.findData(saved["model_source_id"]))
+        )
+        form.addRow("模型下载来源：", self._model_source_combo)
+
+        layout.addLayout(form)
 
     def _populate_plan(self) -> None:
         for spec_id in self._install_ids:
@@ -158,12 +198,33 @@ class EngineEnvDialog(QDialog):
         if self._before_start is not None and not self._before_start():
             self._append_log("等待识别服务停止超时，未开始安装。可稍后重试。")
             return
+
+        # 安装时选择的下载来源保存为之后的默认；模型来源的环境变量
+        # 立即生效（安装完成后重启的识别服务与引擎子进程会继承）。
+        from vibeocr.classic.download_sources import DownloadSourceStore
+
+        package_index_id = self._package_index_combo.currentData()
+        model_source_id = self._model_source_combo.currentData()
+        store = DownloadSourceStore(self._manager.state_root)
+        try:
+            store.save(
+                package_index_id=package_index_id,
+                model_source_id=model_source_id,
+            )
+            store.apply_model_source_environment()
+        except Exception:
+            logger.exception("[EngineEnvDialog] 保存下载来源失败，按现有来源安装")
+
         self._confirm_button.setEnabled(False)
         self._confirm_button.setText("正在安装…")
         self._phase_label.setText("正在安装，请保持网络可用。详细进展见下方日志。")
 
         self._worker = EngineEnvWorker(
-            self._manager, self._install_ids, self._remove_ids, self
+            self._manager,
+            self._install_ids,
+            self._remove_ids,
+            self,
+            package_index_id=package_index_id,
         )
         self._worker.phase.connect(self._phase_label.setText)
         self._worker.log_line.connect(self._append_log)

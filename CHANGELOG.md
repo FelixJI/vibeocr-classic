@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.2
+
+### Features
+
+- **fuse:** 前后端融合——进程内后端、uv 引擎环境与 Next 共存 (#121) (54d172b)
+
 ## 0.11.1
 
 ### Features

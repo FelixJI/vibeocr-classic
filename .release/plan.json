@@ -1,11 +1,11 @@
 {
-  "baseline_version": "0.11.0",
+  "baseline_version": "0.11.1",
   "bump": "patch",
-  "changelog_base_tag": "v0.11.0",
-  "prepared_from_sha": "1e278d2179200cfb09aeb9fd795a4cb0e1a1ff47",
+  "changelog_base_tag": "v0.11.1",
+  "prepared_from_sha": "54d172b2147f1551c3c84d5b38dae6483dc94b35",
   "release_branch": "automation/release",
   "schema_version": 1,
   "state": "pending",
-  "tag": "v0.11.1",
-  "version": "0.11.1"
+  "tag": "v0.11.2",
+  "version": "0.11.2"
 }

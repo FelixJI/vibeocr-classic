@@ -679,8 +679,13 @@ def test_release_build_has_no_external_release_input() -> None:
     ]
     assert "resolve_component_releases.py" not in script
     assert "gh attestation verify" not in script
-    # uv.exe 下载必须带哈希校验（引擎环境管理随包分发）。
-    assert "Get-FileHash -LiteralPath $uvZip -Algorithm SHA256" in script
+    # uv.exe 下载必须带哈希校验（引擎环境管理随包分发）；
+    # CI 的 PowerShell 可能无 Utility 模块，下载/校验/解压走 .NET API。
+    assert "[System.Security.Cryptography.SHA256]::Create()" in script
+    assert "[System.IO.Compression.ZipFile]::ExtractToDirectory" in script
+    assert "Invoke-WebRequest" not in script
+    assert "Get-FileHash" not in script
+    assert "Expand-Archive" not in script
 
 
 def test_release_build_binds_workspace_backend_and_uv() -> None:

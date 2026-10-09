@@ -66,17 +66,33 @@ $lock = Join-Path $locksDir 'component-lock.json'
 $frontendProtocolLock = Join-Path $locksDir 'frontend-protocol-lock.json'
 
 # 随包分发的 uv.exe（引擎环境管理）。
+# 注意：此脚本可能在 PSModulePath 受限的 CI 环境运行，Microsoft.PowerShell.Utility
+# 的 cmdlet（Invoke-WebRequest/Get-FileHash/Expand-Archive）不可依赖，
+# 下载/校验/解压全部走 .NET API。
 $uvVersion = '0.12.22'
 $uvSha256 = 'ea1397797a0ca15f63516dd0f49c2dde9776db9be5861cab152ebe8ad199894d'
 $uvZip = Join-Path $build 'uv.zip'
 $uvExtract = Join-Path $build 'uv'
-Invoke-WebRequest -Uri "https://github.com/astral-sh/uv/releases/download/$uvVersion/uv-x86_64-pc-windows-msvc.zip" `
-  -OutFile $uvZip
-$uvActualHash = (Get-FileHash -LiteralPath $uvZip -Algorithm SHA256).Hash.ToLowerInvariant()
+$uvUrl = "https://github.com/astral-sh/uv/releases/download/$uvVersion/uv-x86_64-pc-windows-msvc.zip"
+$webClient = New-Object System.Net.WebClient
+$webClient.DownloadFile($uvUrl, $uvZip)
+$uvHashAlgorithm = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $uvStream = [System.IO.File]::OpenRead($uvZip)
+    try {
+        $uvHashBytes = $uvHashAlgorithm.ComputeHash($uvStream)
+    } finally {
+        $uvStream.Dispose()
+    }
+} finally {
+    $uvHashAlgorithm.Dispose()
+}
+$uvActualHash = ([System.BitConverter]::ToString($uvHashBytes)).Replace('-', '').ToLowerInvariant()
 if ($uvActualHash -ne $uvSha256) {
     throw "uv.exe archive hash mismatch: $uvActualHash"
 }
-Expand-Archive -LiteralPath $uvZip -DestinationPath $uvExtract -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[System.IO.Compression.ZipFile]::ExtractToDirectory($uvZip, $uvExtract)
 $uvBinary = Join-Path $uvExtract 'uv.exe'
 if (-not (Test-Path -LiteralPath $uvBinary -PathType Leaf)) {
     throw 'uv.exe not found in downloaded archive'

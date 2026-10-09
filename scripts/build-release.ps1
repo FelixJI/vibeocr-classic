@@ -66,9 +66,8 @@ $lock = Join-Path $locksDir 'component-lock.json'
 $frontendProtocolLock = Join-Path $locksDir 'frontend-protocol-lock.json'
 
 # 随包分发的 uv.exe（引擎环境管理）。
-# 注意：此脚本可能在 PSModulePath 受限的 CI 环境运行，Microsoft.PowerShell.Utility
-# 的 cmdlet（Invoke-WebRequest/Get-FileHash/Expand-Archive）不可依赖，
-# 下载/校验/解压全部走 .NET API。
+# 注意：此脚本可能在 PSModulePath 受限的 CI 环境运行，Utility 模块的
+# 下载/哈希/解压 cmdlet 不可依赖，这些操作全部走 .NET API。
 $uvVersion = '0.12.22'
 $uvSha256 = 'ea1397797a0ca15f63516dd0f49c2dde9776db9be5861cab152ebe8ad199894d'
 $uvZip = Join-Path $build 'uv.zip'

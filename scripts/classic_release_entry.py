@@ -261,6 +261,60 @@ def _run_webengine_smoke() -> int:
     return 0 if all(result.values()) else 1
 
 
+def _verify_inprocess_backend_payload() -> None:
+    """验证随包后端在本进程内可组装并通过健康检查（融合形态冒烟）。
+
+    取代旧的“Installer ensure Base Runtime + 子进程探针”：识别服务已
+    内置于产品，无需任何外部运行时即可直接探测。
+    """
+    import asyncio
+    import tempfile
+
+    import httpx
+
+    from vibeocr.backend.supervisor.app import create_app
+    from vibeocr.backend.supervisor.bootstrap import (
+        BootstrapHandle,
+        generate_session_token,
+        new_instance_id,
+    )
+    from vibeocr.backend.supervisor.composition import build_supervisor
+    from vibeocr.backend.supervisor.settings_store import RuntimeSettingsStore
+
+    token = generate_session_token()
+    with tempfile.TemporaryDirectory(prefix="velopack-e2e-") as temp:
+        module, _ = build_supervisor(
+            instance_id=new_instance_id(),
+            stager_root=Path(temp) / "staging",
+            bootstrap_handle=BootstrapHandle(token),
+            with_pdf_adapter=False,
+            settings_store=RuntimeSettingsStore(Path(temp) / "settings.json"),
+        )
+        try:
+            app = create_app(module, token)
+            transport = httpx.ASGITransport(app=app)
+
+            async def _probe() -> None:
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://supervisor.local"
+                ) as client:
+                    response = await client.get(
+                        "/v2/health",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                if (
+                    response.status_code != 200
+                    or response.json().get("ready") is not True
+                ):
+                    raise RuntimeError(
+                        "in-process backend health probe failed during artifact smoke"
+                    )
+
+            asyncio.run(_probe())
+        finally:
+            module.shutdown_now()
+
+
 def _run_velopack_update_smoke() -> int:
     """Exercise the packaged Portable update path without importing the Qt UI."""
     import asyncio
@@ -268,8 +322,6 @@ def _run_velopack_update_smoke() -> int:
     from urllib.parse import urlsplit
 
     from vibeocr.classic.app_paths import AppPaths, get_active_app_paths
-    from vibeocr.classic.runtime_installation import RuntimeInstallerClient
-    from vibeocr.classic.runtime_smoke import probe_runtime_launch
     from vibeocr.classic.services.update_coordinator import (
         UpdateApplyStatus,
         UpdateCheckStatus,
@@ -292,48 +344,25 @@ def _run_velopack_update_smoke() -> int:
     except ValueError as exc:
         raise RuntimeError("Velopack artifact smoke result escaped state root") from exc
 
-    proxy_names = (
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "no_proxy",
-        "NO_PROXY",
-    )
-    saved_proxy = {name: os.environ.get(name) for name in proxy_names}
-    try:
-        for name in proxy_names[:6]:
-            os.environ[name] = "http://127.0.0.1:9"
-        os.environ["no_proxy"] = "127.0.0.1,localhost"
-        os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-        client = RuntimeInstallerClient(paths.state_root)
-        required = client.required_capabilities()
-        client.inspect(required_capabilities=required)
-        launch = client.ensure(install_component_ids=())
-        try:
-            Path(launch.python_executable).resolve(strict=True).relative_to(
-                paths.runtime_root.resolve(strict=True)
-            )
-        except (OSError, ValueError) as exc:
-            raise RuntimeError(
-                "packaged Runtime executable escaped stable state/runtime"
-            ) from exc
-        probe_runtime_launch(launch, paths.state_root)
-    finally:
-        for name, value in saved_proxy.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+    # 融合形态：识别服务内置，直接验证随包后端可组装、可服务；
+    # 无外部网络访问，不做代理黑洞处理。
+    _verify_inprocess_backend_payload()
 
     def runtime_snapshot(app_paths: AppPaths) -> list[tuple[str, int]]:
-        return sorted(
-            (path.relative_to(app_paths.runtime_root).as_posix(), path.stat().st_size)
-            for path in app_paths.runtime_root.rglob("*")
-            if path.is_file()
-        )
+        # 引擎环境（state/envs）必须跨更新保留；旧 runtime 目录为空快照。
+        entries: list[tuple[str, int]] = []
+        for snapshot_root in (app_paths.runtime_root, app_paths.state_root / "envs"):
+            if not snapshot_root.is_dir():
+                continue
+            entries.extend(
+                (
+                    path.relative_to(snapshot_root).as_posix(),
+                    path.stat().st_size,
+                )
+                for path in snapshot_root.rglob("*")
+                if path.is_file()
+            )
+        return sorted(entries)
 
     snapshot_path = paths.config_file.parent / f"runtime-e2e-{nonce}.json"
     current_tree = runtime_snapshot(paths)

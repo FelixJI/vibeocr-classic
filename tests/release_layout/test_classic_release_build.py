@@ -167,8 +167,10 @@ def test_release_build_packages_bound_product_with_pinned_velopack() -> None:
     assert "old-content-" in e2e
     assert "shutil.move" in e2e
     assert "VIBEOCR_SELF_TEST_VELOPACK_UPDATE" in e2e
-    assert "probe_runtime_launch" in entry_script
-    assert "client.ensure(install_component_ids=())" in entry_script
+    # 融合形态：更新冒烟用进程内后端探针取代旧 Runtime ensure/子进程探针。
+    assert "_verify_inprocess_backend_payload" in entry_script
+    assert "probe_runtime_launch" not in entry_script
+    assert "client.ensure(install_component_ids=())" not in entry_script
     assert '"process_id": os.getpid()' in entry_script
     assert "_wait_for_evidence_writer_exit(evidence" in e2e
     assert "requested the target full package after delta" in e2e

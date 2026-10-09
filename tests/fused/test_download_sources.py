@@ -20,7 +20,7 @@ def test_catalog_has_expected_options() -> None:
     assert [item.id for item in PACKAGE_INDEXES] == ["tuna", "pypi"]
     assert [item.id for item in MODEL_SOURCES] == ["huggingface", "modelscope"]
     tuna = get_package_index("tuna")
-    assert tuna.url.startswith("https://mirrors.tuna.tsinghua.edu.cn")
+    assert tuna.url == "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
     assert get_package_index("pypi").url == "https://pypi.org/simple"
 
 

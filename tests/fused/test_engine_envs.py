@@ -148,20 +148,35 @@ def test_remove_deletes_directory(envs) -> None:
     assert not target.exists()
 
 
+def _mark_installed(manager, root: Path, spec_id: str) -> None:
+    """按当前安装身份写入标记文件与解释器，模拟已安装环境。"""
+    import json
+
+    env_root = root / spec_id
+    (env_root / "Scripts").mkdir(parents=True, exist_ok=True)
+    (env_root / "Scripts" / "python.exe").write_bytes(b"")
+    (env_root / ".vibeocr-engine-env.json").write_text(
+        json.dumps(
+            {
+                "spec_id": spec_id,
+                "identity": manager._current_identity(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_apply_runtime_env_sets_discovery_vars(envs, monkeypatch) -> None:
     manager, root = envs
-    # 手工构造“已安装”状态：目录 + 标记 + 假 python 文件。
+    # 手工构造“已安装”状态：目录 + 标记（含当前安装身份）+ 假 python 文件。
     paddle_root = root / "paddle-gpu"
-    (paddle_root / "Scripts").mkdir(parents=True)
-    (paddle_root / "Scripts" / "python.exe").write_bytes(b"")
-    (paddle_root / ".vibeocr-engine-env.json").write_text("{}", encoding="utf-8")
+    _mark_installed(manager, root, "paddle-gpu")
     mineru_root = root / "mineru-cpu"
-    (mineru_root / "Scripts").mkdir(parents=True)
-    (mineru_root / "Scripts" / "python.exe").write_bytes(b"")
-    (mineru_root / ".vibeocr-engine-env.json").write_text("{}", encoding="utf-8")
+    _mark_installed(manager, root, "mineru-cpu")
 
     monkeypatch.delenv("VIBEOCR_PADDLE_HOME", raising=False)
     monkeypatch.delenv("VIBEOCR_MINERU_PYTHON", raising=False)
+    monkeypatch.delenv("VIBEOCR_RUNTIME_ACCELERATOR", raising=False)
 
     import os
 
@@ -170,6 +185,58 @@ def test_apply_runtime_env_sets_discovery_vars(envs, monkeypatch) -> None:
     assert applied["VIBEOCR_PADDLE_HOME"] == str(paddle_root)
     assert applied["VIBEOCR_MINERU_PYTHON"] == str(mineru_root / "Scripts" / "python.exe")
     assert os.environ["VIBEOCR_PADDLE_HOME"] == str(paddle_root)
+
+
+def test_apply_runtime_env_projects_accelerator(envs, monkeypatch) -> None:
+    manager, root = envs
+    _mark_installed(manager, root, "paddle-cpu")
+    _mark_installed(manager, root, "mineru-gpu")
+    monkeypatch.delenv("VIBEOCR_RUNTIME_ACCELERATOR", raising=False)
+
+    import os
+
+    applied = manager.apply_runtime_env()
+    # 任一 GPU 环境在位 → nvidia_cuda。
+    assert applied["VIBEOCR_RUNTIME_ACCELERATOR"] == "nvidia_cuda"
+    assert os.environ["VIBEOCR_RUNTIME_ACCELERATOR"] == "nvidia_cuda"
+
+
+def test_apply_runtime_env_cpu_when_only_cpu_envs(envs, monkeypatch) -> None:
+    manager, root = envs
+    _mark_installed(manager, root, "paddle-cpu")
+    monkeypatch.delenv("VIBEOCR_RUNTIME_ACCELERATOR", raising=False)
+
+    applied = manager.apply_runtime_env()
+    assert applied["VIBEOCR_RUNTIME_ACCELERATOR"] == "cpu"
+
+
+def test_inspect_detects_identity_drift(envs, monkeypatch) -> None:
+    """产品升级（清单/后端变化）后旧环境应判为未安装，引导重装。"""
+    import json
+
+    manager, root = envs
+    env_root = root / "paddle-cpu"
+    (env_root / "Scripts").mkdir(parents=True)
+    (env_root / "Scripts" / "python.exe").write_bytes(b"")
+    (env_root / ".vibeocr-engine-env.json").write_text(
+        json.dumps(
+            {
+                "spec_id": "paddle-cpu",
+                "identity": {"win-x64-paddle-cpu": "0" * 64},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert manager.inspect()["paddle-cpu"].installed is False
+
+
+def test_backend_distribution_points_at_workspace_package_root() -> None:
+    from vibeocr.classic.engine_envs import backend_distribution
+
+    dist = backend_distribution()
+    assert (dist / "pyproject.toml").is_file()
+    assert dist.name == "vibeocr-backend"
 
 
 def test_describe_selection_combinations() -> None:

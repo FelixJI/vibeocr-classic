@@ -35,6 +35,9 @@ def test_dependency_check_leaves_missing_runtime_for_gui_consent(
 def test_dependency_check_fails_when_runtime_inspection_fails(
     monkeypatch, tmp_path
 ) -> None:
+    """旧子进程形态：Inspector inspect 失败必须 fail closed。"""
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
+    monkeypatch.delenv("VIBEOCR_SELF_TEST_SMOKE", raising=False)
     client = Mock()
     client.inspect.side_effect = RuntimeInstallerClientError("inspect failed")
     monkeypatch.setattr(main, "get_install_root", lambda: tmp_path)

@@ -33,6 +33,17 @@ logger = logging.getLogger(__name__)
 
 _MARKER_NAME = ".vibeocr-engine-env.json"
 
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 # Protocol SDK wheel（不在公共 PyPI）。引擎环境里的 Paddle worker 需要
 # 导入 contracts；URL 版本与仓库 uv.lock 的来源保持一致。
 _CONTRACTS_WHEEL_URL = (
@@ -137,8 +148,8 @@ def runtime_profiles_root() -> Path:
 def backend_distribution() -> Path:
     """引擎环境安装 ``vibeocr.backend`` 用的发行位置。
 
-    开发态为仓库内的源码目录；打包产品里可用 ``VIBEOCR_BACKEND_DIST``
-    指向随包发行的 wheel 文件。
+    优先级：``VIBEOCR_BACKEND_DIST``（打包产品指向随包 wheel）；否则回到
+    仓库源码包根（含 pyproject.toml，可被 uv 构建安装）。
     """
 
     override = os.environ.get("VIBEOCR_BACKEND_DIST")
@@ -147,11 +158,11 @@ def backend_distribution() -> Path:
     import importlib.resources
 
     package_root = Path(str(importlib.resources.files("vibeocr.backend")))
-    # workspace 源码布局：apps/vibeocr-backend/packages/vibeocr-backend/pyproject.toml
-    for candidate in (package_root.parent.parent, package_root.parent):
+    # parents[2]：backend → vibeocr → src → <包根 packages/vibeocr-backend>
+    for candidate in (package_root.parents[2], package_root.parent):
         if (candidate / "pyproject.toml").is_file():
             return candidate
-    return package_root.parent
+    return package_root.parents[2]
 
 
 class EngineEnvError(RuntimeError):
@@ -185,6 +196,8 @@ class UvRunner:
         cancel_event: threading.Event | None = None,
         env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        import queue as queue_module
+
         uv = self.resolve()
         command = [uv, *args]
         logger.info("[EngineEnv] %s", " ".join(command))
@@ -198,23 +211,53 @@ class UvRunner:
             env=env,
         )
         assert process.stdout is not None
-        for raw_line in process.stdout:
-            line = raw_line.rstrip("\r\n")
-            if line:
-                logger.info("[EngineEnv] %s", line)
-                if on_line is not None:
-                    try:
-                        on_line(line)
-                    except Exception:  # pragma: no cover - UI 回调异常不中断安装
-                        logger.debug("日志转发回调异常", exc_info=True)
-            if cancel_event is not None and cancel_event.is_set():
-                process.terminate()
+        # 读取放独立线程、主循环轮询队列：uv 长时间无输出（连接/解析）时
+        # 取消请求仍能及时终止进程，而不是阻塞在下一次 readline 上。
+        lines: "queue_module.Queue[str]" = queue_module.Queue()
+
+        def _read_stdout() -> None:  # pragma: no cover - 线程体
+            assert process.stdout is not None
+            try:
+                for raw_line in process.stdout:
+                    stripped = raw_line.rstrip("\r\n")
+                    if stripped:
+                        lines.put(stripped)
+            finally:
+                lines.put("")  # EOF 哨兵（读取线程只投递非空行）
+
+        reader = threading.Thread(
+            target=_read_stdout, name="vibeocr-uv-output", daemon=True
+        )
+        reader.start()
+        cancelled = False
+        while True:
+            try:
+                line = lines.get(timeout=0.2)
+            except queue_module.Empty:
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                    process.terminate()
+                    break
+                if not reader.is_alive() and lines.empty():
+                    break
+                continue
+            if line == "":
+                # EOF 哨兵：输出已读完。
                 break
+            logger.info("[EngineEnv] %s", line)
+            if on_line is not None:
+                try:
+                    on_line(line)
+                except Exception:  # pragma: no cover - UI 回调异常
+                    logger.debug("日志转发回调异常", exc_info=True)
         return_code = process.wait()
-        if cancel_event is not None and cancel_event.is_set():
+        reader.join(timeout=2.0)
+        if cancelled or (cancel_event is not None and cancel_event.is_set()):
             raise EngineEnvError("安装已取消")
         if return_code != 0:
-            raise EngineEnvError(f"uv 执行失败（退出码 {return_code}）：{' '.join(args[:3])} …")
+            raise EngineEnvError(
+                f"uv 执行失败（退出码 {return_code}）：{' '.join(args[:3])} …"
+            )
         return subprocess.CompletedProcess(command, return_code, stdout="")
 
 
@@ -249,14 +292,29 @@ class EngineEnvManager:
         return self._root / get_engine_env_spec(spec_id).id
 
     def inspect(self) -> dict[str, EngineEnvState]:
-        """返回每个环境的安装状态（只看目录与标记文件，不执行命令）。"""
+        """返回每个环境的安装状态。
+
+        除目录与标记文件外还核对安装身份（依赖清单哈希与随包后端
+        wheel 哈希）：产品升级后清单或后端变化会让旧环境判为未安装，
+        引导用户重装，避免旧依赖无限期滞留。
+        """
 
         states: dict[str, EngineEnvState] = {}
+        identity = self._current_identity()
         for spec in ENGINE_ENV_SPECS:
             root = self.env_root(spec.id)
             marker = root / _MARKER_NAME
             python = _env_python(root)
             installed = marker.is_file() and python.is_file()
+            if installed:
+                try:
+                    recorded = json.loads(marker.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    recorded = {}
+                installed = (
+                    isinstance(recorded, dict)
+                    and recorded.get("identity") == identity
+                )
             states[spec.id] = EngineEnvState(
                 spec_id=spec.id,
                 installed=installed,
@@ -264,6 +322,23 @@ class EngineEnvManager:
                 python=python if installed else None,
             )
         return states
+
+    def _current_identity(self) -> dict[str, str]:
+        """当前安装身份：依赖清单与后端发行内容的指纹。"""
+
+        identity: dict[str, str] = {}
+        for spec in ENGINE_ENV_SPECS:
+            lock_file = (
+                runtime_profiles_root() / spec.profile / spec.lock_file_name
+            )
+            try:
+                identity[spec.profile] = _sha256_file(lock_file)
+            except OSError:
+                identity[spec.profile] = ""
+        dist = os.environ.get("VIBEOCR_BACKEND_DIST")
+        if dist and Path(dist).is_file():
+            identity["backend_dist"] = _sha256_file(Path(dist))
+        return identity
 
     def ensure(
         self,
@@ -311,9 +386,13 @@ class EngineEnvManager:
             shutil.rmtree(root, ignore_errors=True)
         root.mkdir(parents=True, exist_ok=True)
 
-        # 下载缓存收口到 state，避免反复下载。
+        # 下载缓存与 uv 托管解释器都收口到 state：便携目录移动/复制后
+        # 环境仍可用，不在用户级 uv 目录留数据。
         uv_env = os.environ.copy()
         uv_env.setdefault("UV_CACHE_DIR", str(self._root / ".uv-cache"))
+        uv_env.setdefault(
+            "UV_PYTHON_INSTALL_DIR", str(self._root / ".uv-python")
+        )
 
         _phase(f"正在创建 {spec.display_name} 的独立环境")
         self._uv.run(
@@ -373,7 +452,14 @@ class EngineEnvManager:
             )
 
         (root / _MARKER_NAME).write_text(
-            json.dumps({"spec_id": spec.id, "profile": spec.profile}, ensure_ascii=False),
+            json.dumps(
+                {
+                    "spec_id": spec.id,
+                    "profile": spec.profile,
+                    "identity": self._current_identity(),
+                },
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         _phase(f"{spec.display_name} 安装完成")
@@ -393,7 +479,12 @@ class EngineEnvManager:
     # ------------------------------------------------------------------
 
     def apply_runtime_env(self) -> dict[str, str]:
-        """把已安装环境的解释器位置告知进程内后端（设置环境变量）。
+        """把已安装环境的解释器位置与设备意图告知进程内后端。
+
+        - 解释器位置：``VIBEOCR_PADDLE_HOME`` / ``VIBEOCR_MINERU_PYTHON``；
+        - 设备意图：``VIBEOCR_RUNTIME_ACCELERATOR``——后端用它决定 MinerU
+          API 的 GPU 可见性与组件后缀（cpu/cuda）；任一 GPU 环境在位即
+          nvidia_cuda，否则 cpu；无任何环境时不覆盖现有值。
 
         返回本次写入的键值，便于测试与诊断；未安装的环境不设置，
         后端相应能力表现为“未安装”。
@@ -419,6 +510,15 @@ class EngineEnvManager:
             value = str(mineru.python)
             os.environ["VIBEOCR_MINERU_PYTHON"] = value
             applied["VIBEOCR_MINERU_PYTHON"] = value
+
+        gpu_selected = states["paddle-gpu"].installed or states[
+            "mineru-gpu"
+        ].installed
+        any_engine = paddle.installed or mineru.installed
+        if any_engine:
+            accelerator = "nvidia_cuda" if gpu_selected else "cpu"
+            os.environ["VIBEOCR_RUNTIME_ACCELERATOR"] = accelerator
+            applied["VIBEOCR_RUNTIME_ACCELERATOR"] = accelerator
         return applied
 
 

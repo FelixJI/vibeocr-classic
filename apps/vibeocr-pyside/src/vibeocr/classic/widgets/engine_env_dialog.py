@@ -62,10 +62,8 @@ class EngineEnvWorker(QThread):
 
     def run(self) -> None:  # pragma: no cover - 线程体
         try:
-            for spec_id in self._remove_ids:
-                spec = get_engine_env_spec(spec_id)
-                self.phase.emit(f"正在移除 {spec.display_name}")
-                self._manager.remove(spec_id)
+            # 先完整安装新环境，成功后再移除旧环境：安装可能因网络/取消
+            # 失败，此时保留旧环境才能让用户继续使用现有能力。
             for spec_id in self._install_ids:
                 spec = get_engine_env_spec(spec_id)
                 self._manager.ensure(
@@ -77,6 +75,10 @@ class EngineEnvWorker(QThread):
                     cancel_event=self._cancel_event,
                     package_index_id=self._package_index_id,
                 )
+            for spec_id in self._remove_ids:
+                spec = get_engine_env_spec(spec_id)
+                self.phase.emit(f"正在移除 {spec.display_name}")
+                self._manager.remove(spec_id)
         except EngineEnvError as exc:
             self.failed.emit(str(exc))
             return

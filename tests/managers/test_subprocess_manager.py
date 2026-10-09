@@ -170,6 +170,26 @@ def test_subprocess_escape_hatch_uses_installer_path(
     assert manager._start_task._installer_client is manager._installer_client
 
 
+def test_inprocess_start_creates_fresh_host_each_time(
+    manager: SubprocessManager, monkeypatch
+) -> None:
+    """进程内宿主只能启动一次；每次 start_supervisor 都必须新建实例。"""
+    monkeypatch.delenv("VIBEOCR_SELF_TEST_SMOKE", raising=False)
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+    manager._thread_pool.start = Mock()
+
+    manager.start_supervisor()
+    first_host = manager._backend_host
+    assert manager._start_task._backend_host is first_host
+
+    # 模拟一次失效后再次启动（如引擎安装完成后自动恢复）。
+    manager._start_task = None
+    manager._is_ready = False
+    manager.start_supervisor()
+
+    assert manager._backend_host is not first_host
+
+
 def test_start_is_idempotent_when_ready_or_starting(
     manager: SubprocessManager,
 ) -> None:

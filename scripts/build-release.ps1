@@ -38,11 +38,44 @@ uv pip sync --python $buildPython $buildLock
 if ($LASTEXITCODE -ne 0) { throw 'release build lock sync failed' }
 
 # ---------------------------------------------------------------------------
-# 融合形态：后端在本仓库内构建；Protocol SDK wheel 以固定 URL 安装。
+# 融合形态：后端在本仓库内构建；Protocol SDK wheel 按权威摘要校验后安装。
+# 哈希来源：vibeocr-protocol v2.9.0 Release 的 SHA256SUMS。
 # ---------------------------------------------------------------------------
-$contractsWheelUrl = 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_contracts-2.9.0-py3-none-any.whl'
-$clientWheelUrl = 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_client-2.9.0-py3-none-any.whl'
-uv pip install --no-deps --python $buildPython $contractsWheelUrl $clientWheelUrl
+function Invoke-VerifiedDownload {
+    param([string]$Url, [string]$ExpectedSha256, [string]$Destination)
+    $client = New-Object System.Net.WebClient
+    try {
+        $client.DownloadFile($Url, $Destination)
+    } finally {
+        $client.Dispose()
+    }
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Destination)
+        try {
+            $hash = ([System.BitConverter]::ToString(
+                $algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $stream.Dispose()
+        }
+    } finally {
+        $algorithm.Dispose()
+    }
+    if ($hash -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "download hash mismatch for $Url : $hash"
+    }
+}
+$sdkDir = Join-Path $build 'sdk-wheels'
+New-Item -ItemType Directory -Path $sdkDir -Force | Out-Null
+$contractsWheel = Join-Path $sdkDir 'vibeocr_runtime_contracts-2.9.0-py3-none-any.whl'
+$clientWheel = Join-Path $sdkDir 'vibeocr_runtime_client-2.9.0-py3-none-any.whl'
+Invoke-VerifiedDownload -Url 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_contracts-2.9.0-py3-none-any.whl' `
+  -ExpectedSha256 'b567867fd4ac503a0d575ccc689d4d4953968d65bbe008cbc95cb6f26c325013' `
+  -Destination $contractsWheel
+Invoke-VerifiedDownload -Url 'https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/vibeocr_runtime_client-2.9.0-py3-none-any.whl' `
+  -ExpectedSha256 '4fdc519ee46c0dc5bd11828656cae1128597e4176d0ba50bef469b2c6426d7f8' `
+  -Destination $clientWheel
+uv pip install --no-deps --python $buildPython $contractsWheel $clientWheel
 if ($LASTEXITCODE -ne 0) { throw 'Protocol SDK wheel install failed' }
 
 & $buildPython -m build --wheel --no-isolation `
@@ -141,7 +174,6 @@ $hiddenQtModules = @(
 )
 $excludedModules = @(
     'torch', 'torchvision', 'paddle', 'scipy', 'sklearn', 'pandas',
-    'lxml',
     'transformers', 'tokenizers', 'safetensors', 'hf_xet',
     'PySide6.Qt3DAnimation', 'PySide6.Qt3DCore', 'PySide6.Qt3DExtras',
     'PySide6.Qt3DInput', 'PySide6.Qt3DLogic', 'PySide6.Qt3DRender',

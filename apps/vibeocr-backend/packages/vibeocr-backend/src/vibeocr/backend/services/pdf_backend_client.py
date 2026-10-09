@@ -88,6 +88,10 @@ class PdfBackendClient:
         # 缩略图并发渲染时多个 worker 线程并发调用,各自取本线程的 client。
         self._http_clients: dict[int, httpx.Client] = {}
         self._log_thread: threading.Thread | None = None
+        # 进程内承载（融合形态冻结包）：无外部解释器时在同进程线程里
+        # 跑 pdf_backend_process 的 uvicorn 服务。
+        self._inprocess_server = None
+        self._inprocess_thread: threading.Thread | None = None
 
     @classmethod
     def instance(cls) -> PdfBackendClient:
@@ -163,11 +167,15 @@ class PdfBackendClient:
         self._log_thread = t
 
     def start(self) -> None:
-        """启动 PDF 后端子进程并等待就绪。线程安全,幂等。"""
+        """启动 PDF 后端并等待就绪。线程安全,幂等。"""
         with self._lock:
             if self._started and self._is_alive():
                 return
             self._stop_locked()
+
+            if os.environ.get("VIBEOCR_PDF_INPROCESS") == "1":
+                self._start_inprocess_locked()
+                return
 
             python_exe = self._resolve_python_exe()
             port = self._find_free_port()
@@ -203,7 +211,44 @@ class PdfBackendClient:
             # http client 改为按线程懒建(见 _ensure_started),此处不再预建
             self._started = True
 
+    def _start_inprocess_locked(self) -> None:
+        """在同进程线程内承载 pdf_backend_process 服务（融合冻结形态）。
+
+        冻结包没有可执行 ``python -m`` 的解释器；PDF 能力（PyMuPDF）已
+        随主程序内置，直接以线程方式运行同一 uvicorn 应用，HTTP 客户端
+        与生命周期管理与子进程形态共用。
+        """
+        import uvicorn
+
+        from vibeocr.backend.services import pdf_backend_process
+
+        port = self._find_free_port()
+        self._base_url = f"http://127.0.0.1:{port}"
+        config = uvicorn.Config(
+            pdf_backend_process.app,
+            host="127.0.0.1",
+            port=port,
+            log_level="info",
+            access_log=False,
+            # 不重配宿主进程的全局日志。
+            log_config=None,
+        )
+        server = uvicorn.Server(config)
+        thread = threading.Thread(
+            target=server.run,
+            name="vibeocr-pdf-backend",
+            daemon=True,
+        )
+        logger.info("[pdf-backend] 进程内启动 @ %s", self._base_url)
+        self._inprocess_server = server
+        self._inprocess_thread = thread
+        thread.start()
+        self._wait_ready()
+        self._started = True
+
     def _is_alive(self) -> bool:
+        if self._inprocess_thread is not None:
+            return self._inprocess_thread.is_alive()
         return self._process is not None and self._process.poll() is None
 
     def _wait_ready(self) -> None:
@@ -212,6 +257,10 @@ class PdfBackendClient:
         deadline = time.monotonic() + _BACKEND_START_TIMEOUT
         last_err: Exception | None = None
         while time.monotonic() < deadline:
+            if self._inprocess_thread is not None and not self._inprocess_thread.is_alive():
+                raise PdfBackendError(
+                    "PDF 后端进程内服务线程在就绪前退出，详见主进程日志"
+                )
             if self._process is not None and self._process.poll() is not None:
                 # 子进程已退出：排空 stdout 提取真实错误（traceback），否则只剩退出码无法定位
                 tail = self._drain_stdout_tail()
@@ -265,6 +314,17 @@ class PdfBackendClient:
             return ""
 
     def _stop_locked(self) -> None:
+        if self._inprocess_server is not None:
+            try:
+                self._inprocess_server.should_exit = True
+            except Exception:
+                pass
+            if self._inprocess_thread is not None:
+                self._inprocess_thread.join(timeout=5.0)
+                if self._inprocess_thread.is_alive():
+                    logger.warning("[pdf-backend] 进程内服务线程未在超时内退出")
+            self._inprocess_server = None
+            self._inprocess_thread = None
         if self._job_guard is not None:
             try:
                 self._job_guard.close()

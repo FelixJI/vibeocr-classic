@@ -221,8 +221,9 @@ class SubprocessManager(QObject):
         elif inprocess_backend_enabled():
             from vibeocr.classic.backend_host import InProcessBackendHost
 
-            if self._backend_host is None:
-                self._backend_host = InProcessBackendHost(self._project_root)
+            # 每次启动都新建宿主：InProcessBackendHost 只能启动一次，
+            # 复用失效前的实例会让安装后的自动恢复直接失败。
+            self._backend_host = InProcessBackendHost(self._project_root)
             task = SupervisorStartTask(
                 backend_host=self._backend_host,
                 required_capabilities=required_capabilities,

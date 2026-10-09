@@ -164,6 +164,8 @@ class SettingsPageController:
         self._defer_machine_cache_status = defer_machine_cache_status
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._runtime_adapter = None
+        # 引擎环境安装对话框的强引用（无父对象，防 GC 销毁）。
+        self._engine_env_dialog = None
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
         self._selection_catalog: RuntimeSelectionCatalog | None = None
         self._selection_load_error: str | None = None
@@ -754,7 +756,23 @@ class SettingsPageController:
         from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
 
         features = set(self._selected_offline_features())
+        manager = self._engine_env_manager()
+        states = manager.inspect()
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+
         if not features:
+            if installed_ids:
+                # 空选择 + 已装环境 = 明确的全部移除意图（释放磁盘）。
+                answer = QMessageBox.question(
+                    None,
+                    "移除识别引擎",
+                    "未勾选任何识别能力。将移除所有已安装的识别引擎并释放磁盘空间。\n是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer == QMessageBox.StandardButton.Yes:
+                    self._open_engine_env_dialog([], sorted(installed_ids))
+                return
             QMessageBox.information(
                 None,
                 "未选择能力",
@@ -763,13 +781,14 @@ class SettingsPageController:
             return
         paddle = "paddleocr" in features
         mineru = "mineru" in features
-        gpu = ("gpu_runtime" in features) or (self._runtime_backend_or_none() == "gpu")
+        gpu = (
+            ("gpu_runtime" in features)
+            or (self._runtime_backend_or_none() == "gpu")
+            or self._engine_device_preference() == "gpu"
+        )
 
         target_ids = describe_selection(paddle=paddle, mineru=mineru, gpu=gpu)
         names = "、".join(get_engine_env_spec(spec_id).display_name for spec_id in target_ids)
-        manager = self._engine_env_manager()
-        states = manager.inspect()
-        installed_ids = {sid for sid, state in states.items() if state.installed}
         remove_ids = sorted(installed_ids - set(target_ids))
 
         if not target_ids and not remove_ids:
@@ -805,6 +824,8 @@ class SettingsPageController:
         from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
 
         gpu = target == "gpu"
+        # 无引擎时也持久化设备偏好，安装流程会读取。
+        self._set_engine_device_preference(target)
         manager = self._engine_env_manager()
         states = manager.inspect()
         installed_ids = {sid for sid, state in states.items() if state.installed}
@@ -824,7 +845,7 @@ class SettingsPageController:
                 None,
                 "没有需要安装的引擎",
                 "当前没有安装任何识别引擎，切换设备不会产生下载。\n"
-                "安装引擎时会自动使用这里选择的设备。",
+                "已记住本次选择：安装引擎时会使用相应设备版本。",
             )
             return
 
@@ -844,6 +865,32 @@ class SettingsPageController:
             return
         self._open_engine_env_dialog(to_install, remove_ids)
 
+    def _engine_device_preference_path(self):
+        return self._project_root / "config" / "engine-device.json"
+
+    def _engine_device_preference(self) -> str | None:
+        """用户在未安装引擎时选择的设备偏好（"cpu"/"gpu"/None）。"""
+        import json
+
+        try:
+            data = json.loads(
+                self._engine_device_preference_path().read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return None
+        value = data.get("device") if isinstance(data, dict) else None
+        return value if value in {"cpu", "gpu"} else None
+
+    def _set_engine_device_preference(self, device: str) -> None:
+        from vibeocr.classic.json_storage import write_json_atomic
+
+        if device not in {"cpu", "gpu"}:
+            return
+        write_json_atomic(
+            self._engine_device_preference_path(),
+            {"schema_version": 1, "device": device},
+        )
+
     def _open_engine_env_dialog(
         self, install_ids: list[str], remove_ids: list[str]
     ) -> None:
@@ -859,10 +906,20 @@ class SettingsPageController:
                 on_finished=self._on_engine_env_finished,
                 parent=None,
             )
+            # 无父对象的顶层窗口必须持有强引用，否则会被 GC 销毁，
+            # 且销毁路径不会可靠触发 on_finished 恢复识别服务。
+            self._engine_env_dialog = dialog
+            dialog.finished.connect(
+                lambda *_args: self._release_engine_env_dialog(dialog)
+            )
             dialog.show()
 
         # 引擎安装/移除会改动后端正在使用的环境，先停服务再执行。
         self._run_after_supervisor_invalidated(_show)
+
+    def _release_engine_env_dialog(self, dialog) -> None:
+        if getattr(self, "_engine_env_dialog", None) is dialog:
+            self._engine_env_dialog = None
 
     def _on_engine_env_finished(self, success: bool) -> None:
         backend_options = getattr(self, "_backend_options", None)

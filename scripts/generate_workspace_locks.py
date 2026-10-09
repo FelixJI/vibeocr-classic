@@ -75,6 +75,16 @@ def generate(
     required_capabilities = list(policy["required_capabilities"])
     accelerator = str(policy.get("backend", {}).get("accelerator", "cpu"))
 
+    protocol_version = _protocol_version_from_frontend()
+    if protocol_version != SDK_VERSION:
+        # 前端依赖升级了 SDK 而 SDK_ARTIFACTS 常量未同步：继续生成会发布
+        # 自相矛盾的身份锁（宣称新版本、列出旧 wheel），必须 fail closed。
+        raise SystemExit(
+            f"Protocol SDK 版本不一致：前端解析到 {protocol_version}，"
+            f"锁资产常量为 {SDK_VERSION}。请同步 SDK_ARTIFACTS 的 wheel "
+            "URL 与 SHA-256（来源：对应 Release 的 SHA256SUMS）。"
+        )
+
     backend_version = backend_version or (
         REPO_ROOT / "apps/vibeocr-backend/version.txt"
     ).read_text(encoding="utf-8").strip()
@@ -84,7 +94,7 @@ def generate(
         "schema_version": 1,
         "protocol": {
             "repository": PROTOCOL_REPOSITORY,
-            "version": _protocol_version_from_frontend(),
+            "version": protocol_version,
         },
         "backend": {
             "repository": "FelixJI/vibeocr-classic",
@@ -97,7 +107,7 @@ def generate(
     frontend_lock = {
         "schema_version": 1,
         "repository": PROTOCOL_REPOSITORY,
-        "version": _protocol_version_from_frontend(),
+        "version": protocol_version,
         "artifacts": {
             Path(url).name: {"url": url, "sha256": sha256}
             for url, sha256 in SDK_ARTIFACTS.values()

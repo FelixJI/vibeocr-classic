@@ -344,12 +344,17 @@ def test_pdf_frontend_does_not_import_backend_wire_or_session_modules() -> None:
 
 
 def test_classic_source_does_not_import_backend_package() -> None:
-    """融合形态下，前端对后端的直接依赖收口在唯一的承载 seam 模块。
+    """融合形态下，前端对后端的直接依赖收口在极少数承载 seam 模块。
 
-    允许 ``backend_host.py``（进程内宿主）与 ``dependency_manager.py``
-    （导入自检）引用后端；其余前端模块仍不得 import 后端包。
+    允许 ``backend_host.py``（进程内宿主）、``dependency_manager.py``
+    （导入自检）与 ``main.py``（生产入口门禁的导入检查）引用后端；
+    其余前端模块仍不得 import 后端包。
     """
-    allowed_importers = {"backend_host.py", "managers/dependency_manager.py"}
+    allowed_importers = {
+        "backend_host.py",
+        "managers/dependency_manager.py",
+        "main.py",
+    }
     actual: dict[str, set[str]] = {}
 
     for source_file in CLASSIC_SOURCE_ROOT.rglob("*.py"):

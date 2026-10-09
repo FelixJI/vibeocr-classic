@@ -345,7 +345,18 @@ def _build_recognition_mode_registry(
 
 
 def _mineru_available() -> bool:
-    """Return True if a real MinerU backend is importable in this environment."""
+    """Return True if a real MinerU backend is usable.
+
+    融合形态：MinerU 运行在宿主注入的独立解释器里（``VIBEOCR_MINERU_PYTHON``），
+    主进程不应也不能直接 ``import mineru``；环境存在即视为可用，由
+    MinerUService 在该解释器中启动 API 子进程。
+    """
+    import os
+    from pathlib import Path
+
+    env_python = os.environ.get("VIBEOCR_MINERU_PYTHON")
+    if env_python and Path(env_python).is_file():
+        return True
     try:
         import mineru  # type: ignore  # noqa: F401
     except Exception:

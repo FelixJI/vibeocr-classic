@@ -102,7 +102,13 @@ def _startup_lock_names() -> tuple[str, str | None]:
 
 
 def check_production_dependencies() -> bool:
-    """验证产品绑定的 Installer；Runtime 安装必须由 GUI 征得用户同意。"""
+    """启动前验证识别服务依赖。
+
+    融合形态下识别服务内置于本进程，只验证后端组件可导入；旧子进程
+    形态仍走 Runtime Installer inspect。
+    """
+    from vibeocr.classic.backend_host import inprocess_backend_enabled
+
     smoke_python = os.environ.get("VIBEOCR_SELF_TEST_PYTHON")
     if (
         getattr(sys, "frozen", False)
@@ -111,7 +117,15 @@ def check_production_dependencies() -> bool:
         and Path(smoke_python).is_file()
     ):
         # Artifact verifier 会在解压目录内从绑定 wheel 建一个隔离 import 根。
-        # 仅冻结态+t6 双门禁生效，生产启动始终必须通过 Runtime Installer inspect。
+        # 仅冻结态+t6 双门禁生效。
+        return True
+    if inprocess_backend_enabled():
+        try:
+            import vibeocr.backend.supervisor.app  # noqa: F401
+            import vibeocr.backend.supervisor.composition  # noqa: F401
+        except Exception as exc:
+            print(f"[VibeOCR Classic] 内置识别服务导入失败: {exc}")
+            return False
         return True
     client = RuntimeInstallerClient(get_state_root())
     try:

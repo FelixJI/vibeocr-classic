@@ -35,12 +35,13 @@ def test_release_build_avoids_collecting_all_of_pyside() -> None:
     assert "'PySide6.QtQuickWidgets'" in script
     assert "'--exclude-module'" in script
     assert "'PySide6.QtQuick3D'" in script
-    assert "'lxml'" in script
-    # 融合形态：pymupdf/fitz/cv2/onnxruntime 随主程序内置，不再排除。
+    # 融合形态：pymupdf/fitz/cv2/onnxruntime/lxml 随主程序内置（Word 导出
+    # 需要 python-docx/lxml），不再排除。
     assert "'pymupdf'" not in script
     assert "'fitz'" not in script
     assert "'cv2'" not in script
     assert "'onnxruntime'" not in script
+    assert "'lxml'" not in script
     assert "'--icon'" in script
     assert "resources/app_icon.ico" in script
     assert '"$root/CHANGELOG.md;."' in script

@@ -141,16 +141,22 @@ def _win32_legacy_shortcut_path() -> Path:
 def _legacy_shortcut_is_ours() -> bool:
     """判断旧命名 .lnk 是否指向本产品（Classic）。
 
-    只在目标路径包含本产品 exe 名时认定；VibeOCR Next 等其它应用创建的
-    同名快捷方式不会被删除。
+    精确匹配目标可执行文件：冻结态要求目标就是当前 exe；开发态目标
+    是当前解释器（快捷方式 TargetPath 只存解释器路径，参数另存）。
+    VibeOCR Next 等其它应用的 exe 同名（VibeOCR.exe）但路径不同，
+    不能按名称子串判断。
     """
     from vibeocr.classic.utils.shortcuts import read_windows_shortcut_target
 
     legacy = _win32_legacy_shortcut_path()
     if not legacy.exists():
         return False
-    target = read_windows_shortcut_target(str(legacy)).lower()
-    return "vibeocr" in target
+    target = read_windows_shortcut_target(str(legacy)).strip().lower()
+    if not target:
+        return False
+    ours = Path(sys.executable).resolve().as_posix().lower()
+    theirs = Path(target).resolve().as_posix().lower()
+    return theirs == ours
 
 
 def _remove_legacy_shortcut_if_ours() -> None:

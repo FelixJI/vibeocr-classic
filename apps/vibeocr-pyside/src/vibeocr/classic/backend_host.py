@@ -18,6 +18,7 @@ import logging
 import os
 import secrets
 import socket
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -270,6 +271,10 @@ class InProcessBackendHost:
             "PADDLE_PDX_CACHE_HOME": str(cache_root / "paddlex"),
             "MINERU_HOME": str(self._state_root / "mineru4"),
         }
+        if getattr(sys, "frozen", False):
+            # 冻结包没有可执行 ``python -m`` 的解释器；PDF 后端以进程内
+            # 线程承载（PyMuPDF 已随包内置）。
+            defaults["VIBEOCR_PDF_INPROCESS"] = "1"
         for key, value in defaults.items():
             os.environ.setdefault(key, value)
 

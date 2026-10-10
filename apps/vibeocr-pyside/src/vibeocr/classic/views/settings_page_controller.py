@@ -1625,7 +1625,12 @@ class SettingsPageController:
                 self._show_settings_toast("Runtime manifest 与组件状态已重新验证")
                 logger.debug("[Runtime] 已重新验证产品绑定状态")
             else:
-                self._apply_cache_status(generation, False, "", "Runtime 验证失败")
+                self._apply_cache_status(
+                    generation,
+                    False,
+                    "",
+                    f"Runtime 验证失败：{info}" if info else "Runtime 验证失败",
+                )
 
         def failed(error: str) -> None:
             self._cache_refresh_running = False
@@ -1642,16 +1647,22 @@ class SettingsPageController:
         """验证 Runtime 绑定；融合形态验证内置后端与引擎环境状态。"""
         from vibeocr.classic.backend_host import (
             inprocess_backend_enabled,
+            verify_base_recognition_engine,
             verify_inprocess_backend_importable,
         )
 
         if inprocess_backend_enabled():
-            # 融合形态：基础识别随主程序内置，验证后端可组装；
-            # 引擎环境状态来自本地检查而非 Runtime Installer。
+            # 融合形态：基础识别随主程序内置，验证后端可组装 + 基础
+            # 引擎可初始化（rapidocr 包数据/onnxruntime）；引擎环境
+            # 状态来自本地检查而非 Runtime Installer。
             try:
                 verify_inprocess_backend_importable()
             except Exception as exc:
                 return False, f"内置识别服务导入失败: {exc}"
+            try:
+                verify_base_recognition_engine()
+            except Exception as exc:
+                return False, f"基础识别引擎初始化失败: {exc}"
             from vibeocr.classic.engine_envs import (
                 device_framework,
                 framework_display,

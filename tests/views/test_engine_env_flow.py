@@ -470,20 +470,53 @@ def test_env_maintenance_state_fused_skips_runtime_installer(
 def test_refresh_machine_cache_operation_fused(
     fused_controller, monkeypatch, tmp_path
 ) -> None:
-    """融合形态的“验证 Runtime 状态”：内置后端 + 引擎环境摘要。"""
+    """融合形态的“验证 Runtime 状态”：内置后端 + 基础引擎 + 引擎环境摘要。"""
     controller, _host, manager = fused_controller
     manager.inspect.side_effect = lambda: {
         spec.id: _state(spec.id, spec.id == "mineru-gpu", tmp_path)
         for spec in ENGINE_ENV_SPECS
     }
+    # 单测不真载 ONNX 模型；真实探针由 frozen smoke 覆盖。
+    engine_probes: list[int] = []
+    monkeypatch.setattr(
+        "vibeocr.classic.backend_host.verify_base_recognition_engine",
+        lambda: engine_probes.append(1),
+    )
 
     success, summary = controller._refresh_machine_cache_operation()
 
     assert success is True
+    assert engine_probes == [1], "必须真实调用基础识别引擎探针后才报已就绪"
     assert "基础识别已内置" in summary
     assert "GPU" in summary
     assert "MinerU 文档解析（GPU 版）" in summary
     controller._runtime_installer.inspect.assert_not_called()
+
+
+def test_refresh_machine_cache_operation_fused_reports_engine_failure(
+    fused_controller, monkeypatch
+) -> None:
+    """基础识别引擎初始化失败时不得诊断为已就绪。
+
+    本 PR 修复的故障（rapidocr 包数据缺失/onnxruntime 加载失败）只有
+    真实初始化才能暴露；仅验证组合根可导入会把损坏闭包报告为已就绪。
+    """
+
+    controller, _host, _manager = fused_controller
+
+    def _broken_probe() -> None:
+        raise RuntimeError("rapidocr default_models.yaml missing")
+
+    monkeypatch.setattr(
+        "vibeocr.classic.backend_host.verify_base_recognition_engine",
+        _broken_probe,
+    )
+
+    success, summary = controller._refresh_machine_cache_operation()
+
+    assert success is False
+    assert "基础识别引擎初始化失败" in summary
+    assert "default_models.yaml" in summary
 
 
 def test_init_ocr_runtime_group_fused_sets_accelerator_from_envs(

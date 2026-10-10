@@ -54,6 +54,20 @@ def verify_inprocess_backend_importable() -> None:
     import vibeocr.backend.supervisor.composition  # noqa: F401
 
 
+def verify_base_recognition_engine() -> None:
+    """验证基础识别引擎可在本进程初始化（配置/模型数据与 onnxruntime）。
+
+    与 release smoke 的 ``_verify_rapidocr_engine_payload`` 同一探针：
+    ``rapidocr`` 包数据（default_models.yaml/ONNX）缺失时导入即抛错，
+    onnxruntime 加载失败在初始化时抛错。设置页的「刷新缓存」据此
+    fail closed，而不是把损坏的基础闭包诊断为"已就绪"。
+    """
+
+    from rapidocr import RapidOCR
+
+    RapidOCR()
+
+
 @dataclass(frozen=True, slots=True)
 class _Ready:
     """与子进程 ready envelope 同构的就绪信息。"""

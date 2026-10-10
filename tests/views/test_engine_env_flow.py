@@ -698,3 +698,122 @@ def test_render_offline_features_hides_gpu_runtime_in_fused_mode(
     assert set(rows) == {"paddleocr", "mineru"}
     assert rows["mineru"] == Qt.CheckState.Checked
     assert rows["paddleocr"] == Qt.CheckState.Unchecked
+
+
+def test_switch_engine_device_aborts_when_config_write_fails(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    """配置写入失败（返回 False）时中止设备切换并告知用户。
+
+    若忽略结果继续安装，切换后的能力树会读到目标 accelerator 的空
+    选择，把已装引擎显示为未勾选，下次安装入口把空选择解释为全部移除。
+    """
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-cpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    from vibeocr.classic.managers import config_manager as cm_module
+
+    instance = cm_module.ConfigManager.instance.return_value
+    instance.get_offline_component_features.return_value = []
+    instance.set_offline_component_features.return_value = False
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **kw: warnings.append(a)
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub6:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeAbortDialog:
+        finished = _SignalStub6()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeAbortDialog
+    )
+
+    controller._switch_engine_device_fused("gpu")
+
+    assert opened == [], "配置写入失败必须中止切换，不得弹出安装对话框"
+    assert warnings, "应向用户报告保存失败"
+
+
+def test_install_offline_features_aborts_when_config_write_fails(
+    fused_controller, monkeypatch
+) -> None:
+    """配置写入失败时中止引擎安装并告知用户（与切换路径同模式）。"""
+
+    controller, host, _manager = fused_controller
+    _check_feature(host, "paddleocr")
+
+    from vibeocr.classic.managers import config_manager as cm_module
+
+    instance = cm_module.ConfigManager.instance.return_value
+    instance.set_offline_component_features.return_value = False
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    warnings: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "warning", lambda *a, **kw: warnings.append(a)
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub7:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeAbortDialog2:
+        finished = _SignalStub7()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeAbortDialog2
+    )
+
+    controller._on_install_offline_features()
+
+    assert opened == [], "配置写入失败必须中止安装"
+    assert warnings, "应向用户报告保存失败"
+
+
+def test_init_ocr_runtime_group_survives_inspect_failure(
+    fused_controller,
+) -> None:
+    """初始化路径的引擎环境检查失败不得中断设置页构造。
+
+    _init_ocr_runtime_group 在 GUI 构造链里同步调用 inspect()；随包
+    wheel/清单不可读时应按缺省 cpu 渲染，错误由环境状态区异步呈现。
+    """
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = RuntimeError("resources unreadable")
+
+    controller._init_ocr_runtime_group()
+
+    assert controller._selection_accelerator == "cpu"

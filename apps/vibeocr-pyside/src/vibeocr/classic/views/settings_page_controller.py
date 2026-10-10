@@ -811,12 +811,23 @@ class SettingsPageController:
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
 
-            ConfigManager.instance().set_offline_component_features(
+            persisted = ConfigManager.instance().set_offline_component_features(
                 "nvidia_cuda" if gpu else "cpu",
                 sorted(features),
             )
         except Exception:
-            pass
+            logger.exception("能力选择持久化失败")
+            persisted = False
+        if not persisted:
+            # 写入失败时继续安装会让安装完成后的能力树读到空选择，
+            # 把已装引擎全部解释为待移除；中止并告知用户。
+            QMessageBox.warning(
+                None,
+                "无法保存能力选择",
+                "保存识别能力选择失败（配置文件不可写）。\n"
+                "已取消本次安装；请检查磁盘空间与配置文件权限后重试。",
+            )
+            return
         self._open_engine_env_dialog(target_ids, remove_ids)
 
     def _switch_engine_device_fused(self, target: str) -> None:
@@ -889,12 +900,27 @@ class SettingsPageController:
             # gpu_runtime 不是可独立勾选的引擎环境（融合模式能力树已隐藏，
             # 仅随 mineru-gpu 闭包存在），不迁移该条目。
             features.discard("gpu_runtime")
-            config.set_offline_component_features(
+            persisted = config.set_offline_component_features(
                 "nvidia_cuda" if gpu else "cpu",
                 sorted(features),
             )
         except Exception:
-            pass
+            logger.exception("设备切换：能力选择持久化失败")
+            persisted = False
+        if not persisted:
+            # 写入失败（权限/磁盘/原子替换）不抛异常只返回 False；此时
+            # 继续安装会让切换后的能力树读到空选择，把已装引擎全部
+            # 解释为待移除。必须中止并告知用户。
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            QMessageBox.warning(
+                None,
+                "无法保存能力选择",
+                "保存识别能力选择失败（配置文件不可写）。\n"
+                "已取消本次设备切换；请检查磁盘空间与配置文件权限后重试。",
+            )
+            return
         self._open_engine_env_dialog(to_install, remove_ids)
 
     def _engine_device_preference_path(self):
@@ -2755,7 +2781,14 @@ class SettingsPageController:
             # 融合形态：无 Runtime manifest，加速方案由已装引擎环境决定，
             # 缺省按 cpu 渲染可选能力目录（与后端默认一致）；后续环境
             # 刷新会经 _apply_fused_env_maintenance_state 重算。
-            states = self._engine_env_manager().inspect()
+            try:
+                states = self._engine_env_manager().inspect()
+            except Exception:
+                # 本调用位于 GUI 构造路径（_init_settings_page），随包
+                # wheel/清单不可读时不得中断设置控制器与主窗口构造；
+                # 具体错误由环境状态区的异步刷新呈现（运行时检测失败）。
+                logger.exception("引擎环境检查失败，能力目录按缺省 cpu 渲染")
+                states = {}
             self._refresh_selection_accelerator_fused(states)
         else:
             try:

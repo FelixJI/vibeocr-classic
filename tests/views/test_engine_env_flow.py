@@ -394,6 +394,19 @@ def test_empty_selection_with_installed_envs_offers_removal(
         spec.id: _state(spec.id, spec.id == "paddle-cpu", tmp_path)
         for spec in ENGINE_ENV_SPECS
     }
+    # 移除意图只有在目录可选（用户能看到并取消勾选）时才成立。
+    from vibeocr.classic.runtime_selection import (
+        ComponentVariantEntry,
+        RuntimeSelectionCatalog,
+    )
+
+    controller._selection_catalog = RuntimeSelectionCatalog(
+        variants=(
+            ComponentVariantEntry("paddleocr", "cpu", "paddleocr-cpu"),
+            ComponentVariantEntry("mineru", "cpu", "mineru-cpu"),
+        )
+    )
+    controller._selection_accelerator = "cpu"
 
     from PySide6.QtWidgets import QMessageBox
 
@@ -846,3 +859,39 @@ def test_fused_disables_legacy_install_missing_entry(
     controller._on_install_missing()
     # 槽内兜底：即使被调用也转发到引擎环境安装入口，不触碰旧 Installer。
     assert forwarded == [1]
+
+
+def test_fused_install_entry_requires_catalog(fused_controller, monkeypatch, tmp_path) -> None:
+    """融合安装入口在能力目录未就绪时不得把空选择解释为移除。
+
+    本地环境刷新可能先于目录加载（或健康检查失败目录恒为 None），
+    btnReinstallDeps 经 _on_reinstall_deps 转发到这里；无目录时能力树
+    没有可选项，若已装引擎，空选择会被解释为移除全部引擎。
+    """
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-cpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+    controller._selection_catalog = None  # 目录未就绪
+
+    from PySide6.QtWidgets import QMessageBox
+
+    infos: list[tuple] = []
+    monkeypatch.setattr(
+        QMessageBox, "information", lambda *a, **kw: infos.append(a)
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+    monkeypatch.setattr(
+        controller,
+        "_open_engine_env_dialog",
+        lambda install_ids, remove_ids: opened.append((install_ids, remove_ids)),
+    )
+
+    controller._install_offline_features_fused()
+    # 转发路径（btnReinstallDeps → _on_reinstall_deps）同样被拦截。
+    controller._on_reinstall_deps()
+
+    assert opened == [], "目录未就绪时不得进入引擎安装/移除流程"
+    assert len(infos) == 2

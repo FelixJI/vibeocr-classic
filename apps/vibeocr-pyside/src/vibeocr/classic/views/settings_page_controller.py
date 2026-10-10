@@ -751,6 +751,21 @@ class SettingsPageController:
 
         return EngineEnvManager(self._project_root / "envs")
 
+    def _fused_selection_catalog_ready(self) -> bool:
+        """能力目录是否已提供当前 accelerator 的可选变体。
+
+        融合安装入口的空选择只有在目录可选（用户能看到并取消勾选）时
+        才能解释为移除意图；目录未就绪时能力树为空是加载状态而非选择。
+        """
+
+        catalog = self._selection_catalog
+        accelerator = self._selection_accelerator
+        return (
+            catalog is not None
+            and accelerator is not None
+            and bool(catalog.variants_for_accelerator(accelerator))
+        )
+
     def _install_offline_features_fused(self) -> None:
         """融合形态的“安装所选能力…”：翻译为引擎环境组合并弹安装对话框。"""
         from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
@@ -761,8 +776,18 @@ class SettingsPageController:
         installed_ids = {sid for sid, state in states.items() if state.installed}
 
         if not features:
+            if installed_ids and not self._fused_selection_catalog_ready():
+                # 目录未就绪（健康检查未完成/失败）时能力树为空并非用户
+                # 取消勾选，不得把空选择解释为移除意图；该入口可经
+                # btnReinstallDeps 转发到达，未经目录可用性门控。
+                QMessageBox.information(
+                    None,
+                    "暂不可用",
+                    "暂无法读取 Backend 的可选能力目录，请待识别服务就绪后重试。",
+                )
+                return
             if installed_ids:
-                # 空选择 + 已装环境 = 明确的全部移除意图（释放磁盘）。
+                # 空选择 + 已装环境 + 目录可选 = 明确的全部移除意图（释放磁盘）。
                 answer = QMessageBox.question(
                     None,
                     "移除识别引擎",

@@ -425,3 +425,67 @@ def test_empty_selection_with_installed_envs_offers_removal(
     controller._on_install_offline_features()
 
     assert opened == [([], ["paddle-cpu"])]
+
+
+def test_env_maintenance_state_fused_skips_runtime_installer(
+    fused_controller, qtbot
+) -> None:
+    """融合形态：环境维护状态来自引擎环境检查，不调用 Runtime Installer。"""
+    from PySide6.QtWidgets import QLabel, QPushButton, QTreeWidget
+
+    controller, host, _manager = fused_controller
+    label = host.findChild(QLabel, "labelEnvStatus")
+    assert label is not None
+
+    def _refreshed() -> bool:
+        return "基础识别已内置" in label.text()
+
+    qtbot.waitUntil(_refreshed, timeout=5000)
+    # connect_signals 阶段的后台刷新不得触碰 Installer。
+    controller._runtime_installer.inspect.assert_not_called()
+
+    status_tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
+    assert status_tree is not None and status_tree.topLevelItemCount() >= 4
+    deps_tree = host.findChild(QTreeWidget, "treeDepsStatus")
+    assert deps_tree is not None
+    assert deps_tree.topLevelItemCount() == 1 + len(ENGINE_ENV_SPECS)
+    for button_name in ("btnReinstallPython", "btnReinstallDeps", "btnUpdateDeps"):
+        button = host.findChild(QPushButton, button_name)
+        assert button is not None and button.isEnabled(), button_name
+
+
+def test_refresh_machine_cache_operation_fused(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    """融合形态的“验证 Runtime 状态”：内置后端 + 引擎环境摘要。"""
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "mineru-gpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    success, summary = controller._refresh_machine_cache_operation()
+
+    assert success is True
+    assert "基础识别已内置" in summary
+    assert "GPU" in summary
+    assert "MinerU 文档解析（GPU 版）" in summary
+    controller._runtime_installer.inspect.assert_not_called()
+
+
+def test_init_ocr_runtime_group_fused_sets_accelerator_from_envs(
+    fused_controller, tmp_path
+) -> None:
+    """融合形态：可选能力目录的加速方案来自已装引擎环境，而非 manifest。"""
+    controller, _host, manager = fused_controller
+    # fixture 构造时四个环境均未安装 → 缺省 cpu。
+    assert controller._selection_accelerator == "cpu"
+
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-gpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+    controller._init_ocr_runtime_group()
+
+    assert controller._selection_accelerator == "nvidia_cuda"
+    controller._runtime_installer.profile_descriptor.assert_not_called()

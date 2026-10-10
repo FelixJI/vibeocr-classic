@@ -154,6 +154,20 @@ def _verify_frontend_protocol_lock(
     return frontend_lock
 
 
+def _verify_rapidocr_payload_layout(root: Path) -> None:
+    """Require the bundled base OCR engine's package data in the frozen tree.
+
+    融合形态的基础识别（RapidOCR）随主程序内置：``default_models.yaml`` 与
+    onnx 模型是包数据，PyInstaller 漏收集时引擎初始化必失败。
+    """
+
+    rapidocr_root = root / "_internal" / "rapidocr"
+    if not (rapidocr_root / "default_models.yaml").is_file():
+        raise RuntimeError("frozen product is missing rapidocr default_models.yaml")
+    if not sorted((rapidocr_root / "models").glob("*.onnx")):
+        raise RuntimeError("frozen product is missing rapidocr onnx models")
+
+
 def _verify_reduced_layout(root: Path) -> None:
     prohibited = []
     for path in root.rglob("*"):
@@ -624,6 +638,7 @@ def main() -> int:
             raise RuntimeError("backend wheel has no Supervisor entry")
         if "vibeocr/backend/runtime-profiles/win-x64-base/requirements.in" not in members:
             raise RuntimeError("backend wheel has no engine environment manifests")
+        _verify_rapidocr_payload_layout(root)
 
         if os.name == "nt":
             _verify_frozen_startup(root)

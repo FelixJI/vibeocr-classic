@@ -522,6 +522,56 @@ class EngineEnvManager:
         return applied
 
 
+def device_framework(states: dict[str, EngineEnvState]) -> str | None:
+    """融合形态当前生效的计算设备：``"gpu"`` / ``"cpu"`` / ``None``（仅基础）。
+
+    与 :meth:`EngineEnvManager.apply_runtime_env` 的设备意图同源：任一 GPU
+    环境在位即 GPU；否则任一引擎在位为 CPU；一个引擎都没有时不冒充任何
+    框架（基础识别已随主程序内置，由 ``None`` 表达"未选择计算设备"）。
+    """
+
+    paddle = (
+        states["paddle-gpu"] if states["paddle-gpu"].installed else states["paddle-cpu"]
+    )
+    mineru = (
+        states["mineru-gpu"] if states["mineru-gpu"].installed else states["mineru-cpu"]
+    )
+    if not (paddle.installed or mineru.installed):
+        return None
+    if states["paddle-gpu"].installed or states["mineru-gpu"].installed:
+        return "gpu"
+    return "cpu"
+
+
+def framework_profile(framework: str | None) -> str:
+    """把设备框架映射为展示层共用的 profile 词汇。
+
+    这些 id 不再对应任何 runtime manifest，只作为
+    ``accelerator_framework`` / ``cuda_requirement_label`` 等展示助手的
+    分类词汇沿用：GPU 引擎环境的 CUDA 要求（12.6）与旧 cu126 profile
+    一致，基础态沿用 ``win-x64-base`` 表达"未选择计算设备"。
+    """
+
+    return {
+        None: "win-x64-base",
+        "cpu": "win-x64-cpu",
+        "gpu": "win-x64-cu126",
+    }[framework]
+
+
+def framework_display(framework: str | None) -> str:
+    """设备框架的用户可见标签（供设置页状态区与缓存校验摘要共用）。"""
+
+    if framework is None:
+        return "未选择（仅基础识别）"
+    from vibeocr.classic.runtime_status_messages import accelerator_display
+
+    return accelerator_display(
+        "nvidia_cuda" if framework == "gpu" else "cpu",
+        framework_profile(framework),
+    )
+
+
 def describe_selection(
     *,
     paddle: bool,

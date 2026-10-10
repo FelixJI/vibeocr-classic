@@ -43,6 +43,17 @@ def inprocess_backend_enabled() -> bool:
     return os.environ.get("VIBEOCR_SUPERVISOR_SUBPROCESS", "") != "1"
 
 
+def verify_inprocess_backend_importable() -> None:
+    """验证内置后端组件可导入（融合形态的依赖自检 seam）。
+
+    前端对后端包的直接 import 收口在本模块；设置页等调用方通过本函数
+    做导入自检，异常向上抛出由调用方决定如何呈现。
+    """
+
+    import vibeocr.backend.supervisor.app  # noqa: F401
+    import vibeocr.backend.supervisor.composition  # noqa: F401
+
+
 @dataclass(frozen=True, slots=True)
 class _Ready:
     """与子进程 ready envelope 同构的就绪信息。"""

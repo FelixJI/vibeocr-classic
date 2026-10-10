@@ -15,6 +15,7 @@ from scripts.verify_pyside_artifact import (
     _verify_embedded_app_icon,
     _verify_frontend_protocol_lock,
     _verify_product_file_closure,
+    _verify_rapidocr_payload_layout,
     _verify_reduced_layout,
     verify_component_policy_binding,
 )
@@ -91,6 +92,34 @@ def test_product_verifier_requires_the_custom_icon_payload(tmp_path: Path) -> No
     executable.write_bytes(b"MZ-default-icon")
     with pytest.raises(RuntimeError, match="custom app icon"):
         _verify_embedded_app_icon(executable, ico)
+
+
+def test_product_verifier_requires_rapidocr_package_payload(tmp_path: Path) -> None:
+    """冻结产品必须携带 RapidOCR 包数据（default_models.yaml + onnx 模型）。"""
+    rapidocr_root = tmp_path / "_internal" / "rapidocr"
+    models = rapidocr_root / "models"
+    models.mkdir(parents=True)
+    (rapidocr_root / "default_models.yaml").write_text("{}", encoding="utf-8")
+    (models / "PP-OCRv6_rec_small.onnx").write_bytes(b"onnx")
+
+    _verify_rapidocr_payload_layout(tmp_path)
+
+    (rapidocr_root / "default_models.yaml").unlink()
+    with pytest.raises(RuntimeError, match="default_models.yaml"):
+        _verify_rapidocr_payload_layout(tmp_path)
+
+    (rapidocr_root / "default_models.yaml").write_text("{}", encoding="utf-8")
+    (models / "PP-OCRv6_rec_small.onnx").unlink()
+    with pytest.raises(RuntimeError, match="onnx models"):
+        _verify_rapidocr_payload_layout(tmp_path)
+
+
+def test_release_entry_smoke_initializes_rapidocr_engine() -> None:
+    """Velopack E2E 冒烟必须真实初始化内置 RapidOCR 引擎（数据随包校验）。"""
+    entry = (ROOT / "scripts" / "classic_release_entry.py").read_text(encoding="utf-8")
+
+    assert "_verify_rapidocr_engine_payload()" in entry
+    assert "from rapidocr import RapidOCR" in entry
 
 
 def test_release_build_uses_candidate_version_and_direct_publish_contract() -> None:
@@ -531,6 +560,9 @@ def test_ci_and_release_build_use_workspace_backend() -> None:
     assert "--uv-binary $uvBinary" in script
     assert "'--collect-submodules', 'vibeocr.backend'" in script
     assert "'--collect-data', 'vibeocr.backend'" in script
+    # 基础识别（RapidOCR）随主程序内置：包数据必须进入冻结目录，
+    # 否则引擎在 frozen 包内初始化即失败（0.11.2 回归）。
+    assert "'--collect-data', 'rapidocr'" in script
     assert "python -m pip install --no-deps" not in script
     assert "v0.7.0" not in script
     assert "v0.7.0" not in workflow

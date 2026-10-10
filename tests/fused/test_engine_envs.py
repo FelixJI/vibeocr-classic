@@ -250,6 +250,42 @@ def test_describe_selection_combinations() -> None:
     ]
 
 
+def _states(envs, installed_ids: set[str]) -> dict:
+    from vibeocr.classic.engine_envs import EngineEnvState
+
+    manager, _ = envs
+    return {
+        spec.id: EngineEnvState(
+            spec_id=spec.id,
+            installed=spec.id in installed_ids,
+            env_root=manager.env_root(spec.id),
+            python=manager.env_root(spec.id) / "Scripts" / "python.exe"
+            if spec.id in installed_ids
+            else None,
+        )
+        for spec in ENGINE_ENV_SPECS
+    }
+
+
+def test_device_framework_matches_engine_environments(envs) -> None:
+    from vibeocr.classic.engine_envs import device_framework
+
+    # 无任何引擎：基础内置，不冒充任何计算设备。
+    assert device_framework(_states(envs, set())) is None
+    assert device_framework(_states(envs, {"paddle-cpu"})) == "cpu"
+    # 任一 GPU 环境在位即 GPU（与 apply_runtime_env 的设备意图一致）。
+    assert device_framework(_states(envs, {"paddle-cpu", "mineru-gpu"})) == "gpu"
+    assert device_framework(_states(envs, {"mineru-gpu"})) == "gpu"
+
+
+def test_framework_profile_maps_display_vocabulary() -> None:
+    from vibeocr.classic.engine_envs import framework_profile
+
+    assert framework_profile(None) == "win-x64-base"
+    assert framework_profile("cpu") == "win-x64-cpu"
+    assert framework_profile("gpu") == "win-x64-cu126"
+
+
 def test_uv_runner_resolve_prefers_env(monkeypatch, tmp_path) -> None:
     fake_uv = tmp_path / "uv.exe"
     fake_uv.write_bytes(b"")

@@ -474,6 +474,51 @@ def test_gpu_worker_fused_base_only_reports_base_runtime(
     assert info["runtime_has_gpu"] is False
 
 
+def test_gpu_worker_fused_inspect_failure_still_emits(
+    _cleanup, qtbot, tmp_path, monkeypatch
+):
+    """融合形态引擎环境检查抛错时仍发 finished_info。
+
+    检查异常（如随包 wheel/清单不可读）不得让 worker 静默退出：
+    否则控件永久停在"检测中"，CPU/GPU 选项与应用按钮保持禁用。
+    """
+
+    from vibeocr.classic.widgets import backend_options_widget as bow
+
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+    monkeypatch.setattr(
+        bow,
+        "detect_gpu_info",
+        lambda **_kwargs: {
+            "has_gpu": False,
+            "name": "",
+            "vram_mb": 0,
+            "cuda": None,
+        },
+    )
+
+    def _boom(self):
+        raise RuntimeError("backend wheel unreadable")
+
+    from vibeocr.classic.engine_envs import EngineEnvManager
+
+    monkeypatch.setattr(EngineEnvManager, "inspect", _boom)
+
+    worker = bow._GpuDetectWorker(tmp_path)
+    received: list[dict] = []
+    worker.finished_info.connect(received.append)
+
+    worker.run()
+
+    assert len(received) == 1
+    info = received[0]
+    # 明确的 Runtime 不可用状态，让硬件探测与界面能收尾。
+    assert info["runtime_ready"] is False
+    assert info["runtime_accelerator"] is None
+    assert info["runtime_profile"] == ""
+    assert info["runtime_has_gpu"] is False
+
+
 def test_close_stops_running_gpu_detection_worker(_cleanup, qtbot, tmp_path):
     """Closing requests cancellation without waiting on the GUI thread."""
     widget = _make_widget(

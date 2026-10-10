@@ -543,3 +543,110 @@ def test_env_refresh_projects_gpu_runtime_from_mineru_gpu(
     assert controller._runtime_component_states["mineru-cuda"] == "ready"
     assert controller._runtime_component_states["paddleocr-cpu"] == "missing"
     assert controller._selection_accelerator == "nvidia_cuda"
+
+
+def test_switch_engine_device_migrates_feature_selection(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    """设备切换后能力勾选迁移到目标 accelerator。
+
+    ConfigManager 按 accelerator 分键保存勾选：切换已装 CPU 引擎到 GPU
+    时若不迁移，能力树按 nvidia_cuda 渲染后全为未勾选，空选择会被
+    安装入口解释为移除全部引擎。
+    """
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id in {"paddle-cpu", "mineru-cpu"}, tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    from vibeocr.classic.managers import config_manager as cm_module
+
+    instance = cm_module.ConfigManager.instance.return_value
+    instance.get_offline_component_features.return_value = ["paddleocr"]
+    instance.set_offline_component_features.reset_mock()
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+    opened: list[tuple[list[str], list[str]]] = []
+
+    class _SignalStub4:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeSwitchDialog:
+        finished = _SignalStub4()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            opened.append((list(install_ids), list(remove_ids)))
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeSwitchDialog
+    )
+
+    controller._switch_engine_device_fused("gpu")
+
+    # 已装家族（paddle+mineru）∪ 源 accelerator 意图（paddleocr），
+    # 且 mineru-gpu 闭包提供 gpu_runtime。
+    instance.set_offline_component_features.assert_called_once_with(
+        "nvidia_cuda", ["gpu_runtime", "mineru", "paddleocr"]
+    )
+    assert opened == [(["paddle-gpu", "mineru-gpu"], ["mineru-cpu", "paddle-cpu"])]
+
+
+def test_switch_engine_device_to_cpu_drops_gpu_runtime(
+    fused_controller, monkeypatch, tmp_path
+) -> None:
+    """GPU→CPU 切换：迁移保留家族意图，丢弃 CPU 目录不存在的 gpu_runtime。"""
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id in {"paddle-gpu", "mineru-gpu"}, tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+
+    from vibeocr.classic.managers import config_manager as cm_module
+
+    instance = cm_module.ConfigManager.instance.return_value
+    instance.get_offline_component_features.return_value = [
+        "paddleocr",
+        "mineru",
+        "gpu_runtime",
+    ]
+    instance.set_offline_component_features.reset_mock()
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
+    )
+
+    class _SignalStub5:
+        def connect(self, *_args, **_kwargs):
+            pass
+
+    class FakeSwitchDialog2:
+        finished = _SignalStub5()
+
+        def __init__(self, m, install_ids, remove_ids, **kwargs):
+            pass
+
+        def show(self):
+            pass
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.engine_env_dialog.EngineEnvDialog", FakeSwitchDialog2
+    )
+
+    controller._switch_engine_device_fused("cpu")
+
+    instance.set_offline_component_features.assert_called_once_with(
+        "cpu", ["mineru", "paddleocr"]
+    )

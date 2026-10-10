@@ -863,6 +863,41 @@ class SettingsPageController:
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
             return
+        # 能力勾选按 accelerator 分键保存：切换后能力树按目标 accelerator
+        # 渲染，若不迁移源 accelerator 的意图，刚装的引擎会显示为未勾选，
+        # 空选择还会被安装入口解释为移除全部引擎。与安装入口一致，在
+        # 用户确认切换时持久化目标 accelerator 的能力列表：以本次切换
+        # 实际安装的家族为准，并保留源 accelerator 上已勾选的安装意图。
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+            from vibeocr.classic.runtime_selection import (
+                migrate_legacy_feature_ids,
+            )
+
+            config = ConfigManager.instance()
+            source = set(
+                migrate_legacy_feature_ids(
+                    config.get_offline_component_features(
+                        "cpu" if gpu else "nvidia_cuda"
+                    )
+                )
+            )
+            features = source | {
+                "paddleocr" if family == "paddle" else "mineru"
+                for family in families
+            }
+            if gpu and "mineru" in families:
+                # mineru-gpu 闭包含 CUDA/Torch 运行环境（gpu_runtime）。
+                features.add("gpu_runtime")
+            else:
+                # CPU 目录没有 gpu_runtime 变体。
+                features.discard("gpu_runtime")
+            config.set_offline_component_features(
+                "nvidia_cuda" if gpu else "cpu",
+                sorted(features),
+            )
+        except Exception:
+            pass
         self._open_engine_env_dialog(to_install, remove_ids)
 
     def _engine_device_preference_path(self):

@@ -166,7 +166,11 @@ class InProcessBackendHost:
         _emit("正在启动本地服务端口")
         from vibeocr.backend.supervisor.app import create_app
 
-        app = create_app(module, token)
+        app = create_app(
+            module,
+            token,
+            runtime_status_provider=self._build_runtime_status_provider(),
+        )
 
         import uvicorn
         from vibeocr.runtime_contracts.generated import ALL_CAPABILITIES
@@ -207,6 +211,33 @@ class InProcessBackendHost:
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------
+
+    def _build_runtime_status_provider(self):
+        """``/v2/runtime/status`` 的融合形态数据源。
+
+        默认的 ``runtime_status_from_environment`` 依赖 Runtime Installer
+        的 manifest/state 环境变量，融合形态不设置它们；这里改为从本地
+        引擎环境安装态投影（基础识别内置 + 引擎组件 ready/missing），
+        使健康运行的服务不再被前端误读为"未连接"。
+        """
+
+        from vibeocr.backend import __version__ as backend_version
+        from vibeocr.classic.engine_envs import (
+            EngineEnvManager,
+            fused_runtime_status_snapshot,
+        )
+
+        envs_root = self._state_root / "envs"
+
+        def _provider(instance_id: str, service_state: str) -> dict[str, object]:
+            return fused_runtime_status_snapshot(
+                EngineEnvManager(envs_root).inspect(),
+                instance_id=instance_id,
+                service_state=service_state,
+                backend_version=backend_version,
+            )
+
+        return _provider
 
     def _serve(self, server, sock: socket.socket, module) -> None:  # pragma: no cover - 线程体
         import asyncio

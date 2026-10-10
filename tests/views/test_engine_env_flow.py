@@ -489,3 +489,57 @@ def test_init_ocr_runtime_group_fused_sets_accelerator_from_envs(
 
     assert controller._selection_accelerator == "nvidia_cuda"
     controller._runtime_installer.profile_descriptor.assert_not_called()
+
+
+def test_env_refresh_recomputes_selection_accelerator(
+    fused_controller, qtbot, tmp_path
+) -> None:
+    """引擎安装/设备切换后的环境刷新必须重算能力目录的 accelerator。
+
+    旧实现只在设置页初始化时计算一次：基础态安装 GPU 引擎后，能力树
+    仍按 CPU accelerator 渲染，GPU 能力显示为未勾选，空选择还会被解释
+    为移除已安装环境。
+    """
+
+    controller, host, manager = fused_controller
+    assert controller._selection_accelerator == "cpu"
+
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "paddle-gpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+    controller._refresh_env_maintenance_state()
+
+    qtbot.waitUntil(
+        lambda: controller._selection_accelerator == "nvidia_cuda",
+        timeout=5000,
+    )
+    # 完整投影：未装组件是明确的 missing，GPU 引擎就绪。
+    states = controller._runtime_component_states
+    assert states["paddleocr-cuda"] == "ready"
+    assert states["paddleocr-cpu"] == "missing"
+    assert states["mineru-cpu"] == "missing"
+    assert states["mineru-cuda"] == "missing"
+    # Paddle GPU 清单不含 torch：gpu_runtime 不因 paddle-gpu 就绪。
+    assert states["gpu_runtime"] == "missing"
+
+
+def test_env_refresh_projects_gpu_runtime_from_mineru_gpu(
+    fused_controller, qtbot, tmp_path
+) -> None:
+    """mineru-gpu 闭包含 torch/CUDA：其安装态必须把 gpu_runtime 标为就绪。"""
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = lambda: {
+        spec.id: _state(spec.id, spec.id == "mineru-gpu", tmp_path)
+        for spec in ENGINE_ENV_SPECS
+    }
+    controller._refresh_env_maintenance_state()
+
+    qtbot.waitUntil(
+        lambda: controller._runtime_component_states.get("gpu_runtime") == "ready",
+        timeout=5000,
+    )
+    assert controller._runtime_component_states["mineru-cuda"] == "ready"
+    assert controller._runtime_component_states["paddleocr-cpu"] == "missing"
+    assert controller._selection_accelerator == "nvidia_cuda"

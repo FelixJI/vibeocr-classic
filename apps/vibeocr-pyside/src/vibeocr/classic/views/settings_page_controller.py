@@ -2151,26 +2151,36 @@ class SettingsPageController:
         """融合形态环境维护状态：基础识别内置 + 引擎环境安装态。"""
         from vibeocr.classic.engine_envs import (
             ENGINE_ENV_SPECS,
+            FUSED_COMPONENT_IDS,
             device_framework,
             framework_display,
         )
 
         states: dict = snapshot.get("engine_envs") or {}
         framework = device_framework(states) if states else None
+        # 引擎安装/设备切换会改变生效的加速方案：每次环境刷新都重算，
+        # 让可选能力树按当前 accelerator 渲染，而不是停留在初始化时
+        # （旧 accelerator 下刚装的 GPU 能力会显示为未勾选，且把空选择
+        # 误解释为移除已安装环境）。
+        self._refresh_selection_accelerator_fused(states)
         self._runtime_component_states = self._collect_component_states(
             runtime_status, None
         )
         # 引擎环境是本地安装态的权威证据；HTTP 快照（若可用）优先，不覆盖。
-        fused_component_ids = {
-            "paddle-cpu": "paddleocr-cpu",
-            "paddle-gpu": "paddleocr-cuda",
-            "mineru-cpu": "mineru-cpu",
-            "mineru-gpu": "mineru-cuda",
-        }
-        for spec_id, component_id in fused_component_ids.items():
+        for spec_id, component_id in FUSED_COMPONENT_IDS.items():
             state = states.get(spec_id)
-            if state is not None and state.installed:
-                self._runtime_component_states.setdefault(component_id, "ready")
+            if state is None:
+                continue
+            self._runtime_component_states.setdefault(
+                component_id, "ready" if state.installed else "missing"
+            )
+        # mineru-gpu（win-x64-cu126）闭包含 torch/CUDA 运行环境；Paddle GPU
+        # 环境的清单不含 torch，不提供 gpu_runtime。
+        mineru_gpu = states.get("mineru-gpu")
+        if mineru_gpu is not None:
+            self._runtime_component_states.setdefault(
+                "gpu_runtime", "ready" if mineru_gpu.installed else "missing"
+            )
         service = "未连接"
         maintenance_text = ""
         if runtime_status is not None:
@@ -2207,6 +2217,18 @@ class SettingsPageController:
         label = self._ui.findChild(QLabel, "labelEnvStatus")
         if label is not None:
             label.setText(f"基础识别已内置 · 计算设备 {accel_text} · 服务：{service}")
+
+    def _refresh_selection_accelerator_fused(self, states: dict) -> None:
+        """融合形态：按已装引擎环境重算可选能力目录的加速方案。
+
+        初始化与每次环境状态刷新（引擎安装/移除/设备切换后）都会调用；
+        无任何引擎时缺省 cpu，与后端的 accelerator 缺省一致。
+        """
+
+        from vibeocr.classic.engine_envs import device_framework
+
+        framework = device_framework(states) if states else None
+        self._selection_accelerator = "nvidia_cuda" if framework == "gpu" else "cpu"
 
     def _populate_deps_tree_fused(self, tree: QTreeWidget, states: dict) -> None:
         """融合形态依赖树：基础识别内置与各引擎环境的安装状态。"""
@@ -2699,13 +2721,10 @@ class SettingsPageController:
 
         if inprocess_backend_enabled():
             # 融合形态：无 Runtime manifest，加速方案由已装引擎环境决定，
-            # 缺省按 cpu 渲染可选能力目录（与后端默认一致）。
-            from vibeocr.classic.engine_envs import device_framework
-
+            # 缺省按 cpu 渲染可选能力目录（与后端默认一致）；后续环境
+            # 刷新会经 _apply_fused_env_maintenance_state 重算。
             states = self._engine_env_manager().inspect()
-            self._selection_accelerator = (
-                "nvidia_cuda" if device_framework(states) == "gpu" else "cpu"
-            )
+            self._refresh_selection_accelerator_fused(states)
         else:
             try:
                 self._selection_accelerator = (

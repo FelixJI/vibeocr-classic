@@ -817,3 +817,32 @@ def test_init_ocr_runtime_group_survives_inspect_failure(
     controller._init_ocr_runtime_group()
 
     assert controller._selection_accelerator == "cpu"
+
+
+def test_fused_disables_legacy_install_missing_entry(
+    fused_controller, qtbot, monkeypatch
+) -> None:
+    """融合形态禁用走旧 Installer 的「补全当前 Runtime」入口。
+
+    该按钮的旧流程需要随包 Runtime manifest/installer（融合产品已不
+    携带），点击会停止 Supervisor 并进入必然失败的安装流程。
+    """
+
+    controller, host, _manager = fused_controller
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    label = host.findChild(QLabel, "labelEnvStatus")
+    assert label is not None
+    qtbot.waitUntil(lambda: "基础识别已内置" in label.text(), timeout=5000)
+
+    missing_button = host.findChild(QPushButton, "btnInstallMissing")
+    assert missing_button is not None
+    assert not missing_button.isEnabled()
+
+    forwarded: list[int] = []
+    monkeypatch.setattr(
+        controller, "_on_install_offline_features", lambda: forwarded.append(1)
+    )
+    controller._on_install_missing()
+    # 槽内兜底：即使被调用也转发到引擎环境安装入口，不触碰旧 Installer。
+    assert forwarded == [1]

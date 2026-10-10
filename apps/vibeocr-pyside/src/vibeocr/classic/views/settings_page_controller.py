@@ -1812,6 +1812,14 @@ class SettingsPageController:
 
     def _on_install_missing(self) -> None:
         """使用 Installer 的当前 accelerator 补全缺失 Runtime 内容。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态没有 Runtime Installer 补装流程（manifest/installer
+            # 已不随包分发）；引擎的补全/修复由「可选识别能力」的安装
+            # 入口承担（重新勾选即重装并校验安装身份）。
+            self._on_install_offline_features()
+            return
         reply = QMessageBox.question(
             None,
             "确认补充安装缺失依赖",
@@ -2172,14 +2180,16 @@ class SettingsPageController:
             if label:
                 label.setText("Runtime：未绑定")
 
-        # 所有维护按钮都映射到 ensure/repair 或融合形态的引擎安装入口。
+        # 所有维护按钮都映射到 ensure/repair 或融合形态的引擎安装入口；
+        # "补全当前 Runtime"走旧 Installer 补装流程（需要随包 manifest/
+        # installer），融合形态不适用，保持禁用（槽内另有融合转发兜底）。
         enabled = mode in {"portable", "fused"}
         if btn_py:
             btn_py.setEnabled(enabled)
         if btn_deps:
             btn_deps.setEnabled(enabled)
         if btn_missing:
-            btn_missing.setEnabled(enabled)
+            btn_missing.setEnabled(mode == "portable")
         if btn_update:
             btn_update.setEnabled(enabled)
         # "重装选中项"初始禁用，由依赖树选择变化驱动启用状态

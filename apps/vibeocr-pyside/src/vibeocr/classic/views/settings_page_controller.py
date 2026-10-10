@@ -886,12 +886,9 @@ class SettingsPageController:
                 "paddleocr" if family == "paddle" else "mineru"
                 for family in families
             }
-            if gpu and "mineru" in families:
-                # mineru-gpu 闭包含 CUDA/Torch 运行环境（gpu_runtime）。
-                features.add("gpu_runtime")
-            else:
-                # CPU 目录没有 gpu_runtime 变体。
-                features.discard("gpu_runtime")
+            # gpu_runtime 不是可独立勾选的引擎环境（融合模式能力树已隐藏，
+            # 仅随 mineru-gpu 闭包存在），不迁移该条目。
+            features.discard("gpu_runtime")
             config.set_offline_component_features(
                 "nvidia_cuda" if gpu else "cpu",
                 sorted(features),
@@ -2940,6 +2937,19 @@ class SettingsPageController:
             tree.clear()
             return
         variants = catalog.variants_for_accelerator(accelerator)
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合模式：gpu_runtime（CUDA/Torch）是 mineru-gpu 环境的闭包
+            # 组件，不是可独立安装的引擎环境——描述翻译（describe_selection）
+            # 没有对应目标。若仍可勾选，仅勾它会得到空安装集并把已装引擎
+            # 全部解释为待移除。此处隐藏该行；CUDA 运行时是否在位由
+            # mineru-gpu 的安装状态表达。
+            variants = tuple(
+                variant
+                for variant in variants
+                if variant.feature_id != "gpu_runtime"
+            )
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
 

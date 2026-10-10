@@ -593,10 +593,10 @@ def test_switch_engine_device_migrates_feature_selection(
 
     controller._switch_engine_device_fused("gpu")
 
-    # 已装家族（paddle+mineru）∪ 源 accelerator 意图（paddleocr），
-    # 且 mineru-gpu 闭包提供 gpu_runtime。
+    # 已装家族（paddle+mineru）∪ 源 accelerator 意图（paddleocr）；
+    # gpu_runtime 不可独立勾选（融合能力树已隐藏），不迁移。
     instance.set_offline_component_features.assert_called_once_with(
-        "nvidia_cuda", ["gpu_runtime", "mineru", "paddleocr"]
+        "nvidia_cuda", ["mineru", "paddleocr"]
     )
     assert opened == [(["paddle-gpu", "mineru-gpu"], ["mineru-cpu", "paddle-cpu"])]
 
@@ -650,3 +650,51 @@ def test_switch_engine_device_to_cpu_drops_gpu_runtime(
     instance.set_offline_component_features.assert_called_once_with(
         "cpu", ["mineru", "paddleocr"]
     )
+
+
+def test_render_offline_features_hides_gpu_runtime_in_fused_mode(
+    fused_controller,
+) -> None:
+    """融合能力树不展示 gpu_runtime：它只是 mineru-gpu 的闭包组件。
+
+    若仍可勾选，仅勾它会得到空安装集（describe_selection 无对应目标），
+    已装引擎会被全部解释为待移除；勾选也无法真正安装该运行时。
+    """
+
+    controller, host, _manager = fused_controller
+    from vibeocr.classic.runtime_selection import (
+        ComponentVariantEntry,
+        RuntimeSelectionCatalog,
+    )
+
+    controller._selection_catalog = RuntimeSelectionCatalog(
+        variants=(
+            ComponentVariantEntry("paddleocr", "cpu", "paddleocr-cpu"),
+            ComponentVariantEntry("mineru", "cpu", "mineru-cpu"),
+            ComponentVariantEntry("paddleocr", "nvidia_cuda", "paddleocr-cuda"),
+            ComponentVariantEntry("mineru", "nvidia_cuda", "mineru-cuda"),
+            ComponentVariantEntry("gpu_runtime", "nvidia_cuda", "gpu_runtime"),
+        )
+    )
+    controller._selection_accelerator = "nvidia_cuda"
+    from vibeocr.classic.managers import config_manager as cm_module
+
+    instance = cm_module.ConfigManager.instance.return_value
+    instance.get_offline_component_features.return_value = ["mineru"]
+
+    controller._render_offline_features()
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QTreeWidget
+
+    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
+    assert tree is not None
+    rows = {
+        tree.topLevelItem(index).data(0, Qt.ItemDataRole.UserRole): (
+            tree.topLevelItem(index).checkState(0)
+        )
+        for index in range(tree.topLevelItemCount())
+    }
+    assert set(rows) == {"paddleocr", "mineru"}
+    assert rows["mineru"] == Qt.CheckState.Checked
+    assert rows["paddleocr"] == Qt.CheckState.Unchecked

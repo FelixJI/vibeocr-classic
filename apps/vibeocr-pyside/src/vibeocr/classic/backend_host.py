@@ -43,6 +43,31 @@ def inprocess_backend_enabled() -> bool:
     return os.environ.get("VIBEOCR_SUPERVISOR_SUBPROCESS", "") != "1"
 
 
+def verify_inprocess_backend_importable() -> None:
+    """验证内置后端组件可导入（融合形态的依赖自检 seam）。
+
+    前端对后端包的直接 import 收口在本模块；设置页等调用方通过本函数
+    做导入自检，异常向上抛出由调用方决定如何呈现。
+    """
+
+    import vibeocr.backend.supervisor.app  # noqa: F401
+    import vibeocr.backend.supervisor.composition  # noqa: F401
+
+
+def verify_base_recognition_engine() -> None:
+    """验证基础识别引擎可在本进程初始化（配置/模型数据与 onnxruntime）。
+
+    与 release smoke 的 ``_verify_rapidocr_engine_payload`` 同一探针：
+    ``rapidocr`` 包数据（default_models.yaml/ONNX）缺失时导入即抛错，
+    onnxruntime 加载失败在初始化时抛错。设置页的「刷新缓存」据此
+    fail closed，而不是把损坏的基础闭包诊断为"已就绪"。
+    """
+
+    from rapidocr import RapidOCR
+
+    RapidOCR()
+
+
 @dataclass(frozen=True, slots=True)
 class _Ready:
     """与子进程 ready envelope 同构的就绪信息。"""
@@ -155,7 +180,11 @@ class InProcessBackendHost:
         _emit("正在启动本地服务端口")
         from vibeocr.backend.supervisor.app import create_app
 
-        app = create_app(module, token)
+        app = create_app(
+            module,
+            token,
+            runtime_status_provider=self._build_runtime_status_provider(),
+        )
 
         import uvicorn
         from vibeocr.runtime_contracts.generated import ALL_CAPABILITIES
@@ -196,6 +225,33 @@ class InProcessBackendHost:
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------
+
+    def _build_runtime_status_provider(self):
+        """``/v2/runtime/status`` 的融合形态数据源。
+
+        默认的 ``runtime_status_from_environment`` 依赖 Runtime Installer
+        的 manifest/state 环境变量，融合形态不设置它们；这里改为从本地
+        引擎环境安装态投影（基础识别内置 + 引擎组件 ready/missing），
+        使健康运行的服务不再被前端误读为"未连接"。
+        """
+
+        from vibeocr.backend import __version__ as backend_version
+        from vibeocr.classic.engine_envs import (
+            EngineEnvManager,
+            fused_runtime_status_snapshot,
+        )
+
+        envs_root = self._state_root / "envs"
+
+        def _provider(instance_id: str, service_state: str) -> dict[str, object]:
+            return fused_runtime_status_snapshot(
+                EngineEnvManager(envs_root).inspect(),
+                instance_id=instance_id,
+                service_state=service_state,
+                backend_version=backend_version,
+            )
+
+        return _provider
 
     def _serve(self, server, sock: socket.socket, module) -> None:  # pragma: no cover - 线程体
         import asyncio

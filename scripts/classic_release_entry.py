@@ -315,6 +315,18 @@ def _verify_inprocess_backend_payload() -> None:
             module.shutdown_now()
 
 
+def _verify_rapidocr_engine_payload() -> None:
+    """验证基础识别引擎可在冻结进程内初始化（配置与模型随包携带）。
+
+    RapidOCR 的 ``default_models.yaml`` 是包数据：PyInstaller 漏收集时
+    模块导入即失败，此探针让 release build 在冒烟阶段 fail closed，
+    而不是等用户首次识别时才暴露。
+    """
+    from rapidocr import RapidOCR
+
+    RapidOCR()
+
+
 def _run_velopack_update_smoke() -> int:
     """Exercise the packaged Portable update path without importing the Qt UI."""
     import asyncio
@@ -345,8 +357,10 @@ def _run_velopack_update_smoke() -> int:
         raise RuntimeError("Velopack artifact smoke result escaped state root") from exc
 
     # 融合形态：识别服务内置，直接验证随包后端可组装、可服务；
-    # 无外部网络访问，不做代理黑洞处理。
+    # 基础识别引擎必须能在冻结进程内真实初始化；无外部网络访问，
+    # 不做代理黑洞处理。
     _verify_inprocess_backend_payload()
+    _verify_rapidocr_engine_payload()
 
     def runtime_snapshot(app_paths: AppPaths) -> list[tuple[str, int]]:
         # 引擎环境（state/envs）必须跨更新保留；旧 runtime 目录为空快照。

@@ -250,9 +250,130 @@ def test_describe_selection_combinations() -> None:
     ]
 
 
+def _states(envs, installed_ids: set[str]) -> dict:
+    from vibeocr.classic.engine_envs import EngineEnvState
+
+    manager, _ = envs
+    return {
+        spec.id: EngineEnvState(
+            spec_id=spec.id,
+            installed=spec.id in installed_ids,
+            env_root=manager.env_root(spec.id),
+            python=manager.env_root(spec.id) / "Scripts" / "python.exe"
+            if spec.id in installed_ids
+            else None,
+        )
+        for spec in ENGINE_ENV_SPECS
+    }
+
+
+def test_device_framework_matches_engine_environments(envs) -> None:
+    from vibeocr.classic.engine_envs import device_framework
+
+    # 无任何引擎：基础内置，不冒充任何计算设备。
+    assert device_framework(_states(envs, set())) is None
+    assert device_framework(_states(envs, {"paddle-cpu"})) == "cpu"
+    # 任一 GPU 环境在位即 GPU（与 apply_runtime_env 的设备意图一致）。
+    assert device_framework(_states(envs, {"paddle-cpu", "mineru-gpu"})) == "gpu"
+    assert device_framework(_states(envs, {"mineru-gpu"})) == "gpu"
+
+
+def test_framework_profile_maps_display_vocabulary() -> None:
+    from vibeocr.classic.engine_envs import framework_profile
+
+    assert framework_profile(None) == "win-x64-base"
+    assert framework_profile("cpu") == "win-x64-cpu"
+    assert framework_profile("gpu") == "win-x64-cu126"
+
+
 def test_uv_runner_resolve_prefers_env(monkeypatch, tmp_path) -> None:
     fake_uv = tmp_path / "uv.exe"
     fake_uv.write_bytes(b"")
     monkeypatch.setenv("VIBEOCR_UV_BIN", str(fake_uv))
     runner = UvRunner()
     assert runner.resolve() == str(fake_uv)
+
+
+def _snapshot(envs, installed_ids: set[str], **kwargs):
+    from vibeocr.classic.engine_envs import fused_runtime_status_snapshot
+
+    defaults = {
+        "instance_id": "sup-test",
+        "service_state": "ready",
+        "backend_version": "0.0.0-test",
+    }
+    defaults.update(kwargs)
+    return fused_runtime_status_snapshot(_states(envs, installed_ids), **defaults)
+
+
+def test_fused_runtime_status_snapshot_contract_valid(envs) -> None:
+    """空环境（仅基础识别）的快照满足 Protocol v2 解析契约。"""
+
+    from vibeocr.runtime_contracts import parse_runtime_status
+
+    snapshot = parse_runtime_status(_snapshot(envs, set()))
+
+    assert snapshot.service_state.value == "ready"
+    assert snapshot.backend_version == "0.0.0-test"
+    # 协议要求 maintenance 为对象（None 会让前端解析整体失败）；
+    # 融合形态以本次引擎检查作为最近的 inspect 记录。
+    assert snapshot.maintenance is not None
+    assert snapshot.maintenance.operation.value == "inspect"
+    assert snapshot.maintenance.operation_state.value == "succeeded"
+    assert snapshot.profile.accelerator == "cpu"
+    assert snapshot.profile.profile_id == "win-x64-base"
+    actual = {
+        component.component_id: component.actual_state
+        for component in snapshot.profile.components
+    }
+    # 基础闭包内置就绪；四个可选引擎组件明确"未安装"，不是未知。
+    assert actual["rapidocr-base"] == "ready"
+    assert actual["runtime_host"] == "ready"
+    assert actual["paddleocr-cpu"] == "missing"
+    assert actual["paddleocr-cuda"] == "missing"
+    assert actual["mineru-cpu"] == "missing"
+    assert actual["mineru-cuda"] == "missing"
+    assert actual["gpu_runtime"] == "missing"
+
+
+def test_fused_runtime_status_snapshot_projects_installed_engines(envs) -> None:
+    from vibeocr.runtime_contracts import parse_runtime_status
+
+    snapshot = parse_runtime_status(_snapshot(envs, {"paddle-gpu"}))
+
+    assert snapshot.profile.accelerator == "nvidia_cuda"
+    assert snapshot.profile.profile_id == "win-x64-cu126"
+    actual = {
+        component.component_id: component.actual_state
+        for component in snapshot.profile.components
+    }
+    assert actual["paddleocr-cuda"] == "ready"
+    assert actual["paddleocr-cpu"] == "missing"
+    # Paddle GPU 清单不含 torch：gpu_runtime 仍为未安装。
+    assert actual["gpu_runtime"] == "missing"
+
+
+def test_fused_runtime_status_snapshot_gpu_runtime_from_mineru_gpu(envs) -> None:
+    from vibeocr.runtime_contracts import parse_runtime_status
+
+    snapshot = parse_runtime_status(_snapshot(envs, {"mineru-gpu"}))
+
+    actual = {
+        component.component_id: component.actual_state
+        for component in snapshot.profile.components
+    }
+    # mineru-gpu（win-x64-cu126）闭包含 torch/CUDA 运行环境。
+    assert actual["mineru-cuda"] == "ready"
+    assert actual["gpu_runtime"] == "ready"
+    assert actual["paddleocr-cuda"] == "missing"
+
+
+def test_fused_runtime_status_snapshot_preserves_service_state(envs) -> None:
+    """缺引擎是合法可选状态：不得把调用方传入的 ready 降级为 degraded。"""
+
+    from vibeocr.runtime_contracts import parse_runtime_status
+
+    snapshot = parse_runtime_status(
+        _snapshot(envs, set(), service_state="degraded")
+    )
+    assert snapshot.service_state.value == "degraded"

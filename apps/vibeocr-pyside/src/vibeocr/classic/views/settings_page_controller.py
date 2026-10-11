@@ -751,6 +751,21 @@ class SettingsPageController:
 
         return EngineEnvManager(self._project_root / "envs")
 
+    def _fused_selection_catalog_ready(self) -> bool:
+        """能力目录是否已提供当前 accelerator 的可选变体。
+
+        融合安装入口的空选择只有在目录可选（用户能看到并取消勾选）时
+        才能解释为移除意图；目录未就绪时能力树为空是加载状态而非选择。
+        """
+
+        catalog = self._selection_catalog
+        accelerator = self._selection_accelerator
+        return (
+            catalog is not None
+            and accelerator is not None
+            and bool(catalog.variants_for_accelerator(accelerator))
+        )
+
     def _install_offline_features_fused(self) -> None:
         """融合形态的“安装所选能力…”：翻译为引擎环境组合并弹安装对话框。"""
         from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
@@ -761,8 +776,18 @@ class SettingsPageController:
         installed_ids = {sid for sid, state in states.items() if state.installed}
 
         if not features:
+            if installed_ids and not self._fused_selection_catalog_ready():
+                # 目录未就绪（健康检查未完成/失败）时能力树为空并非用户
+                # 取消勾选，不得把空选择解释为移除意图；该入口可经
+                # btnReinstallDeps 转发到达，未经目录可用性门控。
+                QMessageBox.information(
+                    None,
+                    "暂不可用",
+                    "暂无法读取 Backend 的可选能力目录，请待识别服务就绪后重试。",
+                )
+                return
             if installed_ids:
-                # 空选择 + 已装环境 = 明确的全部移除意图（释放磁盘）。
+                # 空选择 + 已装环境 + 目录可选 = 明确的全部移除意图（释放磁盘）。
                 answer = QMessageBox.question(
                     None,
                     "移除识别引擎",
@@ -811,12 +836,23 @@ class SettingsPageController:
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
 
-            ConfigManager.instance().set_offline_component_features(
+            persisted = ConfigManager.instance().set_offline_component_features(
                 "nvidia_cuda" if gpu else "cpu",
                 sorted(features),
             )
         except Exception:
-            pass
+            logger.exception("能力选择持久化失败")
+            persisted = False
+        if not persisted:
+            # 写入失败时继续安装会让安装完成后的能力树读到空选择，
+            # 把已装引擎全部解释为待移除；中止并告知用户。
+            QMessageBox.warning(
+                None,
+                "无法保存能力选择",
+                "保存识别能力选择失败（配置文件不可写）。\n"
+                "已取消本次安装；请检查磁盘空间与配置文件权限后重试。",
+            )
+            return
         self._open_engine_env_dialog(target_ids, remove_ids)
 
     def _switch_engine_device_fused(self, target: str) -> None:
@@ -862,6 +898,53 @@ class SettingsPageController:
             backend_options = getattr(self, "_backend_options", None)
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
+            return
+        # 能力勾选按 accelerator 分键保存：切换后能力树按目标 accelerator
+        # 渲染，若不迁移源 accelerator 的意图，刚装的引擎会显示为未勾选，
+        # 空选择还会被安装入口解释为移除全部引擎。与安装入口一致，在
+        # 用户确认切换时持久化目标 accelerator 的能力列表：以本次切换
+        # 实际安装的家族为准，并保留源 accelerator 上已勾选的安装意图。
+        try:
+            from vibeocr.classic.managers.config_manager import ConfigManager
+            from vibeocr.classic.runtime_selection import (
+                migrate_legacy_feature_ids,
+            )
+
+            config = ConfigManager.instance()
+            source = set(
+                migrate_legacy_feature_ids(
+                    config.get_offline_component_features(
+                        "cpu" if gpu else "nvidia_cuda"
+                    )
+                )
+            )
+            features = source | {
+                "paddleocr" if family == "paddle" else "mineru"
+                for family in families
+            }
+            # gpu_runtime 不是可独立勾选的引擎环境（融合模式能力树已隐藏，
+            # 仅随 mineru-gpu 闭包存在），不迁移该条目。
+            features.discard("gpu_runtime")
+            persisted = config.set_offline_component_features(
+                "nvidia_cuda" if gpu else "cpu",
+                sorted(features),
+            )
+        except Exception:
+            logger.exception("设备切换：能力选择持久化失败")
+            persisted = False
+        if not persisted:
+            # 写入失败（权限/磁盘/原子替换）不抛异常只返回 False；此时
+            # 继续安装会让切换后的能力树读到空选择，把已装引擎全部
+            # 解释为待移除。必须中止并告知用户。
+            backend_options = getattr(self, "_backend_options", None)
+            if backend_options is not None:
+                backend_options.set_change_in_progress(False)
+            QMessageBox.warning(
+                None,
+                "无法保存能力选择",
+                "保存识别能力选择失败（配置文件不可写）。\n"
+                "已取消本次设备切换；请检查磁盘空间与配置文件权限后重试。",
+            )
             return
         self._open_engine_env_dialog(to_install, remove_ids)
 
@@ -1542,7 +1625,12 @@ class SettingsPageController:
                 self._show_settings_toast("Runtime manifest 与组件状态已重新验证")
                 logger.debug("[Runtime] 已重新验证产品绑定状态")
             else:
-                self._apply_cache_status(generation, False, "", "Runtime 验证失败")
+                self._apply_cache_status(
+                    generation,
+                    False,
+                    "",
+                    f"Runtime 验证失败：{info}" if info else "Runtime 验证失败",
+                )
 
         def failed(error: str) -> None:
             self._cache_refresh_running = False
@@ -1556,7 +1644,43 @@ class SettingsPageController:
         )
 
     def _refresh_machine_cache_operation(self) -> tuple[bool, str]:
-        """通过稳定 Installer interface 验证完整 Runtime 绑定。"""
+        """验证 Runtime 绑定；融合形态验证内置后端与引擎环境状态。"""
+        from vibeocr.classic.backend_host import (
+            inprocess_backend_enabled,
+            verify_base_recognition_engine,
+            verify_inprocess_backend_importable,
+        )
+
+        if inprocess_backend_enabled():
+            # 融合形态：基础识别随主程序内置，验证后端可组装 + 基础
+            # 引擎可初始化（rapidocr 包数据/onnxruntime）；引擎环境
+            # 状态来自本地检查而非 Runtime Installer。
+            try:
+                verify_inprocess_backend_importable()
+            except Exception as exc:
+                return False, f"内置识别服务导入失败: {exc}"
+            try:
+                verify_base_recognition_engine()
+            except Exception as exc:
+                return False, f"基础识别引擎初始化失败: {exc}"
+            from vibeocr.classic.engine_envs import (
+                device_framework,
+                framework_display,
+                get_engine_env_spec,
+            )
+
+            states = self._engine_env_manager().inspect()
+            installed = [
+                get_engine_env_spec(spec_id).display_name
+                for spec_id, state in states.items()
+                if state.installed
+            ]
+            engines = "、".join(installed) if installed else "无"
+            return (
+                True,
+                f"已就绪 · 基础识别已内置 · 计算设备 {framework_display(device_framework(states))}"
+                f" · 已安装引擎：{engines}",
+            )
         inspection = self._runtime_installer.inspect()
         accelerator = accelerator_display(
             inspection.accelerator, inspection.profile, inspection.components
@@ -1724,6 +1848,14 @@ class SettingsPageController:
 
     def _on_install_missing(self) -> None:
         """使用 Installer 的当前 accelerator 补全缺失 Runtime 内容。"""
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态没有 Runtime Installer 补装流程（manifest/installer
+            # 已不随包分发）；引擎的补全/修复由「可选识别能力」的安装
+            # 入口承担（重新勾选即重装并校验安装身份）。
+            self._on_install_offline_features()
+            return
         reply = QMessageBox.question(
             None,
             "确认补充安装缺失依赖",
@@ -1936,11 +2068,11 @@ class SettingsPageController:
         self._open_install_dialog(packages=["runtime-profile"])
 
     def _refresh_env_maintenance_state(self) -> None:
-        """异步合并 Installer 完整性与 Supervisor HTTP 状态。"""
+        """异步合并安装完整性（Installer 或引擎环境）与 Supervisor HTTP 状态。"""
         label = self._ui.findChild(QLabel, "labelEnvStatus")
         tree = self._ui.findChild(QTreeWidget, "treeDepsStatus")
         if label:
-            label.setText("正在验证 Runtime manifest 与安装状态...")
+            label.setText("正在检查运行环境与安装状态...")
         if tree:
             tree.clear()
         self._env_refresh_generation += 1
@@ -1953,11 +2085,20 @@ class SettingsPageController:
         )
 
         def operation() -> dict:
-            inspection = self._runtime_installer.inspect()
-            snapshot = {
-                "mode": "portable",
-                "inspection": inspection,
-            }
+            from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+            if inprocess_backend_enabled():
+                # 融合形态：产品不再随包分发 Runtime Installer 与 manifest，
+                # 状态来自本地引擎环境检查 + Supervisor HTTP 快照。
+                snapshot: dict = {
+                    "mode": "fused",
+                    "engine_envs": self._engine_env_manager().inspect(),
+                }
+            else:
+                snapshot = {
+                    "mode": "portable",
+                    "inspection": self._runtime_installer.inspect(),
+                }
             if status_client is not None and parse_runtime_status is not None:
                 try:
                     payload = status_client.request_json("getRuntimeStatus")
@@ -2067,20 +2208,24 @@ class SettingsPageController:
                 except RuntimeInstallerClientError as exc:
                     outcome = f"\n{exc}"
                 label.setText(f"Runtime：{status_text} · 服务：{service}{outcome}")
+        elif mode == "fused":
+            self._apply_fused_env_maintenance_state(snapshot, runtime_status)
         else:
             self._runtime_component_states = {}
             self._populate_runtime_status_tree([])
             if label:
                 label.setText("Runtime：未绑定")
 
-        # 所有维护按钮都映射到 ensure/repair；不暴露逐包操作。
-        enabled = mode == "portable"
+        # 所有维护按钮都映射到 ensure/repair 或融合形态的引擎安装入口；
+        # "补全当前 Runtime"走旧 Installer 补装流程（需要随包 manifest/
+        # installer），融合形态不适用，保持禁用（槽内另有融合转发兜底）。
+        enabled = mode in {"portable", "fused"}
         if btn_py:
             btn_py.setEnabled(enabled)
         if btn_deps:
             btn_deps.setEnabled(enabled)
         if btn_missing:
-            btn_missing.setEnabled(enabled)
+            btn_missing.setEnabled(mode == "portable")
         if btn_update:
             btn_update.setEnabled(enabled)
         # "重装选中项"初始禁用，由依赖树选择变化驱动启用状态
@@ -2089,7 +2234,7 @@ class SettingsPageController:
             btn_reinstall_sel.setEnabled(enabled)
             btn_reinstall_sel.setText("修复 Runtime")
 
-        # 填充依赖状态树（仅 portable 模式）
+        # 填充依赖状态树
         if tree and mode == "portable":
             self._populate_deps_tree(tree, snapshot)
             # 组件状态已刷新：可选能力树同步更新真实安装状态。
@@ -2098,8 +2243,122 @@ class SettingsPageController:
                 if btn_reinstall_sel:
                     btn_reinstall_sel.clicked.connect(self._on_reinstall_selected)
                 self._deps_tree_signals_connected = True
+        elif tree and mode == "fused":
+            self._populate_deps_tree_fused(tree, snapshot.get("engine_envs") or {})
+            self._render_offline_features()
         elif tree:
             tree.clear()
+
+    def _apply_fused_env_maintenance_state(
+        self, snapshot: dict, runtime_status
+    ) -> None:
+        """融合形态环境维护状态：基础识别内置 + 引擎环境安装态。"""
+        from vibeocr.classic.engine_envs import (
+            ENGINE_ENV_SPECS,
+            FUSED_COMPONENT_IDS,
+            device_framework,
+            framework_display,
+        )
+
+        states: dict = snapshot.get("engine_envs") or {}
+        framework = device_framework(states) if states else None
+        # 引擎安装/设备切换会改变生效的加速方案：每次环境刷新都重算，
+        # 让可选能力树按当前 accelerator 渲染，而不是停留在初始化时
+        # （旧 accelerator 下刚装的 GPU 能力会显示为未勾选，且把空选择
+        # 误解释为移除已安装环境）。
+        self._refresh_selection_accelerator_fused(states)
+        self._runtime_component_states = self._collect_component_states(
+            runtime_status, None
+        )
+        # 引擎环境是本地安装态的权威证据；HTTP 快照（若可用）优先，不覆盖。
+        for spec_id, component_id in FUSED_COMPONENT_IDS.items():
+            state = states.get(spec_id)
+            if state is None:
+                continue
+            self._runtime_component_states.setdefault(
+                component_id, "ready" if state.installed else "missing"
+            )
+        # mineru-gpu（win-x64-cu126）闭包含 torch/CUDA 运行环境；Paddle GPU
+        # 环境的清单不含 torch，不提供 gpu_runtime。
+        mineru_gpu = states.get("mineru-gpu")
+        if mineru_gpu is not None:
+            self._runtime_component_states.setdefault(
+                "gpu_runtime", "ready" if mineru_gpu.installed else "missing"
+            )
+        service = "未连接"
+        maintenance_text = ""
+        if runtime_status is not None:
+            service_labels = {
+                "ready": "已就绪",
+                "degraded": "降级",
+                "maintenance": "维护中",
+            }
+            service = service_labels.get(
+                runtime_status.service_state.value,
+                runtime_status.service_state.value,
+            )
+            if runtime_status.maintenance is not None:
+                maintenance_text = (
+                    f"{runtime_status.maintenance.phase.value}"
+                    f" · {runtime_status.maintenance.operation_state.value}"
+                )
+        accel_text = framework_display(framework)
+        rows: list[tuple[str, str]] = [
+            ("运行形态", "基础识别已内置"),
+            ("服务", service),
+            ("计算设备", accel_text),
+        ]
+        rows.extend(
+            (
+                spec.display_name,
+                "✓ 已安装" if states.get(spec.id) is not None and states[spec.id].installed else "未安装",
+            )
+            for spec in ENGINE_ENV_SPECS
+        )
+        if maintenance_text:
+            rows.append(("维护", maintenance_text))
+        self._populate_runtime_status_tree(rows)
+        label = self._ui.findChild(QLabel, "labelEnvStatus")
+        if label is not None:
+            label.setText(f"基础识别已内置 · 计算设备 {accel_text} · 服务：{service}")
+
+    def _refresh_selection_accelerator_fused(self, states: dict) -> None:
+        """融合形态：按已装引擎环境重算可选能力目录的加速方案。
+
+        初始化与每次环境状态刷新（引擎安装/移除/设备切换后）都会调用；
+        无任何引擎时缺省 cpu，与后端的 accelerator 缺省一致。
+        """
+
+        from vibeocr.classic.engine_envs import device_framework
+
+        framework = device_framework(states) if states else None
+        self._selection_accelerator = "nvidia_cuda" if framework == "gpu" else "cpu"
+
+    def _populate_deps_tree_fused(self, tree: QTreeWidget, states: dict) -> None:
+        """融合形态依赖树：基础识别内置与各引擎环境的安装状态。"""
+        from vibeocr.classic.engine_envs import ENGINE_ENV_SPECS
+
+        tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        tree.clear()
+        tree.addTopLevelItem(
+            QTreeWidgetItem(["基础识别（内置）", "✓ 已就绪", "—"])
+        )
+        for spec in ENGINE_ENV_SPECS:
+            state = states.get(spec.id)
+            installed = bool(getattr(state, "installed", False))
+            tree.addTopLevelItem(
+                QTreeWidgetItem(
+                    [
+                        spec.display_name,
+                        "✓ 已安装" if installed else "未安装",
+                        "—",
+                    ]
+                )
+            )
+        tree.setToolTip(
+            "基础识别随主程序内置；高级识别引擎按需安装。"
+            "出现异常时，可在“可选识别能力”里重新安装对应引擎。"
+        )
 
     @staticmethod
     def _collect_component_states(runtime_status, inspection) -> dict[str, str]:
@@ -2562,12 +2821,28 @@ class SettingsPageController:
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
         if save_button is not None:
             save_button.clicked.connect(self._on_save_download_sources)
-        try:
-            self._selection_accelerator = (
-                self._runtime_installer.profile_descriptor().accelerator
-            )
-        except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
-            self._selection_accelerator = None
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态：无 Runtime manifest，加速方案由已装引擎环境决定，
+            # 缺省按 cpu 渲染可选能力目录（与后端默认一致）；后续环境
+            # 刷新会经 _apply_fused_env_maintenance_state 重算。
+            try:
+                states = self._engine_env_manager().inspect()
+            except Exception:
+                # 本调用位于 GUI 构造路径（_init_settings_page），随包
+                # wheel/清单不可读时不得中断设置控制器与主窗口构造；
+                # 具体错误由环境状态区的异步刷新呈现（运行时检测失败）。
+                logger.exception("引擎环境检查失败，能力目录按缺省 cpu 渲染")
+                states = {}
+            self._refresh_selection_accelerator_fused(states)
+        else:
+            try:
+                self._selection_accelerator = (
+                    self._runtime_installer.profile_descriptor().accelerator
+                )
+            except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
+                self._selection_accelerator = None
         self._configure_selection_tree_headers()
         # catalog 到达前先渲染占位行，避免空树被误读为没有任何识别能力。
         self._render_engine_availability()
@@ -2741,6 +3016,19 @@ class SettingsPageController:
             tree.clear()
             return
         variants = catalog.variants_for_accelerator(accelerator)
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合模式：gpu_runtime（CUDA/Torch）是 mineru-gpu 环境的闭包
+            # 组件，不是可独立安装的引擎环境——描述翻译（describe_selection）
+            # 没有对应目标。若仍可勾选，仅勾它会得到空安装集并把已装引擎
+            # 全部解释为待移除。此处隐藏该行；CUDA 运行时是否在位由
+            # mineru-gpu 的安装状态表达。
+            variants = tuple(
+                variant
+                for variant in variants
+                if variant.feature_id != "gpu_runtime"
+            )
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
 

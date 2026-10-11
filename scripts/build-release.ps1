@@ -148,6 +148,9 @@ $pyinstallerArgs = @(
     '--collect-submodules', 'vibeocr.classic',
     '--collect-submodules', 'vibeocr.backend',
     '--collect-data', 'vibeocr.backend',
+    # rapidocr 的 default_models.yaml 与内置 onnx 模型是包数据；
+    # 缺失时融合形态的进程内 RapidOCR 引擎在 frozen 包内初始化即失败。
+    '--collect-data', 'rapidocr',
     '--collect-submodules', 'vibeocr.runtime_client',
     '--collect-submodules', 'vibeocr.runtime_contracts',
     '--collect-data', 'vibeocr.runtime_contracts',

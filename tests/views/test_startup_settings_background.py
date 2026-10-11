@@ -202,8 +202,10 @@ def test_settings_cache_refresh_is_responsive_and_single_flight(
 
 
 def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
-    qtbot, tmp_path
+    qtbot, tmp_path, monkeypatch
 ) -> None:
+    """子进程形态的缓存校验仍走 Installer inspect，且不改写经典缓存。"""
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     controller = _controller(qtbot, tmp_path)
     controller._runtime_installer = MagicMock()
     controller._runtime_installer.inspect.return_value = SimpleNamespace(
@@ -227,3 +229,19 @@ def test_runtime_refresh_uses_installer_inspection_without_mutating_cache(
         "已就绪 · Backend 0.8.0 · Protocol 2.4.0 · 加速方案 GPU（NVIDIA CUDA 12.6） · integrity=verified"
     )
     assert cache_file.read_text(encoding="utf-8") == "owned-by-classic"
+
+
+def test_runtime_refresh_fused_reports_builtin_backend_and_engines(
+    qtbot, tmp_path, monkeypatch
+) -> None:
+    """融合形态的缓存校验：内置后端 + 引擎环境摘要，不触碰 Installer。"""
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+    controller = _controller(qtbot, tmp_path)
+    controller._runtime_installer = MagicMock()
+
+    success, summary = controller._refresh_machine_cache_operation()
+
+    assert success is True
+    assert "基础识别已内置" in summary
+    assert "已安装引擎：无" in summary
+    controller._runtime_installer.inspect.assert_not_called()

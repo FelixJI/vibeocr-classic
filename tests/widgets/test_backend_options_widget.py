@@ -329,9 +329,10 @@ def test_current_backend_matches_installer_not_live_detect(_cleanup, qtbot, tmp_
 def test_gpu_worker_uses_runtime_installer_accelerator(
     _cleanup, qtbot, tmp_path, monkeypatch
 ):
-    """物理 GPU 与实际安装 profile 不同时，以 Installer 状态为准。"""
+    """物理 GPU 与实际安装 profile 不同时，以 Installer 状态为准（子进程形态）。"""
     from vibeocr.classic.widgets import backend_options_widget as bow
 
+    monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     client = MagicMock()
     client.inspect.return_value = SimpleNamespace(accelerator="cpu")
     monkeypatch.setattr(
@@ -358,6 +359,164 @@ def test_gpu_worker_uses_runtime_installer_accelerator(
 
     assert received[0]["runtime_has_gpu"] is False
     client.inspect.assert_called_once_with()
+
+
+def test_gpu_worker_fused_uses_engine_envs(
+    _cleanup, qtbot, tmp_path, monkeypatch
+):
+    """融合形态：GPU 探测不触碰 Runtime Installer，设备框架来自引擎环境。"""
+    from vibeocr.classic.widgets import backend_options_widget as bow
+
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("融合形态不应构造 RuntimeInstallerClient")
+
+    monkeypatch.setattr(bow, "RuntimeInstallerClient", _boom, raising=False)
+    monkeypatch.setattr(
+        bow,
+        "detect_gpu_info",
+        lambda **_kwargs: {
+            "has_gpu": False,
+            "name": "",
+            "vram_mb": 0,
+            "cuda": None,
+        },
+    )
+
+    from vibeocr.classic.engine_envs import EngineEnvState
+
+    def _fake_init(self, root):
+        self._root = root
+
+    def _fake_inspect(self):
+        root = self._root
+        return {
+            f"{family}-{device}": EngineEnvState(
+                spec_id=f"{family}-{device}",
+                installed=family == "paddle" and device == "gpu",
+                env_root=root / f"{family}-{device}",
+                python=root / f"{family}-{device}" / "Scripts" / "python.exe",
+            )
+            for family in ("paddle", "mineru")
+            for device in ("cpu", "gpu")
+        }
+
+    monkeypatch.setattr(
+        "vibeocr.classic.engine_envs.EngineEnvManager.__init__", _fake_init
+    )
+    monkeypatch.setattr(
+        "vibeocr.classic.engine_envs.EngineEnvManager.inspect", _fake_inspect
+    )
+
+    worker = bow._GpuDetectWorker(tmp_path)
+    received: list[dict] = []
+    worker.finished_info.connect(received.append)
+
+    worker.run()
+
+    info = received[0]
+    # 基础识别内置即就绪；paddle-gpu 在位 → GPU 框架与 CUDA 12.6 要求。
+    assert info["runtime_ready"] is True
+    assert info["runtime_accelerator"] == "nvidia_cuda"
+    assert info["runtime_profile"] == "win-x64-cu126"
+    assert info["runtime_has_gpu"] is True
+
+
+def test_gpu_worker_fused_base_only_reports_base_runtime(
+    _cleanup, qtbot, tmp_path, monkeypatch
+):
+    """融合形态未装任何引擎：就绪但计算设备为“基础（未选择）”。"""
+    from vibeocr.classic.widgets import backend_options_widget as bow
+
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("融合形态不应构造 RuntimeInstallerClient")
+
+    monkeypatch.setattr(bow, "RuntimeInstallerClient", _boom, raising=False)
+    monkeypatch.setattr(
+        bow,
+        "detect_gpu_info",
+        lambda **_kwargs: {
+            "has_gpu": True,
+            "name": "NVIDIA GeForce RTX 4090",
+            "vram_mb": 24564,
+            "cuda": "12.6",
+        },
+    )
+
+    from vibeocr.classic.engine_envs import EngineEnvManager
+
+    def _fake_inspect(self):
+        return {
+            spec_id: type("State", (), {"installed": False})()
+            for spec_id in (
+                "paddle-cpu",
+                "paddle-gpu",
+                "mineru-cpu",
+                "mineru-gpu",
+            )
+        }
+
+    monkeypatch.setattr(EngineEnvManager, "inspect", _fake_inspect)
+
+    worker = bow._GpuDetectWorker(tmp_path)
+    received: list[dict] = []
+    worker.finished_info.connect(received.append)
+
+    worker.run()
+
+    info = received[0]
+    assert info["runtime_ready"] is True
+    assert info["runtime_accelerator"] == "cpu"
+    assert info["runtime_profile"] == "win-x64-base"
+    assert info["runtime_has_gpu"] is False
+
+
+def test_gpu_worker_fused_inspect_failure_still_emits(
+    _cleanup, qtbot, tmp_path, monkeypatch
+):
+    """融合形态引擎环境检查抛错时仍发 finished_info。
+
+    检查异常（如随包 wheel/清单不可读）不得让 worker 静默退出：
+    否则控件永久停在"检测中"，CPU/GPU 选项与应用按钮保持禁用。
+    """
+
+    from vibeocr.classic.widgets import backend_options_widget as bow
+
+    monkeypatch.delenv("VIBEOCR_SUPERVISOR_SUBPROCESS", raising=False)
+    monkeypatch.setattr(
+        bow,
+        "detect_gpu_info",
+        lambda **_kwargs: {
+            "has_gpu": False,
+            "name": "",
+            "vram_mb": 0,
+            "cuda": None,
+        },
+    )
+
+    def _boom(self):
+        raise RuntimeError("backend wheel unreadable")
+
+    from vibeocr.classic.engine_envs import EngineEnvManager
+
+    monkeypatch.setattr(EngineEnvManager, "inspect", _boom)
+
+    worker = bow._GpuDetectWorker(tmp_path)
+    received: list[dict] = []
+    worker.finished_info.connect(received.append)
+
+    worker.run()
+
+    assert len(received) == 1
+    info = received[0]
+    # 明确的 Runtime 不可用状态，让硬件探测与界面能收尾。
+    assert info["runtime_ready"] is False
+    assert info["runtime_accelerator"] is None
+    assert info["runtime_profile"] == ""
+    assert info["runtime_has_gpu"] is False
 
 
 def test_close_stops_running_gpu_detection_worker(_cleanup, qtbot, tmp_path):

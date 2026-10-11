@@ -81,6 +81,26 @@ class EngineEnvState:
         return str(self.python) if self.python is not None else None
 
 
+#: 融合形态：引擎环境 → Backend 可选能力组件的投影词汇。
+#: 与 Backend 目录（``runtime_selection.selectable_component_ids``）的
+#: component id 保持一致；设置页状态树与本模块的状态快照共用。
+FUSED_COMPONENT_IDS: dict[str, str] = {
+    "paddle-cpu": "paddleocr-cpu",
+    "paddle-gpu": "paddleocr-cuda",
+    "mineru-cpu": "mineru-cpu",
+    "mineru-gpu": "mineru-cuda",
+}
+
+_FUSED_COMPONENT_DISPLAY_NAMES = {
+    "paddleocr-cpu": "PaddleOCR 引擎（CPU）",
+    "paddleocr-cuda": "PaddleOCR 引擎（CUDA）",
+    "mineru-cpu": "MinerU 文档解析（CPU）",
+    "mineru-cuda": "MinerU 文档解析（CUDA）",
+    "gpu_runtime": "CUDA/Torch 运行环境",
+    "rapidocr-base": "RapidOCR 基础识别",
+    "runtime_host": "Runtime 服务环境",
+}
+
 #: 用户可选择的四个组合（base = 主程序内置，不在此列）。
 ENGINE_ENV_SPECS: tuple[EngineEnvSpec, ...] = (
     EngineEnvSpec(
@@ -522,6 +542,154 @@ class EngineEnvManager:
         return applied
 
 
+def device_framework(states: dict[str, EngineEnvState]) -> str | None:
+    """融合形态当前生效的计算设备：``"gpu"`` / ``"cpu"`` / ``None``（仅基础）。
+
+    与 :meth:`EngineEnvManager.apply_runtime_env` 的设备意图同源：任一 GPU
+    环境在位即 GPU；否则任一引擎在位为 CPU；一个引擎都没有时不冒充任何
+    框架（基础识别已随主程序内置，由 ``None`` 表达"未选择计算设备"）。
+    """
+
+    paddle = (
+        states["paddle-gpu"] if states["paddle-gpu"].installed else states["paddle-cpu"]
+    )
+    mineru = (
+        states["mineru-gpu"] if states["mineru-gpu"].installed else states["mineru-cpu"]
+    )
+    if not (paddle.installed or mineru.installed):
+        return None
+    if states["paddle-gpu"].installed or states["mineru-gpu"].installed:
+        return "gpu"
+    return "cpu"
+
+
+def framework_profile(framework: str | None) -> str:
+    """把设备框架映射为展示层共用的 profile 词汇。
+
+    这些 id 不再对应任何 runtime manifest，只作为
+    ``accelerator_framework`` / ``cuda_requirement_label`` 等展示助手的
+    分类词汇沿用：GPU 引擎环境的 CUDA 要求（12.6）与旧 cu126 profile
+    一致，基础态沿用 ``win-x64-base`` 表达"未选择计算设备"。
+    """
+
+    return {
+        None: "win-x64-base",
+        "cpu": "win-x64-cpu",
+        "gpu": "win-x64-cu126",
+    }[framework]
+
+
+def framework_display(framework: str | None) -> str:
+    """设备框架的用户可见标签（供设置页状态区与缓存校验摘要共用）。"""
+
+    if framework is None:
+        return "未选择（仅基础识别）"
+    from vibeocr.classic.runtime_status_messages import accelerator_display
+
+    return accelerator_display(
+        "nvidia_cuda" if framework == "gpu" else "cpu",
+        framework_profile(framework),
+    )
+
+
+def _fused_component_status(component_id: str, installed: bool) -> dict[str, object]:
+    """单个组件的融合形态投影。
+
+    未安装的可选组件是合法的缺席状态（与 Installer 的 ``not_required``
+    投影同语义）：不降级基础服务，也不可由 Runtime 修复入口处理。
+    """
+
+    if installed:
+        return {
+            "component_id": component_id,
+            "display_name": _FUSED_COMPONENT_DISPLAY_NAMES[component_id],
+            "state": "ready",
+            "desired_state": "ready",
+            "desired_version": None,
+            "actual_state": "ready",
+            "actual_version": None,
+            "drift_reason": "none",
+            "repairable": False,
+        }
+    return {
+        "component_id": component_id,
+        "display_name": _FUSED_COMPONENT_DISPLAY_NAMES[component_id],
+        "state": "not_required",
+        "desired_state": "not_required",
+        "desired_version": None,
+        "actual_state": "missing",
+        "actual_version": None,
+        "drift_reason": "none",
+        "repairable": False,
+    }
+
+
+def fused_runtime_status_snapshot(
+    states: dict[str, EngineEnvState],
+    *,
+    instance_id: str,
+    service_state: str,
+    backend_version: str,
+) -> dict[str, object]:
+    """融合形态的 Protocol v2 runtime status 快照。
+
+    供进程内宿主作为 ``/v2/runtime/status`` 的数据源：融合形态没有
+    Runtime Installer 与 manifest，基础识别的权威事实是"随主程序内置"，
+    可选引擎组件从本地环境安装态（:meth:`EngineEnvManager.inspect`）
+    投影。缺引擎是合法可选状态，不降级由调用方传入的 ``service_state``。
+
+    ``gpu_runtime``（CUDA/Torch）只随 ``mineru-gpu`` 闭包安装——
+    ``win-x64-paddle-cu126`` 清单不含 torch，Paddle GPU 环境不提供它。
+
+    ``maintenance`` 按协议是必填对象：前端 SDK 的
+    ``parse_runtime_status`` 对 ``None`` 直接判整个快照无效，会使健康
+    服务被误读为"未连接"。融合形态没有维护操作日志，以本次引擎环境
+    检查（provider 每次请求都真实执行）作为最近的 inspect 记录投影。
+    """
+
+    from datetime import datetime, timezone
+
+    framework = device_framework(states) if states else None
+    profile_id = framework_profile(framework)
+    components: list[dict[str, object]] = [
+        _fused_component_status("rapidocr-base", True),
+        _fused_component_status("runtime_host", True),
+    ]
+    for spec_id, component_id in FUSED_COMPONENT_IDS.items():
+        state = states.get(spec_id)
+        components.append(
+            _fused_component_status(
+                component_id, state is not None and state.installed
+            )
+        )
+    mineru_gpu = states.get("mineru-gpu")
+    components.append(
+        _fused_component_status(
+            "gpu_runtime", mineru_gpu is not None and mineru_gpu.installed
+        )
+    )
+    return {
+        "schema_version": 2,
+        "instance_id": instance_id,
+        "service_state": service_state,
+        "backend_version": backend_version,
+        "profile": {
+            "profile_id": profile_id,
+            "accelerator": "nvidia_cuda" if framework == "gpu" else "cpu",
+            "components": components,
+        },
+        "maintenance": {
+            "operation_id": f"{instance_id}-engine-inspect",
+            "sequence": 1,
+            "operation": "inspect",
+            "operation_state": "succeeded",
+            "phase": "verify_runtime",
+            "profile_id": profile_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    }
+
+
 def describe_selection(
     *,
     paddle: bool,
@@ -544,8 +712,10 @@ __all__ = [
     "EngineEnvManager",
     "EngineEnvSpec",
     "EngineEnvState",
+    "FUSED_COMPONENT_IDS",
     "UvRunner",
     "describe_selection",
+    "fused_runtime_status_snapshot",
     "get_engine_env_spec",
     "runtime_profiles_root",
 ]

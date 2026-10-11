@@ -60,6 +60,48 @@ def test_host_start_serves_health_and_shuts_down(tmp_path) -> None:
         )
 
 
+def test_host_runtime_status_serves_fused_snapshot(tmp_path, monkeypatch) -> None:
+    """融合形态：/v2/runtime/status 由本地引擎环境投影，而不是 Installer 环境变量。
+
+    默认 provider（runtime_status_from_environment）在未设置
+    VIBEOCR_RUNTIME_MANIFEST 等变量的融合启动里必然失败；宿主必须注入
+    融合形态数据源，否则健康服务会被前端误读为"未连接"。
+    """
+
+    for key in (
+        "VIBEOCR_RUNTIME_MANIFEST",
+        "VIBEOCR_RUNTIME_STATE_ROOT",
+        "VIBEOCR_RUNTIME_ROOT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    host = InProcessBackendHost(tmp_path)
+    handle = host.start()
+    try:
+        response = httpx.get(
+            f"{handle.base_url}/v2/runtime/status",
+            headers={"Authorization": f"Bearer {handle.session_token}"},
+            timeout=10.0,
+        )
+        assert response.status_code == 200
+
+        from vibeocr.runtime_contracts import parse_runtime_status
+
+        snapshot = parse_runtime_status(response.json())
+        assert snapshot.service_state.value == "ready"
+        assert snapshot.instance_id == handle.ready.instance_id
+        assert snapshot.profile.accelerator == "cpu"
+        actual = {
+            component.component_id: component.actual_state
+            for component in snapshot.profile.components
+        }
+        assert actual["rapidocr-base"] == "ready"
+        assert actual["paddleocr-cpu"] == "missing"
+        assert actual["mineru-cuda"] == "missing"
+    finally:
+        handle.shutdown()
+
+
 def test_host_rejects_second_start(tmp_path) -> None:
     host = InProcessBackendHost(tmp_path)
     handle = host.start()

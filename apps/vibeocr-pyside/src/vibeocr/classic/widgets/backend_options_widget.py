@@ -85,27 +85,59 @@ class _GpuDetectWorker(QThread):
             info = {"has_gpu": False, "name": "", "vram_mb": 0, "cuda": None}
         if self._cancelled.is_set():
             return
-        try:
-            inspection = RuntimeInstallerClient(self._project_root).inspect()
-            # base_ready 覆盖「仅基础 Runtime 已安装」：完整 profile 判定 ready
-            # 会把基础态误报成"尚未安装"。
-            runtime_installed = bool(
-                getattr(inspection, "base_ready", False)
-                or getattr(inspection, "ready", False)
-            )
-            runtime_accelerator = (
-                getattr(inspection, "accelerator", None) if runtime_installed else None
-            )
-            runtime_components = tuple(getattr(inspection, "components", ()) or ())
-            runtime_profile = (
-                getattr(inspection, "profile", "") if runtime_installed else ""
-            )
-        except Exception:
-            logger.exception("[BackendOptions] Runtime Installer 状态读取异常")
-            runtime_installed = False
-            runtime_accelerator = None
+        from vibeocr.classic.backend_host import inprocess_backend_enabled
+
+        if inprocess_backend_enabled():
+            # 融合形态：基础识别随主程序内置，不存在独立 Runtime 安装态；
+            # 设备框架以已安装引擎环境为准（Runtime Installer 不再随包分发）。
+            try:
+                from vibeocr.classic.engine_envs import (
+                    EngineEnvManager,
+                    device_framework,
+                    framework_profile,
+                )
+
+                framework = device_framework(
+                    EngineEnvManager(self._project_root / "envs").inspect()
+                )
+                runtime_installed = True
+                runtime_accelerator = "nvidia_cuda" if framework == "gpu" else "cpu"
+                runtime_profile = framework_profile(framework)
+            except Exception:
+                # 环境检查失败（如随包 wheel/清单不可读）不得让 worker 静默
+                # 退出：与 Installer 分支同样兜底，仍发送 Runtime 不可用
+                # 状态，让硬件探测与控件能退出"检测中"态。
+                logger.exception("[BackendOptions] 引擎环境状态读取异常")
+                runtime_installed = False
+                runtime_accelerator = None
+                runtime_profile = ""
             runtime_components = ()
-            runtime_profile = ""
+        else:
+            try:
+                inspection = RuntimeInstallerClient(self._project_root).inspect()
+                # base_ready 覆盖「仅基础 Runtime 已安装」：完整 profile 判定 ready
+                # 会把基础态误报成"尚未安装"。
+                runtime_installed = bool(
+                    getattr(inspection, "base_ready", False)
+                    or getattr(inspection, "ready", False)
+                )
+                runtime_accelerator = (
+                    getattr(inspection, "accelerator", None)
+                    if runtime_installed
+                    else None
+                )
+                runtime_components = tuple(
+                    getattr(inspection, "components", ()) or ()
+                )
+                runtime_profile = (
+                    getattr(inspection, "profile", "") if runtime_installed else ""
+                )
+            except Exception:
+                logger.exception("[BackendOptions] Runtime Installer 状态读取异常")
+                runtime_installed = False
+                runtime_accelerator = None
+                runtime_components = ()
+                runtime_profile = ""
         if self._cancelled.is_set():
             return
         info["runtime_ready"] = runtime_installed

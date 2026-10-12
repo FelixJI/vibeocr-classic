@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts.automation_core import Automation
+
 
 ROOT = Path(__file__).parents[2]
 
@@ -55,3 +57,23 @@ def test_project_declares_protocol_compatibility_and_one_build_command() -> None
     # Portable-only：构建不再生成 checksum sidecar（Setup 已移出发布集合）
     assert "build_release_checksums.py" not in build_script
     assert "--no-checksum-index" in project["ci"]["release_smoke"][0]
+
+
+def test_release_prepare_refreshes_derived_uv_lock_workspace_version() -> None:
+    project = json.loads((ROOT / ".ci/project.json").read_text(encoding="utf-8"))
+    derived = [
+        source
+        for source in project["release"]["version_sources"]
+        if source.get("derived")
+    ]
+
+    # 回归：release prepare 曾只 bump package TOML 而漏掉 uv.lock 的工作区条目，
+    # 导致 `uv sync --frozen` 与版本源不一致并阻塞 release PR（#124）。
+    assert [(source["kind"], source["path"], source["key"]) for source in derived] == [
+        ("uv-lock", "uv.lock", "vibeocr-classic")
+    ]
+    assert ["uv", "lock"] in project["release"]["generated_commands"]
+    versions = Automation.for_repository().current_versions()
+    assert len(set(versions)) == 1, "declared version sources disagree: " + ", ".join(
+        sorted({str(item) for item in versions})
+    )

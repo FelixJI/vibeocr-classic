@@ -28,9 +28,10 @@
       {"kind": "text", "path": "version.txt"},
       {"kind": "toml", "path": "apps/vibeocr-pyside/pyproject.toml", "key": "project.version"},
       {"kind": "python", "path": "apps/vibeocr-pyside/src/vibeocr/classic/__init__.py", "key": "__version__"},
-      {"kind": "json", "path": "repository.json", "key": "version"}
+      {"kind": "json", "path": "repository.json", "key": "version"},
+      {"kind": "uv-lock", "path": "uv.lock", "key": "vibeocr-classic", "derived": true}
     ],
-    "generated_commands": [],
+    "generated_commands": [["uv", "lock"]],
     "identity_asset": "component-lock.json",
     "required_assets": ["component-lock.json", "frontend-protocol-lock.json", "SBOM.spdx.json", "VibeOCRClassic-*-full.nupkg", "VibeOCRClassic-*-delta.nupkg", "VibeOCRClassic-v{version}-win-x64.zip", "releases.win.json"],
     "mirrors": [

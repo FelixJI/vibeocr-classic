@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.3
+
+### Bug Fixes
+
+- **release:** prepare 同步 uv.lock 工作区版本并统一 uv 至 0.12.22 (#125) (723d979)
+- **fuse:** 修复融合形态状态探测崩溃与 RapidOCR 打包缺失 (#123) (77aa3d4)
+
 ## 0.11.2
 
 ### Features

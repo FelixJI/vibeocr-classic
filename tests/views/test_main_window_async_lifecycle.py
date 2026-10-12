@@ -31,7 +31,7 @@ def main_window(qapp, qtbot, tmp_path, monkeypatch):
         lambda self: None,
     )
     monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection",
+        "vibeocr.classic.widgets.runtime_environment_widget.RuntimeEnvironmentWidget._start_gpu_detection",
         lambda self: None,
     )
     window = MainWindow()
@@ -288,7 +288,7 @@ def test_restored_heavy_tab_builds_after_first_show_on_gui_thread(
         lambda self: None,
     )
     monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection",
+        "vibeocr.classic.widgets.runtime_environment_widget.RuntimeEnvironmentWidget._start_gpu_detection",
         lambda self: None,
     )
     monkeypatch.setattr(

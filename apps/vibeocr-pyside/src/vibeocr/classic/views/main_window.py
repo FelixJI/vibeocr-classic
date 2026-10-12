@@ -721,7 +721,7 @@ class MainWindow(QMainWindow):
     def _on_settings_install_succeeded(self) -> None:
         """设置页重装/补装依赖成功后的联动回调（Bug A 修复）
 
-        由 SettingsPageController._open_reinstall_dialog 在对话框 emit
+        由 SettingsPageController 的安装对话框在 emit
         install_succeeded 时调用。复用 DependencyManager.check_dependencies
         重新检测便携环境——检测完成回调（_on_dependency_check_finished）会
         自动设置 _ocr_ready 并启动子进程 Worker，使

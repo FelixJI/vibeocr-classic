@@ -79,6 +79,7 @@ def _run_tracked_native_call(
             # The loop may already be closed during interpreter teardown.
             pass
 
+
 FORMAT_ITEMS = [
     ("QR Code", "qr"),
     ("Code 128", "code128"),
@@ -831,9 +832,7 @@ class QrcodeTab(QWidget):
                 pass
 
     async def _generate_preview_async(self, text: str, options: dict) -> Image.Image:
-        return await self._to_thread_tracked(
-            self._generate_preview_sync, text, options
-        )
+        return await self._to_thread_tracked(self._generate_preview_sync, text, options)
 
     async def _to_thread_tracked(self, operation: Any, *args: Any) -> Any:
         """Run one native call while tracking its lifetime beyond Task.cancel()."""
@@ -882,7 +881,9 @@ class QrcodeTab(QWidget):
         if not adapter.is_started:
             return
         self._qr_capability_probe_sent = True
-        adapter.health_loaded.connect(self._on_health_loaded, Qt.ConnectionType.QueuedConnection)
+        adapter.health_loaded.connect(
+            self._on_health_loaded, Qt.ConnectionType.QueuedConnection
+        )
         adapter.fetch_health()
 
     def _on_health_loaded(self, health: object) -> None:
@@ -913,7 +914,9 @@ class QrcodeTab(QWidget):
         if self._qr_capability_blocked():
             self._on_preview_error(
                 generation,
-                RuntimeError("当前 Runtime 未提供二维码能力（qrcode.v2），请先在“设置 → 运行环境与组件”中修复 Runtime"),
+                RuntimeError(
+                    "当前 Runtime 未提供二维码能力（qrcode.v2），请先在“设置 → 运行环境”中检查运行环境"
+                ),
             )
             return
 
@@ -947,7 +950,11 @@ class QrcodeTab(QWidget):
             return
         logger.error("生成预览失败: %s", exc, exc_info=exc)
         detail = getattr(exc, "detail", None)
-        hint = f"（{detail.get('error')}）" if isinstance(detail, dict) and detail.get("error") else ""
+        hint = (
+            f"（{detail.get('error')}）"
+            if isinstance(detail, dict) and detail.get("error")
+            else ""
+        )
         self._preview_label.setText(
             f"<span style='color:{theme.Colors.danger};'>生成失败：{exc}{hint}</span>"
         )

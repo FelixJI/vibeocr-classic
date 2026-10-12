@@ -611,9 +611,7 @@ def document_parsing_availability(
     if gpu_capability is None:
         return None
     return (
-        ENGINE_AVAILABILITY_READY
-        if gpu_capability
-        else ENGINE_AVAILABILITY_UNAVAILABLE
+        ENGINE_AVAILABILITY_READY if gpu_capability else ENGINE_AVAILABILITY_UNAVAILABLE
     )
 
 
@@ -634,7 +632,7 @@ def document_parsing_availability_notice(
             "warning",
             "文档解析未就绪",
             "深度文档解析（MinerU）需要先安装运行时组件。\n"
-            "请在「设置 → 识别设置」准备该模式后重试。",
+            "请在「设置 → 运行环境」勾选 MinerU 后重试。",
         )
     if availability == ENGINE_AVAILABILITY_UNAVAILABLE:
         return (

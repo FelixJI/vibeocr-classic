@@ -331,9 +331,7 @@ class TestProcessFileDocumentGate:
 
     def test_unavailable_mode_still_blocks_submission(self, qapp, doc_gate_pdf):
         tab = SingleRecognitionTab()
-        tab._preprocess_options.set_recognition_catalog(
-            _mineru_catalog("unavailable")
-        )
+        tab._preprocess_options.set_recognition_catalog(_mineru_catalog("unavailable"))
         dispatched: list = []
         tab._run_ocr_with_file = dispatched.append
 
@@ -1210,7 +1208,7 @@ class TestSingleRecognitionTabErrorMapping:
 
         assert shown == [
             "所选识别引擎还没有安装（paddleocr-cuda）。"
-            "请到「设置 → 可选识别能力」勾选并安装后重试。"
+            "请到「设置 → 运行环境」勾选并安装后重试。"
         ]
         assert suffix_calls == []
 

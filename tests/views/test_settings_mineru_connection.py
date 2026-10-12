@@ -192,10 +192,6 @@ def mineru_controller(qtbot, tmp_path, monkeypatch):
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",
             return_value=(False, None),
         ),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.SettingsPageController."
-            "_refresh_env_maintenance_state"
-        ),
     ):
         controller = SettingsPageController(
             ui=host,
@@ -219,11 +215,11 @@ def _status_text(host: QWidget) -> str:
 
 
 def _recognition_page(host: QWidget) -> QWidget:
-    """识别设置页（QStackedWidget 会隐藏非当前页，可见性断言以页为锚点）。"""
+    """运行环境页（QStackedWidget 会隐藏非当前页，可见性断言以页为锚点）。"""
 
     stacked = host.findChild(QStackedWidget, "settingsStackedWidget")
     assert stacked is not None
-    page = host.findChild(QWidget, "pageRecognition")
+    page = host.findChild(QWidget, "pageRuntime")
     assert page is not None
     return page
 

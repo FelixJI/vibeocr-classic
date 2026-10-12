@@ -26,7 +26,7 @@ def main_window(qapp, qtbot, tmp_path, monkeypatch):
     # GPU 探测线程由 BackendOptionsWidget 专项测试覆盖；MainWindow 单元测试
     # 隔离真实 nvidia-smi 子进程，避免跨用例 COM/clipboard teardown 污染。
     monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection",
+        "vibeocr.classic.widgets.runtime_environment_widget.RuntimeEnvironmentWidget._start_gpu_detection",
         lambda self: None,
     )
     window = MainWindow()

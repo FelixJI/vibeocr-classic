@@ -1,16 +1,15 @@
-"""设置页重装对话框 install_succeeded 联动测试（Bug A 修复）
+"""设置页安装对话框 install_succeeded 联动测试（Bug A 修复）
 
-回归：用户在设置页重装 OCR 依赖（BackendChoiceDialog）成功后，截图界面仍
-提示"OCR功能未就绪"。根因：设置页重装路径只连了 dialog.finished（刷新设置页
-表格/label），没连 dialog.install_succeeded，也没触发 MainWindow 重新检测依赖
-+ 启动子进程 Worker。首启路径（_show_install_dialog）才做了全套联动。
+回归：用户在设置页安装 OCR 依赖成功后，截图界面仍提示"OCR功能未就绪"。
+根因：设置页安装路径只连了 dialog.finished（刷新设置页界面），没连
+dialog.install_succeeded，也没触发 MainWindow 重新检测依赖 + 启动子进程
+Worker。
 
-本测试验证 SettingsPageController._open_reinstall_dialog 在对话框 emit
-install_succeeded 时调用传入的 install_succeeded_callback，由 MainWindow 提供
-该回调触发 dependency_manager.check_dependencies()（联动 Worker 启动）。
+本测试验证 SettingsPageController._show_install_dialog 在对话框 emit
+install_succeeded 时调用传入的 install_succeeded_callback，由 MainWindow
+提供该回调触发 dependency_manager.check_dependencies()（联动 Worker 启动）。
 
-不依赖 test_settings_reinstall.py 的重 fixture（那个有预存 BackendOptionsWidget
-detect_gpu_info 的 mock 问题），自包含构造 controller 的最小依赖。
+自包含构造 controller 的最小依赖，不依赖重 fixture。
 """
 
 from pathlib import Path
@@ -54,7 +53,7 @@ def controller(qtbot, tmp_path):
 
     with (
         patch(
-            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
+            "vibeocr.classic.widgets.runtime_environment_widget.RuntimeEnvironmentWidget._start_gpu_detection"
         ),
         patch(
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",
@@ -87,8 +86,8 @@ def controller(qtbot, tmp_path):
     return ctrl, host, install_cb
 
 
-def test_open_reinstall_dialog_connects_install_succeeded(controller, monkeypatch):
-    """_open_reinstall_dialog 应把 dialog.install_succeeded 连到传入的回调"""
+def test_show_install_dialog_connects_install_succeeded(controller, monkeypatch):
+    """_show_install_dialog 应把 dialog.install_succeeded 连到传入的回调"""
     ctrl, _host, _install_cb = controller
 
     captured = {}
@@ -97,21 +96,22 @@ def test_open_reinstall_dialog_connects_install_succeeded(controller, monkeypatc
         def __init__(self, *args, **kwargs):
             captured["instance"] = self
             self.finished = MagicMock()
+            self.install_completed = MagicMock()
             self.install_succeeded = MagicMock()
 
         def show(self):
             pass
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
-    ctrl._open_reinstall_dialog()
+    ctrl._show_install_dialog()
 
     # install_succeeded 信号应被连接（connect 被调用）
     assert "instance" in captured, "应创建对话框"
     captured["instance"].install_succeeded.connect.assert_called_once()
-    # 连接的目标应是 install_succeeded_callback
+    # 连接的目标应是可调用对象（内部转发到 install_succeeded_callback）
     connected_callable = captured["instance"].install_succeeded.connect.call_args[0][0]
     assert callable(connected_callable), "应连接一个可调用对象"
 
@@ -121,7 +121,6 @@ def test_install_succeeded_emission_invokes_callback(controller, monkeypatch):
     ctrl, _host, install_cb = controller
 
     # 用真实 Signal 驱动回调（验证连接链路，而非仅 connect 被调用）
-    from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QDialog
 
     class FakeDialog(QDialog):
@@ -130,18 +129,18 @@ def test_install_succeeded_emission_invokes_callback(controller, monkeypatch):
         def __init__(self, *args, **kwargs):
             super().__init__()
             self.finished = MagicMock()
+            self.install_completed = MagicMock()
 
         def show(self):
             pass
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
-    ctrl._open_reinstall_dialog()
+    ctrl._show_install_dialog()
 
-    # 模拟安装成功 emit
-    # _open_reinstall_dialog 持有 dialog 引用在 _active_dialogs
+    # 模拟安装成功 emit；_show_install_dialog 持有 dialog 引用在 _active_dialogs
     dialog = ctrl._active_dialogs[-1]
     dialog.install_succeeded.emit()
 
@@ -152,23 +151,27 @@ def test_install_succeeded_emission_invokes_callback(controller, monkeypatch):
 
 
 def test_cancelled_finished_still_refreshes_env(controller, monkeypatch):
-    """取消/失败的 finished 信号仍刷新环境维护状态。
+    """取消/失败的 finished 信号仍刷新运行环境状态。
 
     用 QDialog 子类提供真实的 finished Signal（Qt 要求 Signal 在类级定义），
-    emit(0) 驱动 _on_finished 槽，验证它仍调用 _refresh_env_maintenance_state。
+    emit(0) 驱动 _on_finished 槽，验证它仍调用 refresh_runtime_state。
     """
     ctrl, _host, _install_cb = controller
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.runtime_environment_widget."
+        "RuntimeEnvironmentWidget._start_gpu_detection",
+        lambda self: None,
+    )
 
     refresh_calls = {"n": 0}
-    original_refresh = ctrl._refresh_env_maintenance_state
+    original_refresh = ctrl.refresh_runtime_state
 
     def counting_refresh():
         refresh_calls["n"] += 1
         original_refresh()
 
-    ctrl._refresh_env_maintenance_state = counting_refresh
+    ctrl.refresh_runtime_state = counting_refresh
 
-    from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QDialog
 
     class FakeDialog(QDialog):
@@ -177,20 +180,21 @@ def test_cancelled_finished_still_refreshes_env(controller, monkeypatch):
 
         def __init__(self, *args, **kwargs):
             super().__init__()
+            self.install_completed = MagicMock()
 
         def show(self):
             pass
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog", FakeDialog
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
     )
 
-    ctrl._open_reinstall_dialog()
+    ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
     # 成功 result=1 已由 install_succeeded 刷新；此处验证取消 result=0。
     dialog.finished.emit(0)
 
-    assert refresh_calls["n"] >= 1, "finished 仍应刷新环境维护状态"
+    assert refresh_calls["n"] >= 1, "finished 仍应刷新运行环境状态"
     # finished 后对话框应从 _active_dialogs 移除（允许回收）
     assert dialog not in ctrl._active_dialogs, "finished 应移除对话框引用"

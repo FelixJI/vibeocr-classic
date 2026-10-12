@@ -264,36 +264,6 @@ def test_escape_preview_cancels_real_worker_without_installing(qtbot, tmp_path):
             qtbot.waitUntil(lambda: dialog._worker is None)
 
 
-def test_escape_first_run_preview_cancels_worker_without_failure_popup(qtbot, tmp_path):
-    from PySide6.QtCore import Qt
-    from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
-
-    with (
-        patch(
-            "vibeocr.classic.widgets.install_dialog.RuntimeInstallerClient"
-        ) as factory,
-        patch.object(BackendChoiceDialog, "_detect_and_set_default"),
-        patch(
-            "vibeocr.classic.widgets.backend_choice_dialog.QMessageBox.warning"
-        ) as warning,
-    ):
-        dialog = BackendChoiceDialog(tmp_path, missing_only=True)
-        qtbot.addWidget(dialog)
-        dialog.show()
-        dialog._install_button.click()
-        qtbot.waitUntil(lambda: dialog._install_button.text() == "确认并安装")
-        try:
-            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
-            qtbot.waitUntil(lambda: dialog._worker is None, timeout=2000)
-            assert not dialog.isVisible()
-            factory.return_value.repair.assert_not_called()
-            warning.assert_not_called()
-            assert InstallationRecord.read(tmp_path) is None
-        finally:
-            dialog.request_shutdown()
-            qtbot.waitUntil(lambda: dialog._worker is None)
-
-
 def test_repair_preview_preserves_actual_installed_scope(qapp, tmp_path):
     from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
     from vibeocr.classic.widgets.install_dialog import (
@@ -336,52 +306,6 @@ def test_repair_preview_preserves_actual_installed_scope(qapp, tmp_path):
         client.profile_descriptor.assert_not_called()
         client.repair.assert_not_called()
     assert "无损坏时不会重建" in describe_install_plan(None)
-
-
-def test_first_run_close_preserves_late_success(qtbot, tmp_path):
-    import threading
-    from PySide6.QtCore import Qt
-    from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
-
-    release = threading.Event()
-    started = threading.Event()
-
-    class CommittingWorker(InstallWorker):
-        def run(self):
-            self.plan_ready.emit(None)
-            self._confirmation.wait(5)
-            started.set()
-            release.wait(5)
-            self.completed.emit(True, "committed")
-
-    with (
-        patch(
-            "vibeocr.classic.widgets.backend_choice_dialog.InstallWorker",
-            CommittingWorker,
-        ),
-        patch.object(BackendChoiceDialog, "_detect_and_set_default"),
-    ):
-        dialog = BackendChoiceDialog(tmp_path)
-        qtbot.addWidget(dialog)
-        succeeded, finished = [], []
-        dialog.install_succeeded.connect(lambda: succeeded.append(True))
-        dialog.finished.connect(finished.append)
-        dialog.show()
-        dialog._install_button.click()
-        try:
-            qtbot.waitUntil(lambda: dialog._install_button.text() == "确认并安装")
-            dialog._install_button.click()
-            qtbot.waitUntil(started.is_set)
-            qtbot.keyClick(dialog, Qt.Key.Key_Escape)
-            assert not finished and not succeeded
-            release.set()
-            qtbot.waitUntil(lambda: dialog._worker is None)
-            assert succeeded == [True]
-            assert finished == [1]
-        finally:
-            release.set()
-            qtbot.waitUntil(lambda: dialog._worker is None)
-            dialog.close()
 
 
 def test_default_install_profile_follows_backend_plan_device(qapp, tmp_path):

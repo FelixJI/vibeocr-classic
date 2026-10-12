@@ -116,10 +116,6 @@ def runtime_controller(qtbot, tmp_path, monkeypatch):
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",
             return_value=(False, None),
         ),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.SettingsPageController."
-            "_refresh_env_maintenance_state"
-        ),
     ):
         runtime_status = MagicMock()
         controller = SettingsPageController(

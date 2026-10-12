@@ -56,8 +56,6 @@ class _SettingsHarness:
     _cancel_pending_maintenance_dialog = (
         SettingsPageController._cancel_pending_maintenance_dialog
     )
-    _open_install_dialog = SettingsPageController._open_install_dialog
-    _open_reinstall_dialog = SettingsPageController._open_reinstall_dialog
 
     def __init__(self, manager: _FakeManager) -> None:
         self._closing = False
@@ -65,7 +63,6 @@ class _SettingsHarness:
         self._subprocess_manager = manager
         self._status_callback = Mock()
         self._show_install_dialog = Mock()
-        self._show_reinstall_dialog = Mock()
 
 
 def test_main_window_waits_and_coalesces_repeated_install_requests(qapp) -> None:
@@ -115,16 +112,12 @@ def test_settings_repeated_actions_keep_only_first_continuation(qapp) -> None:
     manager = _FakeManager()
     controller = _SettingsHarness(manager)
 
-    controller._open_reinstall_dialog(reinstall_python=True)
-    controller._open_install_dialog(force_backend="gpu")
+    controller._run_after_supervisor_invalidated(controller._show_install_dialog)
+    controller._run_after_supervisor_invalidated(controller._show_install_dialog)
 
     assert manager.invalidate_calls == 1
     manager.finish(True)
-    controller._show_reinstall_dialog.assert_called_once_with(
-        reinstall_python=True,
-        missing_only=False,
-    )
-    controller._show_install_dialog.assert_not_called()
+    controller._show_install_dialog.assert_called_once()
 
 
 def test_settings_close_drops_late_invalidation_callback(qapp) -> None:

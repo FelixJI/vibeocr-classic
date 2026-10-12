@@ -12,9 +12,7 @@ from vibeocr.classic.runtime_status_messages import (
 
 
 def test_not_installed_runtime_has_a_clear_profile_label() -> None:
-    assert format_runtime_unavailable(["cpu: not-installed"]) == (
-        "识别服务未安装：CPU"
-    )
+    assert format_runtime_unavailable(["cpu: not-installed"]) == ("识别服务未安装：CPU")
     assert format_runtime_unavailable(["nvidia_cuda: not-installed"]) == (
         "识别服务未安装：NVIDIA CUDA"
     )
@@ -163,11 +161,11 @@ def test_engine_preparation_message_names_required_component() -> None:
     )
     assert "所选识别引擎还没有安装" in message
     assert "paddleocr-cuda" in message
-    assert "可选识别能力" in message
+    assert "「设置 → 运行环境」" in message
 
 
 def test_engine_preparation_message_tolerates_missing_detail() -> None:
     message = engine_preparation_required_message(None)
     assert "所选识别引擎还没有安装" in message
     assert "（）" not in message
-    assert "可选识别能力" in message
+    assert "「设置 → 运行环境」" in message

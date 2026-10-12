@@ -3,13 +3,13 @@
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
-
 from PySide6.QtCore import QObject, QPoint, Qt, QTimer
 from PySide6.QtTest import QTest
 
 from vibeocr.classic.views.main_window import MainWindow
-from vibeocr.classic.widgets.backend_options_widget import BackendOptionsWidget
+from vibeocr.classic.widgets.runtime_environment_widget import (
+    RuntimeEnvironmentWidget,
+)
 from vibeocr.classic.widgets.toolbar import EdgeToolbar
 
 
@@ -30,29 +30,22 @@ def test_slow_gpu_probe_does_not_block_edge_toolbar_drag(qapp, monkeypatch):
     release_probe = threading.Event()
     probe_returned = threading.Event()
 
-    class SlowRuntimeInstallerClient:
-        def __init__(self, _project_root):
-            pass
-
-        def inspect(self):
-            try:
-                release_probe.wait(timeout=1.0)
-                return SimpleNamespace(ready=True, accelerator="nvidia_cuda")
-            finally:
-                probe_returned.set()
-
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.RuntimeInstallerClient",
-        SlowRuntimeInstallerClient,
-    )
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget.detect_gpu_info",
-        lambda **_kwargs: {
+    def slow_detect_gpu_info(**_kwargs):
+        # nvidia-smi 是真实场景里的慢调用；用它模拟后台探测阻塞。
+        try:
+            release_probe.wait(timeout=1.0)
+        finally:
+            probe_returned.set()
+        return {
             "has_gpu": True,
             "name": "NVIDIA GeForce RTX 4090",
             "vram_mb": 24564,
             "cuda": "cu126",
-        },
+        }
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.runtime_environment_widget.detect_gpu_info",
+        slow_detect_gpu_info,
     )
 
     harness = _GpuGatingHarness()
@@ -83,7 +76,7 @@ def test_slow_gpu_probe_does_not_block_edge_toolbar_drag(qapp, monkeypatch):
     release_timer.daemon = True
     release_timer.start()
 
-    backend_options = BackendOptionsWidget(
+    backend_options = RuntimeEnvironmentWidget(
         Path.cwd(),
         gpu_capability_callback=lambda has_gpu: MainWindow._apply_gpu_gating_to_all(
             harness, has_gpu

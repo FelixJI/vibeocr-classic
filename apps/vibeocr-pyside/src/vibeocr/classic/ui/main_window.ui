@@ -199,12 +199,7 @@
          </item>
          <item>
           <property name="text">
-            <string>识别设置</string>
-          </property>
-         </item>
-         <item>
-          <property name="text">
-            <string>运行环境与组件</string>
+            <string>运行环境</string>
           </property>
          </item>
          <item>
@@ -396,8 +391,8 @@
            </item>
           </layout>
          </widget>
-         <widget class="QWidget" name="pageRecognition">
-          <layout class="QVBoxLayout" name="pageRecognitionLayout">
+         <widget class="QWidget" name="pageRuntime">
+          <layout class="QVBoxLayout" name="pageRuntimeLayout">
            <property name="spacing">
             <number>12</number>
            </property>
@@ -414,110 +409,23 @@
             <number>16</number>
            </property>
            <item>
-            <widget class="QGroupBox" name="groupEngineAvailability">
-             <property name="title">
-               <string>当前可用的识别能力</string>
-             </property>
-             <layout class="QVBoxLayout" name="engineAvailabilityLayout">
+            <widget class="QWidget" name="backendOptionsContainer" native="true">
+             <layout class="QVBoxLayout" name="backendOptionsContainerLayout">
               <property name="spacing">
                <number>6</number>
               </property>
-              <item>
-               <widget class="QLabel" name="labelEngineAvailabilityHint">
-                <property name="text">
-                  <string>基础识别已内置，无需安装。高级识别能力可在下方选择安装。</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QTreeWidget" name="treeEngineAvailability">
-                <property name="editTriggers">
-                 <set>QAbstractItemView::NoEditTriggers</set>
-                </property>
-                <property name="selectionMode">
-                 <enum>QAbstractItemView::NoSelection</enum>
-                </property>
-                <property name="rootIsDecorated">
-                 <bool>true</bool>
-                </property>
-                <attribute name="headerStretchLastSection">
-                 <bool>true</bool>
-                </attribute>
-                <column>
-                 <property name="text">
-                  <string>识别模式</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>状态</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>说明</string>
-                 </property>
-                </column>
-               </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-           <item>
-            <widget class="QGroupBox" name="groupOfflineFeatures">
-             <property name="title">
-               <string>可选识别能力</string>
-             </property>
-             <layout class="QVBoxLayout" name="offlineFeaturesLayout">
-              <property name="spacing">
-               <number>6</number>
+              <property name="leftMargin">
+               <number>0</number>
               </property>
-              <item>
-               <widget class="QLabel" name="labelOfflineFeaturesHint">
-                <property name="text">
-                  <string>这里只列需要额外下载安装的能力。勾选后点击安装按钮即可；已内置的能力不会出现在这里。</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QTreeWidget" name="treeOfflineFeatures">
-                <property name="editTriggers">
-                 <set>QAbstractItemView::NoEditTriggers</set>
-                </property>
-                <property name="selectionMode">
-                 <enum>QAbstractItemView::NoSelection</enum>
-                </property>
-                <property name="rootIsDecorated">
-                 <bool>false</bool>
-                </property>
-                <attribute name="headerStretchLastSection">
-                 <bool>true</bool>
-                </attribute>
-                <column>
-                 <property name="text">
-                  <string>能力</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>安装状态</string>
-                 </property>
-                </column>
-               </widget>
-              </item>
-              <item>
-               <widget class="QPushButton" name="btnInstallOfflineFeatures">
-                <property name="text">
-                 <string>安装所选能力…</string>
-                </property>
-               </widget>
-              </item>
+              <property name="topMargin">
+               <number>0</number>
+              </property>
+              <property name="rightMargin">
+               <number>0</number>
+              </property>
+              <property name="bottomMargin">
+               <number>0</number>
+              </property>
              </layout>
             </widget>
            </item>
@@ -556,243 +464,6 @@
                  <bool>true</bool>
                 </property>
                </widget>
-              </item>
-             </layout>
-            </widget>
-           </item>
-           <item>
-            <spacer name="spacerRecognitionPage">
-             <property name="orientation">
-              <enum>Qt::Vertical</enum>
-             </property>
-             <property name="sizeHint" stdset="0">
-              <size>
-               <width>20</width>
-               <height>40</height>
-              </size>
-             </property>
-            </spacer>
-           </item>
-          </layout>
-         </widget>
-         <widget class="QWidget" name="pageRuntime">
-          <layout class="QVBoxLayout" name="pageRuntimeLayout">
-           <property name="spacing">
-            <number>12</number>
-           </property>
-           <property name="leftMargin">
-            <number>16</number>
-           </property>
-           <property name="topMargin">
-            <number>16</number>
-           </property>
-           <property name="rightMargin">
-            <number>16</number>
-           </property>
-           <property name="bottomMargin">
-            <number>16</number>
-           </property>
-           <item>
-            <widget class="QGroupBox" name="groupEnvMaintenance">
-             <property name="title">
-               <string>运行环境与组件</string>
-             </property>
-             <layout class="QVBoxLayout" name="envMaintenanceLayout">
-              <property name="spacing">
-               <number>8</number>
-              </property>
-              <item>
-               <widget class="QWidget" name="backendOptionsContainer" native="true">
-                <layout class="QVBoxLayout" name="backendOptionsContainerLayout">
-                 <property name="spacing">
-                  <number>6</number>
-                 </property>
-                 <property name="leftMargin">
-                  <number>0</number>
-                 </property>
-                 <property name="topMargin">
-                  <number>0</number>
-                 </property>
-                 <property name="rightMargin">
-                  <number>0</number>
-                 </property>
-                 <property name="bottomMargin">
-                  <number>0</number>
-                 </property>
-                </layout>
-               </widget>
-              </item>
-              <item>
-               <widget class="QTreeWidget" name="treeRuntimeStatus">
-                <property name="editTriggers">
-                 <set>QAbstractItemView::NoEditTriggers</set>
-                </property>
-                <property name="selectionMode">
-                 <enum>QAbstractItemView::NoSelection</enum>
-                </property>
-                <property name="rootIsDecorated">
-                 <bool>false</bool>
-                </property>
-                <attribute name="headerStretchLastSection">
-                 <bool>true</bool>
-                </attribute>
-                <column>
-                 <property name="text">
-                  <string>项目</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>值</string>
-                 </property>
-                </column>
-               </widget>
-              </item>
-              <item>
-               <widget class="QLabel" name="labelEnvStatus">
-                <property name="text">
-                 <string>Runtime 状态：检测中...</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>true</bool>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QTreeWidget" name="treeDepsStatus">
-                <property name="toolTip">
-                  <string>已安装的识别引擎与版本。出现异常时，可在“可选识别能力”里重新安装对应引擎。</string>
-                </property>
-                <property name="editTriggers">
-                 <set>QAbstractItemView::NoEditTriggers</set>
-                </property>
-                <property name="selectionMode">
-                 <enum>QAbstractItemView::ExtendedSelection</enum>
-                </property>
-                <property name="selectionBehavior">
-                 <enum>QAbstractItemView::SelectRows</enum>
-                </property>
-                <property name="rootIsDecorated">
-                 <bool>true</bool>
-                </property>
-                <property name="expandsOnDoubleClick">
-                 <bool>true</bool>
-                </property>
-                <attribute name="headerDefaultSectionSize">
-                 <number>120</number>
-                </attribute>
-                <attribute name="headerStretchLastSection">
-                 <bool>true</bool>
-                </attribute>
-                <column>
-                 <property name="text">
-                  <string>组件</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>状态</string>
-                 </property>
-                </column>
-                <column>
-                 <property name="text">
-                  <string>版本</string>
-                 </property>
-                </column>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="envMaintenanceButtonsRow1">
-                <property name="spacing">
-                 <number>8</number>
-                </property>
-                <item>
-                 <widget class="QPushButton" name="btnReinstallPython">
-                  <property name="toolTip">
-                   <string>校验并修复绑定版本的完整 Runtime profile，不执行逐包依赖变更。</string>
-                  </property>
-                  <property name="text">
-                   <string>修复运行环境</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnReinstallDeps">
-                  <property name="toolTip">
-                   <string>选择 CPU/GPU profile；确认后通过可见安装流程校验或切换。</string>
-                  </property>
-                  <property name="text">
-                   <string>安装或调整运行环境</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnReinstallSelected">
-                  <property name="enabled">
-                   <bool>false</bool>
-                  </property>
-                  <property name="toolTip">
-                   <string>校验并修复当前完整 Runtime profile；不会逐包修改。</string>
-                  </property>
-                  <property name="text">
-                   <string>修复 Runtime</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="envMaintenanceSpacer1">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>20</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="envMaintenanceButtonsRow2">
-                <property name="spacing">
-                 <number>8</number>
-                </property>
-                <item>
-                 <widget class="QPushButton" name="btnInstallMissing">
-                  <property name="toolTip">
-                   <string>校验当前 profile，仅在缺失或损坏时下载并补全。</string>
-                  </property>
-                  <property name="text">
-                   <string>补全当前 Runtime</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="btnUpdateDeps">
-                  <property name="toolTip">
-                   <string>识别引擎随应用更新统一升级；此处只刷新显示，不会触发下载。</string>
-                  </property>
-                  <property name="text">
-                   <string>刷新产品绑定状态</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="envMaintenanceSpacer2">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>20</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-               </layout>
               </item>
              </layout>
             </widget>

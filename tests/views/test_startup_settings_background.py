@@ -50,19 +50,6 @@ def test_settings_drain_waits_for_owned_cache_task(qtbot, tmp_path):
     assert controller.drain(2000) is True
 
 
-def test_refresh_product_binding_only_reinspects_runtime(qtbot, tmp_path) -> None:
-    controller = _controller(qtbot, tmp_path)
-    controller._show_settings_toast = MagicMock()
-    controller._refresh_env_maintenance_state = MagicMock()
-
-    controller._on_update_deps()
-
-    controller._show_settings_toast.assert_called_once_with(
-        "Runtime 版本由产品更新统一管理"
-    )
-    controller._refresh_env_maintenance_state.assert_called_once_with()
-
-
 def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatch):
     entered = threading.Event()
     release = threading.Event()

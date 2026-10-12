@@ -164,8 +164,7 @@ def engine_preparation_required_message(detail: object = None) -> str:
         required = value if isinstance(value, str) and value else None
     component = f"（{required}）" if required else ""
     return (
-        "所选识别引擎还没有安装"
-        f"{component}。请到「设置 → 可选识别能力」勾选并安装后重试。"
+        f"所选识别引擎还没有安装{component}。请到「设置 → 运行环境」勾选并安装后重试。"
     )
 
 

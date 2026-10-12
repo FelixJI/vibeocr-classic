@@ -1,7 +1,7 @@
 """维护对话框取消/失败后联动恢复 Supervisor 的回归测试。
 
 回归：切换 Runtime 等维护操作会先 invalidate Supervisor；旧逻辑在
-InstallDialog / BackendChoiceDialog 以取消或失败结束（finished(0)）后
+InstallDialog 以取消或失败结束（finished(0)）后
 只刷新设置页状态，无人重启 Supervisor，导致截图入口永远停在
 “OCR Supervisor 子进程正在启动并等待就绪握手，请稍候再试”。
 
@@ -62,8 +62,8 @@ def controller(qtbot, tmp_path, monkeypatch):
     abandoned_cb = MagicMock(name="install_abandoned_callback")
 
     monkeypatch.setattr(
-        "vibeocr.classic.widgets.backend_options_widget."
-        "BackendOptionsWidget._start_gpu_detection",
+        "vibeocr.classic.widgets.runtime_environment_widget."
+        "RuntimeEnvironmentWidget._start_gpu_detection",
         lambda self: None,
     )
     monkeypatch.setattr(
@@ -104,19 +104,6 @@ def controller(qtbot, tmp_path, monkeypatch):
     )
     ctrl.connect_signals()
     return ctrl, host, install_cb, abandoned_cb
-
-
-class _FakeBackendChoiceDialog(QDialog):
-    """提供真实 finished / install_succeeded Signal 的轻量对话框。"""
-
-    install_completed = Signal(bool, str)
-    install_succeeded = Signal()
-
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def show(self):
-        pass
 
 
 class _FakeInstallDialog(QDialog):
@@ -243,52 +230,18 @@ def test_install_dialog_user_close_invokes_abandoned_callback(controller, monkey
     abandoned_cb.assert_called_once_with()
 
 
-def test_reinstall_dialog_cancel_invokes_abandoned_callback(controller, monkeypatch):
-    """BackendChoiceDialog 取消（finished(0)）应触发 install_abandoned_callback。"""
-    ctrl, _host, _install_cb, abandoned_cb = controller
-
-    monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog",
-        _FakeBackendChoiceDialog,
-    )
-    ctrl._open_reinstall_dialog()
-    dialog = ctrl._active_dialogs[-1]
-
-    dialog.finished.emit(0)
-
-    abandoned_cb.assert_called_once_with()
-
-
-def test_reinstall_dialog_success_does_not_invoke_abandoned_callback(
-    controller, monkeypatch
-):
-    """BackendChoiceDialog 成功（finished(1)）不触发恢复回调。"""
-    ctrl, _host, _install_cb, abandoned_cb = controller
-
-    monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog",
-        _FakeBackendChoiceDialog,
-    )
-    ctrl._open_reinstall_dialog()
-    dialog = ctrl._active_dialogs[-1]
-
-    dialog.finished.emit(1)
-
-    abandoned_cb.assert_not_called()
-
-
 def test_abandoned_callback_optional_without_crash(controller, monkeypatch):
-    """未提供 install_abandoned_callback 时取消路径保持旧行为（仅刷新）。"""
+    """未提供 install_abandoned_callback 时取消路径不崩溃（仅刷新）。"""
     ctrl, _host, _install_cb, _abandoned_cb = controller
     ctrl._install_abandoned_callback = None
 
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog",
-        _FakeBackendChoiceDialog,
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
     )
-    ctrl._open_reinstall_dialog()
+    ctrl._show_install_dialog()
     dialog = ctrl._active_dialogs[-1]
 
+    dialog.before_install(lambda: None)
     dialog.finished.emit(0)
 
     assert dialog not in ctrl._active_dialogs
@@ -300,11 +253,16 @@ def test_maintenance_active_reflects_pending_and_open_dialogs(controller, monkey
 
     assert ctrl.is_maintenance_active is False
 
+    # “正在停止”阶段：等待 Supervisor 退出的 continuation 挂起。
+    ctrl._pending_maintenance_dialog = lambda: None
+    assert ctrl.is_maintenance_active is True
+    ctrl._cancel_pending_maintenance_dialog()
+    assert ctrl.is_maintenance_active is False
+
     monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog",
-        _FakeBackendChoiceDialog,
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
     )
-    ctrl._open_reinstall_dialog()
+    ctrl._show_install_dialog()
 
     assert ctrl.is_maintenance_active is True
 

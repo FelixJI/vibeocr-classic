@@ -159,7 +159,7 @@ def build_maintenance_detail(
 ) -> MaintenanceProgressDetail:
     """把维护事件统一渲染为进度条区间与阶段文案。
 
-    首启 BackendChoiceDialog 与设置页 InstallDialog 共用，避免百分比、
+    首启引导与设置页 InstallDialog 共用，避免百分比、
     字节与步数格式化逻辑出现两份逐渐分歧的实现。仅在渲染不确定进度的
     running 事件时才读取 clock（保持阶段计时的调用语义不变）。
     ``detail_note`` 是调用方维护的“当前在做什么”明细（如 Installer 事件

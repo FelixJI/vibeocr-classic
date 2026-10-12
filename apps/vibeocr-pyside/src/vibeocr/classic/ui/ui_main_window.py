@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QTabWidget,
-    QTreeWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -112,7 +111,6 @@ class Ui_MainWindowWidget(object):
         self.settingsHLayout.setObjectName("settingsHLayout")
         self.settingsHLayout.setContentsMargins(0, 0, 0, 0)
         self.settingsNavList = QListWidget(self.tabSettings)
-        QListWidgetItem(self.settingsNavList)
         QListWidgetItem(self.settingsNavList)
         QListWidgetItem(self.settingsNavList)
         QListWidgetItem(self.settingsNavList)
@@ -224,62 +222,24 @@ class Ui_MainWindowWidget(object):
         self.pageGeneralLayout.addItem(self.spacerGeneralPage)
 
         self.settingsStackedWidget.addWidget(self.pageGeneral)
-        self.pageRecognition = QWidget()
-        self.pageRecognition.setObjectName("pageRecognition")
-        self.pageRecognitionLayout = QVBoxLayout(self.pageRecognition)
-        self.pageRecognitionLayout.setSpacing(12)
-        self.pageRecognitionLayout.setObjectName("pageRecognitionLayout")
-        self.pageRecognitionLayout.setContentsMargins(16, 16, 16, 16)
-        self.groupEngineAvailability = QGroupBox(self.pageRecognition)
-        self.groupEngineAvailability.setObjectName("groupEngineAvailability")
-        self.engineAvailabilityLayout = QVBoxLayout(self.groupEngineAvailability)
-        self.engineAvailabilityLayout.setSpacing(6)
-        self.engineAvailabilityLayout.setObjectName("engineAvailabilityLayout")
-        self.labelEngineAvailabilityHint = QLabel(self.groupEngineAvailability)
-        self.labelEngineAvailabilityHint.setObjectName("labelEngineAvailabilityHint")
-        self.labelEngineAvailabilityHint.setWordWrap(True)
+        self.pageRuntime = QWidget()
+        self.pageRuntime.setObjectName("pageRuntime")
+        self.pageRuntimeLayout = QVBoxLayout(self.pageRuntime)
+        self.pageRuntimeLayout.setSpacing(12)
+        self.pageRuntimeLayout.setObjectName("pageRuntimeLayout")
+        self.pageRuntimeLayout.setContentsMargins(16, 16, 16, 16)
+        self.backendOptionsContainer = QWidget(self.pageRuntime)
+        self.backendOptionsContainer.setObjectName("backendOptionsContainer")
+        self.backendOptionsContainerLayout = QVBoxLayout(self.backendOptionsContainer)
+        self.backendOptionsContainerLayout.setSpacing(6)
+        self.backendOptionsContainerLayout.setObjectName(
+            "backendOptionsContainerLayout"
+        )
+        self.backendOptionsContainerLayout.setContentsMargins(0, 0, 0, 0)
 
-        self.engineAvailabilityLayout.addWidget(self.labelEngineAvailabilityHint)
+        self.pageRuntimeLayout.addWidget(self.backendOptionsContainer)
 
-        self.treeEngineAvailability = QTreeWidget(self.groupEngineAvailability)
-        self.treeEngineAvailability.setObjectName("treeEngineAvailability")
-        self.treeEngineAvailability.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.treeEngineAvailability.setSelectionMode(QAbstractItemView.NoSelection)
-        self.treeEngineAvailability.setRootIsDecorated(True)
-        self.treeEngineAvailability.header().setStretchLastSection(True)
-
-        self.engineAvailabilityLayout.addWidget(self.treeEngineAvailability)
-
-        self.pageRecognitionLayout.addWidget(self.groupEngineAvailability)
-
-        self.groupOfflineFeatures = QGroupBox(self.pageRecognition)
-        self.groupOfflineFeatures.setObjectName("groupOfflineFeatures")
-        self.offlineFeaturesLayout = QVBoxLayout(self.groupOfflineFeatures)
-        self.offlineFeaturesLayout.setSpacing(6)
-        self.offlineFeaturesLayout.setObjectName("offlineFeaturesLayout")
-        self.labelOfflineFeaturesHint = QLabel(self.groupOfflineFeatures)
-        self.labelOfflineFeaturesHint.setObjectName("labelOfflineFeaturesHint")
-        self.labelOfflineFeaturesHint.setWordWrap(True)
-
-        self.offlineFeaturesLayout.addWidget(self.labelOfflineFeaturesHint)
-
-        self.treeOfflineFeatures = QTreeWidget(self.groupOfflineFeatures)
-        self.treeOfflineFeatures.setObjectName("treeOfflineFeatures")
-        self.treeOfflineFeatures.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.treeOfflineFeatures.setSelectionMode(QAbstractItemView.NoSelection)
-        self.treeOfflineFeatures.setRootIsDecorated(False)
-        self.treeOfflineFeatures.header().setStretchLastSection(True)
-
-        self.offlineFeaturesLayout.addWidget(self.treeOfflineFeatures)
-
-        self.btnInstallOfflineFeatures = QPushButton(self.groupOfflineFeatures)
-        self.btnInstallOfflineFeatures.setObjectName("btnInstallOfflineFeatures")
-
-        self.offlineFeaturesLayout.addWidget(self.btnInstallOfflineFeatures)
-
-        self.pageRecognitionLayout.addWidget(self.groupOfflineFeatures)
-
-        self.groupDownloadSources = QGroupBox(self.pageRecognition)
+        self.groupDownloadSources = QGroupBox(self.pageRuntime)
         self.groupDownloadSources.setObjectName("groupDownloadSources")
         self.downloadSourcesLayout = QVBoxLayout(self.groupDownloadSources)
         self.downloadSourcesLayout.setSpacing(8)
@@ -301,113 +261,7 @@ class Ui_MainWindowWidget(object):
 
         self.downloadSourcesLayout.addWidget(self.labelDownloadSourceStatus)
 
-        self.pageRecognitionLayout.addWidget(self.groupDownloadSources)
-
-        self.spacerRecognitionPage = QSpacerItem(
-            20, 40, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Expanding
-        )
-
-        self.pageRecognitionLayout.addItem(self.spacerRecognitionPage)
-
-        self.settingsStackedWidget.addWidget(self.pageRecognition)
-        self.pageRuntime = QWidget()
-        self.pageRuntime.setObjectName("pageRuntime")
-        self.pageRuntimeLayout = QVBoxLayout(self.pageRuntime)
-        self.pageRuntimeLayout.setSpacing(12)
-        self.pageRuntimeLayout.setObjectName("pageRuntimeLayout")
-        self.pageRuntimeLayout.setContentsMargins(16, 16, 16, 16)
-        self.groupEnvMaintenance = QGroupBox(self.pageRuntime)
-        self.groupEnvMaintenance.setObjectName("groupEnvMaintenance")
-        self.envMaintenanceLayout = QVBoxLayout(self.groupEnvMaintenance)
-        self.envMaintenanceLayout.setSpacing(8)
-        self.envMaintenanceLayout.setObjectName("envMaintenanceLayout")
-        self.backendOptionsContainer = QWidget(self.groupEnvMaintenance)
-        self.backendOptionsContainer.setObjectName("backendOptionsContainer")
-        self.backendOptionsContainerLayout = QVBoxLayout(self.backendOptionsContainer)
-        self.backendOptionsContainerLayout.setSpacing(6)
-        self.backendOptionsContainerLayout.setObjectName(
-            "backendOptionsContainerLayout"
-        )
-        self.backendOptionsContainerLayout.setContentsMargins(0, 0, 0, 0)
-
-        self.envMaintenanceLayout.addWidget(self.backendOptionsContainer)
-
-        self.treeRuntimeStatus = QTreeWidget(self.groupEnvMaintenance)
-        self.treeRuntimeStatus.setObjectName("treeRuntimeStatus")
-        self.treeRuntimeStatus.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.treeRuntimeStatus.setSelectionMode(QAbstractItemView.NoSelection)
-        self.treeRuntimeStatus.setRootIsDecorated(False)
-        self.treeRuntimeStatus.header().setStretchLastSection(True)
-
-        self.envMaintenanceLayout.addWidget(self.treeRuntimeStatus)
-
-        self.labelEnvStatus = QLabel(self.groupEnvMaintenance)
-        self.labelEnvStatus.setObjectName("labelEnvStatus")
-        self.labelEnvStatus.setWordWrap(True)
-
-        self.envMaintenanceLayout.addWidget(self.labelEnvStatus)
-
-        self.treeDepsStatus = QTreeWidget(self.groupEnvMaintenance)
-        self.treeDepsStatus.setObjectName("treeDepsStatus")
-        self.treeDepsStatus.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.treeDepsStatus.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.treeDepsStatus.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.treeDepsStatus.setRootIsDecorated(True)
-        self.treeDepsStatus.setExpandsOnDoubleClick(True)
-        self.treeDepsStatus.header().setDefaultSectionSize(120)
-        self.treeDepsStatus.header().setStretchLastSection(True)
-
-        self.envMaintenanceLayout.addWidget(self.treeDepsStatus)
-
-        self.envMaintenanceButtonsRow1 = QHBoxLayout()
-        self.envMaintenanceButtonsRow1.setSpacing(8)
-        self.envMaintenanceButtonsRow1.setObjectName("envMaintenanceButtonsRow1")
-        self.btnReinstallPython = QPushButton(self.groupEnvMaintenance)
-        self.btnReinstallPython.setObjectName("btnReinstallPython")
-
-        self.envMaintenanceButtonsRow1.addWidget(self.btnReinstallPython)
-
-        self.btnReinstallDeps = QPushButton(self.groupEnvMaintenance)
-        self.btnReinstallDeps.setObjectName("btnReinstallDeps")
-
-        self.envMaintenanceButtonsRow1.addWidget(self.btnReinstallDeps)
-
-        self.btnReinstallSelected = QPushButton(self.groupEnvMaintenance)
-        self.btnReinstallSelected.setObjectName("btnReinstallSelected")
-        self.btnReinstallSelected.setEnabled(False)
-
-        self.envMaintenanceButtonsRow1.addWidget(self.btnReinstallSelected)
-
-        self.envMaintenanceSpacer1 = QSpacerItem(
-            40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
-
-        self.envMaintenanceButtonsRow1.addItem(self.envMaintenanceSpacer1)
-
-        self.envMaintenanceLayout.addLayout(self.envMaintenanceButtonsRow1)
-
-        self.envMaintenanceButtonsRow2 = QHBoxLayout()
-        self.envMaintenanceButtonsRow2.setSpacing(8)
-        self.envMaintenanceButtonsRow2.setObjectName("envMaintenanceButtonsRow2")
-        self.btnInstallMissing = QPushButton(self.groupEnvMaintenance)
-        self.btnInstallMissing.setObjectName("btnInstallMissing")
-
-        self.envMaintenanceButtonsRow2.addWidget(self.btnInstallMissing)
-
-        self.btnUpdateDeps = QPushButton(self.groupEnvMaintenance)
-        self.btnUpdateDeps.setObjectName("btnUpdateDeps")
-
-        self.envMaintenanceButtonsRow2.addWidget(self.btnUpdateDeps)
-
-        self.envMaintenanceSpacer2 = QSpacerItem(
-            40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
-        )
-
-        self.envMaintenanceButtonsRow2.addItem(self.envMaintenanceSpacer2)
-
-        self.envMaintenanceLayout.addLayout(self.envMaintenanceButtonsRow2)
-
-        self.pageRuntimeLayout.addWidget(self.groupEnvMaintenance)
+        self.pageRuntimeLayout.addWidget(self.groupDownloadSources)
 
         self.groupCache = QGroupBox(self.pageRuntime)
         self.groupCache.setObjectName("groupCache")
@@ -666,17 +520,11 @@ class Ui_MainWindowWidget(object):
         ___qlistwidgetitem1 = self.settingsNavList.item(1)
         ___qlistwidgetitem1.setText(
             QCoreApplication.translate(
-                "MainWindowWidget", "\u8bc6\u522b\u8bbe\u7f6e", None
+                "MainWindowWidget", "\u8fd0\u884c\u73af\u5883", None
             )
         )
         ___qlistwidgetitem2 = self.settingsNavList.item(2)
         ___qlistwidgetitem2.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6", None
-            )
-        )
-        ___qlistwidgetitem3 = self.settingsNavList.item(3)
-        ___qlistwidgetitem3.setText(
             QCoreApplication.translate(
                 "MainWindowWidget", "\u6a21\u578b\u4e0e\u6027\u80fd", None
             )
@@ -776,60 +624,6 @@ class Ui_MainWindowWidget(object):
                 "MainWindowWidget", "\u5f00\u673a\u81ea\u542f\u52a8", None
             )
         )
-        self.groupEngineAvailability.setTitle(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u5f53\u524d\u53ef\u7528\u7684\u8bc6\u522b\u80fd\u529b",
-                None,
-            )
-        )
-        self.labelEngineAvailabilityHint.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u57fa\u7840\u8bc6\u522b\u5df2\u5185\u7f6e\uff0c\u65e0\u9700\u5b89\u88c5\u3002\u9ad8\u7ea7\u8bc6\u522b\u80fd\u529b\u53ef\u5728\u4e0b\u65b9\u9009\u62e9\u5b89\u88c5\u3002",
-                None,
-            )
-        )
-        ___qtreewidgetitem = self.treeEngineAvailability.headerItem()
-        ___qtreewidgetitem.setText(
-            2, QCoreApplication.translate("MainWindowWidget", "\u8bf4\u660e", None)
-        )
-        ___qtreewidgetitem.setText(
-            1, QCoreApplication.translate("MainWindowWidget", "\u72b6\u6001", None)
-        )
-        ___qtreewidgetitem.setText(
-            0,
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u8bc6\u522b\u6a21\u5f0f", None
-            ),
-        )
-        self.groupOfflineFeatures.setTitle(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u53ef\u9009\u8bc6\u522b\u80fd\u529b", None
-            )
-        )
-        self.labelOfflineFeaturesHint.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u8fd9\u91cc\u53ea\u5217\u9700\u8981\u989d\u5916\u4e0b\u8f7d\u5b89\u88c5\u7684\u80fd\u529b\u3002\u52fe\u9009\u540e\u70b9\u51fb\u5b89\u88c5\u6309\u94ae\u5373\u53ef\uff1b\u5df2\u5185\u7f6e\u7684\u80fd\u529b\u4e0d\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
-                None,
-            )
-        )
-        ___qtreewidgetitem1 = self.treeOfflineFeatures.headerItem()
-        ___qtreewidgetitem1.setText(
-            1,
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u5b89\u88c5\u72b6\u6001", None
-            ),
-        )
-        ___qtreewidgetitem1.setText(
-            0, QCoreApplication.translate("MainWindowWidget", "\u80fd\u529b", None)
-        )
-        self.btnInstallOfflineFeatures.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u5b89\u88c5\u6240\u9009\u80fd\u529b\u2026", None
-            )
-        )
         self.groupDownloadSources.setTitle(
             QCoreApplication.translate(
                 "MainWindowWidget", "\u4e0b\u8f7d\u6765\u6e90", None
@@ -846,116 +640,6 @@ class Ui_MainWindowWidget(object):
             QCoreApplication.translate("MainWindowWidget", "\u4fdd\u5b58", None)
         )
         self.labelDownloadSourceStatus.setText("")
-        self.groupEnvMaintenance.setTitle(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u8fd0\u884c\u73af\u5883\u4e0e\u7ec4\u4ef6", None
-            )
-        )
-        ___qtreewidgetitem2 = self.treeRuntimeStatus.headerItem()
-        ___qtreewidgetitem2.setText(
-            1, QCoreApplication.translate("MainWindowWidget", "\u503c", None)
-        )
-        ___qtreewidgetitem2.setText(
-            0, QCoreApplication.translate("MainWindowWidget", "\u9879\u76ee", None)
-        )
-        self.labelEnvStatus.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "Runtime \u72b6\u6001\uff1a\u68c0\u6d4b\u4e2d...",
-                None,
-            )
-        )
-        ___qtreewidgetitem3 = self.treeDepsStatus.headerItem()
-        ___qtreewidgetitem3.setText(
-            2, QCoreApplication.translate("MainWindowWidget", "\u7248\u672c", None)
-        )
-        ___qtreewidgetitem3.setText(
-            1, QCoreApplication.translate("MainWindowWidget", "\u72b6\u6001", None)
-        )
-        ___qtreewidgetitem3.setText(
-            0, QCoreApplication.translate("MainWindowWidget", "\u7ec4\u4ef6", None)
-        )
-        # if QT_CONFIG(tooltip)
-        self.treeDepsStatus.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u5df2\u5b89\u88c5\u7684\u8bc6\u522b\u5f15\u64ce\u4e0e\u7248\u672c\u3002\u51fa\u73b0\u5f02\u5e38\u65f6\uff0c\u53ef\u5728\u201c\u53ef\u9009\u8bc6\u522b\u80fd\u529b\u201d\u91cc\u91cd\u65b0\u5b89\u88c5\u5bf9\u5e94\u5f15\u64ce\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        # if QT_CONFIG(tooltip)
-        self.btnReinstallPython.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u6821\u9a8c\u5e76\u4fee\u590d\u7ed1\u5b9a\u7248\u672c\u7684\u5b8c\u6574 Runtime profile\uff0c\u4e0d\u6267\u884c\u9010\u5305\u4f9d\u8d56\u53d8\u66f4\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.btnReinstallPython.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u4fee\u590d\u8fd0\u884c\u73af\u5883", None
-            )
-        )
-        # if QT_CONFIG(tooltip)
-        self.btnReinstallDeps.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u9009\u62e9 CPU/GPU profile\uff1b\u786e\u8ba4\u540e\u901a\u8fc7\u53ef\u89c1\u5b89\u88c5\u6d41\u7a0b\u6821\u9a8c\u6216\u5207\u6362\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.btnReinstallDeps.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u5b89\u88c5\u6216\u8c03\u6574\u8fd0\u884c\u73af\u5883",
-                None,
-            )
-        )
-        # if QT_CONFIG(tooltip)
-        self.btnReinstallSelected.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u6821\u9a8c\u5e76\u4fee\u590d\u5f53\u524d\u5b8c\u6574 Runtime profile\uff1b\u4e0d\u4f1a\u9010\u5305\u4fee\u6539\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.btnReinstallSelected.setText(
-            QCoreApplication.translate("MainWindowWidget", "\u4fee\u590d Runtime", None)
-        )
-        # if QT_CONFIG(tooltip)
-        self.btnInstallMissing.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u6821\u9a8c\u5f53\u524d profile\uff0c\u4ec5\u5728\u7f3a\u5931\u6216\u635f\u574f\u65f6\u4e0b\u8f7d\u5e76\u8865\u5168\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.btnInstallMissing.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget", "\u8865\u5168\u5f53\u524d Runtime", None
-            )
-        )
-        # if QT_CONFIG(tooltip)
-        self.btnUpdateDeps.setToolTip(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u8bc6\u522b\u5f15\u64ce\u968f\u5e94\u7528\u66f4\u65b0\u7edf\u4e00\u5347\u7ea7\uff1b\u6b64\u5904\u53ea\u5237\u65b0\u663e\u793a\uff0c\u4e0d\u4f1a\u89e6\u53d1\u4e0b\u8f7d\u3002",
-                None,
-            )
-        )
-        # endif // QT_CONFIG(tooltip)
-        self.btnUpdateDeps.setText(
-            QCoreApplication.translate(
-                "MainWindowWidget",
-                "\u5237\u65b0\u4ea7\u54c1\u7ed1\u5b9a\u72b6\u6001",
-                None,
-            )
-        )
         self.groupCache.setTitle(
             QCoreApplication.translate(
                 "MainWindowWidget",

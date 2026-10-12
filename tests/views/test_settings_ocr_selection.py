@@ -1,4 +1,4 @@
-"""OCR 引擎 / 离线能力 / 下载源设置组的 catalog 驱动行为契约。"""
+"""OCR 选择目录 / 下载源 / 便携（子进程）形态应用流的契约测试。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,9 @@ import pytest
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
-    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
-    QTreeWidget,
     QWidget,
 )
 
@@ -246,8 +244,8 @@ def selection_controller(qtbot, tmp_path, monkeypatch):
             return_value=(False, None),
         ),
         patch(
-            "vibeocr.classic.views.settings_page_controller.SettingsPageController."
-            "_refresh_env_maintenance_state"
+            "vibeocr.classic.widgets.runtime_environment_widget."
+            "RuntimeEnvironmentWidget._start_gpu_detection"
         ),
     ):
         controller = SettingsPageController(
@@ -266,7 +264,7 @@ def selection_controller(qtbot, tmp_path, monkeypatch):
     controller.request_shutdown()
 
 
-def test_health_catalog_renders_engines_features_and_sources(
+def test_health_catalog_loads_and_renders_sources(
     selection_controller,
 ) -> None:
     controller, host, _adapter, _config, _manager = selection_controller
@@ -274,29 +272,8 @@ def test_health_catalog_renders_engines_features_and_sources(
     controller._on_health_loaded(_health_payload())
 
     assert host.findChild(QWidget, "groupEngineDefault") is None
-
-    # 模式可用性逐行渲染在 treeEngineAvailability；旧实现的单行拼接已移除。
-    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
-    assert tree is not None
-    assert tree.topLevelItemCount() == 1  # text 家族
-    group = tree.topLevelItem(0)
-    assert group.text(0) == "文本识别"
-    assert group.childCount() == 3
-    rapid = group.child(0)
-    assert rapid.text(0) == "快速 OCR（RapidOCR）"
-    assert rapid.text(1) == "可用"
-    assert rapid.text(2) == ""
-    paddle = group.child(2)
-    assert paddle.text(0) == "通用 OCR（PaddleOCR）"
-    assert paddle.text(1) == "需准备组件"
-    assert "mineru-cpu" in paddle.text(2)
-    assert "component_missing" in paddle.text(2)
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    assert tree.topLevelItemCount() == 1
-    assert tree.topLevelItem(0).text(0).startswith("MinerU 文档解析")
-    # Runtime 组件状态尚未回填时显示"未知"，不能恒显"未安装"
-    assert tree.topLevelItem(0).text(1) == "— 未知"
-    assert tree.isEnabled()
+    assert controller._selection_catalog is not None
+    assert controller._selection_load_error is None
 
     combo = host.findChild(QComboBox, "comboDownloadSource_package_index")
     assert combo is not None
@@ -307,52 +284,6 @@ def test_health_catalog_renders_engines_features_and_sources(
     ]
     assert combo.currentData() is None
     assert controller._resolve_download_source_ids() is None
-
-
-def test_engine_availability_tree_headers_and_placeholder(
-    selection_controller,
-) -> None:
-    """列宽自适应 + 目录未到达时的占位行，避免文字截断与空树误读。"""
-
-    controller, host, _adapter, _config, _manager = selection_controller
-
-    tree = host.findChild(QTreeWidget, "treeEngineAvailability")
-    assert tree is not None
-    header = tree.header()
-    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
-    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.ResizeToContents
-    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Stretch
-    assert tree.minimumHeight() >= 300
-
-    # catalog 到达前树不能是空的：显示一行占位，避免被误读为没有识别能力。
-    assert tree.topLevelItemCount() == 1
-    assert tree.topLevelItem(0).text(0) == "等待 Backend 识别能力目录…"
-
-    controller._on_health_loaded(_health_payload())
-    assert tree.topLevelItem(0).text(0) != "等待 Backend 识别能力目录…"
-
-
-def test_offline_features_reflect_runtime_component_states(
-    selection_controller,
-) -> None:
-    """可选能力状态列来自 Runtime 组件 actual_state，而不是恒显未安装。"""
-    controller, host, _adapter, _config, _manager = selection_controller
-    controller._on_health_loaded(_health_payload())
-
-    controller._runtime_component_states = {"mineru-cpu": "ready"}
-    controller._render_offline_features()
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    assert tree.topLevelItem(0).text(1) == "✓ 已安装"
-
-    controller._runtime_component_states = {"mineru-cpu": "missing"}
-    controller._render_offline_features()
-    assert tree.topLevelItem(0).text(1) == "✗ 未安装"
-
-    controller._runtime_component_states = {
-        "mineru-cpu": "not_required"
-    }
-    controller._render_offline_features()
-    assert tree.topLevelItem(0).text(1) == "未随当前配置安装"
 
 
 def test_supervisor_ready_requests_recognition_catalog(
@@ -396,14 +327,17 @@ def test_save_download_sources_puts_backend_settings_snapshot(
     assert "download_source_ids" not in SettingsSnapshot().to_payload()
 
 
-def test_install_offline_features_maps_intent_after_confirmation(
+def test_apply_portable_maps_intent_after_confirmation(
     selection_controller,
 ) -> None:
-    controller, host, _adapter, config, _manager = selection_controller
+    """便携形态：应用请求按设备解析组件并经 Installer 流程安装。"""
+    controller, _host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: None,
+        set_change_in_progress=MagicMock(),
+    )
 
     controller._on_health_loaded(_health_payload())
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
 
     captured: dict[str, object] = {}
 
@@ -416,12 +350,10 @@ def test_install_offline_features_maps_intent_after_confirmation(
         "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
         return_value=QMessageBox.StandardButton.Yes,
     ) as question:
-        controller._on_install_offline_features()
+        controller._on_runtime_change_requested("cpu", ["mineru"])
 
     assert question.called
-    config.set_offline_component_features.assert_called_once_with(
-        "cpu", ["mineru"]
-    )
+    config.set_offline_component_features.assert_called_once_with("cpu", ["mineru"])
     assert captured["install_component_ids"] == ("mineru-cpu",)
     # 基础 Runtime 状态：即使目录只有 CPU 变体也按切换完整 profile 处理。
     assert captured["force_backend"] == "cpu"
@@ -429,16 +361,18 @@ def test_install_offline_features_maps_intent_after_confirmation(
     assert captured["download_source_ids"] is None
 
 
-def test_install_offline_features_asks_accelerator_when_gpu_variant_exists(
+def test_apply_portable_resolves_gpu_component_for_gpu_device(
     selection_controller,
 ) -> None:
-    """目录同时声明 CPU/GPU 组件时，安装前必须询问推理后端并按选择解析。"""
+    """设备由应用请求显式给出：GPU 设备解析 CUDA 组件并切换 GPU profile。"""
 
-    controller, host, _adapter, config, _manager = selection_controller
+    controller, _host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: None,
+        set_change_in_progress=MagicMock(),
+    )
 
     controller._on_health_loaded(_health_payload(with_gpu_variant=True))
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
 
     captured: dict[str, object] = {}
 
@@ -447,22 +381,12 @@ def test_install_offline_features_asks_accelerator_when_gpu_variant_exists(
 
     controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
 
-    def _pick_gpu(self) -> object:
-        return next(
-            button for button in self.buttons() if "GPU" in button.text()
-        )
-
-    with (
-        patch.object(QMessageBox, "exec", lambda self: 0),
-        patch.object(QMessageBox, "clickedButton", _pick_gpu),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
-            return_value=QMessageBox.StandardButton.Yes,
-        ) as question,
+    with patch(
+        "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+        return_value=QMessageBox.StandardButton.Yes,
     ):
-        controller._on_install_offline_features()
+        controller._on_runtime_change_requested("gpu", ["mineru"])
 
-    assert question.called
     config.set_offline_component_features.assert_called_once_with(
         "nvidia_cuda", ["mineru"]
     )
@@ -471,17 +395,18 @@ def test_install_offline_features_asks_accelerator_when_gpu_variant_exists(
     assert captured["force_backend"] == "gpu"
 
 
-def test_install_offline_features_skips_question_when_backend_selected(
+def test_apply_portable_skips_backend_switch_when_already_on_device(
     selection_controller,
 ) -> None:
-    """已选定 CPU/GPU 完整 profile 时直接沿用当前后端，不再弹询问。"""
+    """已选定 CPU/GPU 完整 profile 时不再重复切换。"""
 
-    controller, host, _adapter, config, _manager = selection_controller
-    controller._backend_options = MagicMock(current_backend=lambda: "cpu")
+    controller, _host, _adapter, _config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: "cpu",
+        set_change_in_progress=MagicMock(),
+    )
 
     controller._on_health_loaded(_health_payload(with_gpu_variant=True))
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
 
     captured: dict[str, object] = {}
 
@@ -490,64 +415,59 @@ def test_install_offline_features_skips_question_when_backend_selected(
 
     controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
 
-    with (
-        patch.object(QMessageBox, "exec", side_effect=AssertionError("不应询问")),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
-            return_value=QMessageBox.StandardButton.Yes,
-        ) as question,
+    with patch(
+        "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+        return_value=QMessageBox.StandardButton.Yes,
     ):
-        controller._on_install_offline_features()
+        controller._on_runtime_change_requested("cpu", ["mineru"])
 
-    assert question.called
-    config.set_offline_component_features.assert_called_once_with(
-        "cpu", ["mineru"]
-    )
     assert captured["install_component_ids"] == ("mineru-cpu",)
-    # 已在后端上，无需切换。
+    # 已在该设备上，无需切换。
     assert captured["force_backend"] is None
 
 
-def test_install_offline_features_accelerator_cancel_aborts(
+def test_apply_portable_empty_engines_requests_base_only(
     selection_controller,
 ) -> None:
-    """后端选择对话框取消时不进入安装流程，也不落盘安装意图。"""
-
-    controller, host, _adapter, config, _manager = selection_controller
-
-    controller._on_health_loaded(_health_payload(with_gpu_variant=True))
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
-
-    started: list[str] = []
-
-    def _fail(**kwargs) -> None:
-        started.append("must-not-run")
-
-    controller._show_install_dialog = _fail  # type: ignore[method-assign]
-
-    with (
-        patch.object(QMessageBox, "exec", lambda self: 1),
-        patch.object(QMessageBox, "clickedButton", lambda self: None),
-        patch(
-            "vibeocr.classic.views.settings_page_controller.QMessageBox.question"
-        ) as question,
-    ):
-        controller._on_install_offline_features()
-
-    assert not question.called
-    assert started == []
-    config.set_offline_component_features.assert_not_called()
-
-
-def test_install_offline_features_declined_does_not_install(
-    selection_controller,
-) -> None:
-    controller, host, _adapter, config, _manager = selection_controller
+    """便携形态取消全部引擎：空闭包 () 表示仅基础 Runtime，可卸载可选组件。"""
+    controller, _host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: "cpu",
+        set_change_in_progress=MagicMock(),
+    )
 
     controller._on_health_loaded(_health_payload())
-    tree = host.findChild(QTreeWidget, "treeOfflineFeatures")
-    tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    captured: dict[str, object] = {}
+
+    def _fake_show_install_dialog(**kwargs) -> None:
+        captured.update(kwargs)
+
+    controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
+
+    with patch(
+        "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+        return_value=QMessageBox.StandardButton.Yes,
+    ):
+        controller._on_runtime_change_requested("cpu", [])
+
+    # () 是协议的“仅基础 Runtime”；None 会退回 Backend 默认范围卸不掉组件。
+    assert captured["install_component_ids"] == ()
+    # 已在 CPU 设备上，无需切换。
+    assert captured["force_backend"] is None
+    config.set_offline_component_features.assert_called_once_with("cpu", [])
+
+
+def test_apply_portable_declined_does_not_install(
+    selection_controller,
+) -> None:
+    controller, _host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: None,
+        set_change_in_progress=MagicMock(),
+    )
+
+    controller._on_health_loaded(_health_payload())
 
     started: list[str] = []
 
@@ -560,7 +480,7 @@ def test_install_offline_features_declined_does_not_install(
         "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
         return_value=QMessageBox.StandardButton.No,
     ):
-        controller._on_install_offline_features()
+        controller._on_runtime_change_requested("cpu", ["mineru"])
 
     assert started == []
     config.set_offline_component_features.assert_not_called()

@@ -1,11 +1,17 @@
-"""设置页重装入口测试"""
+"""设置页运行环境应用入口测试（便携 / 子进程形态）
+
+融合形态（uv 引擎环境）的入口在 tests/views/test_engine_env_flow.py；
+此处覆盖旧安装器（Runtime Installer）形态：
+- 设备/引擎应用请求先确认，再经可见安装对话框执行，不静默变更；
+- 未安装 Runtime 时不得把本机无 GPU 推断为 CPU 后端。
+"""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QLabel, QTreeWidget, QWidget
+from PySide6.QtWidgets import QWidget
 
 from vibeocr.classic.ui.ui_main_window import Ui_MainWindowWidget
 from vibeocr.classic.mineru_connection import (
@@ -14,7 +20,6 @@ from vibeocr.classic.mineru_connection import (
 )
 from vibeocr.classic.runtime_installation import RuntimeComponentDescriptor
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
-from vibeocr.runtime_contracts import parse_runtime_status
 
 
 class _ImmediateInvalidationEmitter(QObject):
@@ -40,7 +45,6 @@ def controller(qtbot, tmp_path, monkeypatch):
     """构造带真实 UI 的 SettingsPageController
 
     本文件覆盖旧安装器（Runtime Installer）流程；统一置于子进程形态。
-    融合形态（uv 引擎环境）的入口在 tests/views/test_engine_env_flow.py。
     """
     monkeypatch.setenv("VIBEOCR_SUPERVISOR_SUBPROCESS", "1")
     host = QWidget()
@@ -49,10 +53,11 @@ def controller(qtbot, tmp_path, monkeypatch):
     ui.setupUi(host)
 
     with (
-        # 本文件测试依赖表/按钮，GPU worker 由组件专项测试覆盖。
-        # 禁用真线程，避免 with 退出恢复 mock 时 worker 仍跨用例运行。
+        # GPU worker 由组件专项测试覆盖。禁用真线程，避免 with 退出恢复
+        # mock 时 worker 仍跨用例运行。
         patch(
-            "vibeocr.classic.widgets.backend_options_widget.BackendOptionsWidget._start_gpu_detection"
+            "vibeocr.classic.widgets.runtime_environment_widget."
+            "RuntimeEnvironmentWidget._start_gpu_detection"
         ),
         # _init_settings_page 读 ConfigManager / machine_cache / pipelines
         patch(
@@ -105,374 +110,49 @@ def controller(qtbot, tmp_path, monkeypatch):
     set_active_mineru_connection_mode(MINERU_CONNECTION_MODE_LOCAL)
 
 
-def test_reinstall_python_button_exists(controller):
-    """重装 Python 按钮应在 UI 中可找到"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QPushButton
-
-    btn = host.findChild(QPushButton, "btnReinstallPython")
-    assert btn is not None, "btnReinstallPython 应存在"
-
-
-def test_click_reinstall_python_confirms_then_opens_dialog(controller, monkeypatch):
-    """完整修复先预览，确认执行前不停止服务。"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QMessageBox, QPushButton
-
-    # tmp_path 无 python/ → 按钮被禁用；测试模拟 portable 场景启用按钮
-    btn = host.findChild(QPushButton, "btnReinstallPython")
-    btn.setEnabled(True)
-
-    # 模拟用户点"是"
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
-    )
-    # mock BackendChoiceDialog 避免真弹窗
-    instances = []
-
-    class FakeDialog:
-        def __init__(self, *args, **kwargs):
-            instances.append(kwargs)
-            self.reinstall_python = kwargs.get("reinstall_python", False)
-
-        def exec(self):
-            return 1
-
-        def show(self):
-            pass
-
-        finished = MagicMock()
-        install_completed = MagicMock()
-        install_succeeded = MagicMock()
-
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
-    )
-
-    btn.click()
-
-    assert len(instances) == 1, "应弹出一次对话框"
-    assert instances[0].get("missing_only") is True
-    _ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
-
-
-def test_click_reinstall_python_cancel_does_nothing(controller, monkeypatch):
-    """点重装 Python：确认 No 后不应弹对话框"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QMessageBox, QPushButton
-
-    btn = host.findChild(QPushButton, "btnReinstallPython")
-    btn.setEnabled(True)
-
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.No
-    )
-    opened = []
-    monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.BackendChoiceDialog",
-        lambda *a, **kw: opened.append(kw),
-    )
-
-    btn.click()
-
-    assert len(opened) == 0, "取消时不应弹对话框"
-
-
-def test_click_reinstall_deps_opens_dialog_without_reinstall(controller, monkeypatch):
-    """点重装 OCR 依赖：应弹 BackendChoiceDialog(reinstall_python=False)"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QMessageBox, QPushButton
-
-    btn = host.findChild(QPushButton, "btnReinstallDeps")
-    btn.setEnabled(True)
-
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
-    )
-    instances = []
-
-    class FakeDialog:
-        def __init__(self, *args, **kwargs):
-            instances.append(kwargs)
-
-        def exec(self):
-            return 1
-
-        def show(self):
-            pass
-
-        finished = MagicMock()
-        install_completed = MagicMock()
-        install_succeeded = MagicMock()
-
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
-    )
-
-    btn.click()
-
-    assert len(instances) == 1
-    assert instances[0].get("install_component_ids") is None
-    assert instances[0].get("force_backend") is None
-    _ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
-
-
-def test_runtime_maintenance_buttons_enabled_for_bound_product(controller, qtbot):
-    """产品有 component-lock 时维护按钮映射到 ensure/repair。"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QPushButton
-
-    controller[0]._refresh_env_maintenance_state()
-
-    btn_py = host.findChild(QPushButton, "btnReinstallPython")
-    btn_deps = host.findChild(QPushButton, "btnReinstallDeps")
-    qtbot.waitUntil(btn_py.isEnabled, timeout=3000)
-    assert btn_deps.isEnabled()
-
-
-def test_env_status_label_shows_runtime_binding(controller, qtbot):
-    """Runtime 状态表逐项显示加速方案、Backend 版本与 manifest 摘要。"""
-    _ctrl, host = controller
-
-    controller[0]._refresh_env_maintenance_state()
-
-    label = host.findChild(QLabel, "labelEnvStatus")
-    tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
-    # connect_signals 已触发一次刷新；等待最近一次刷新完成（label 离开
-    # "正在验证"态），再读取状态表，避免读到上一次的结果。
-    qtbot.waitUntil(lambda: label.text().startswith("Runtime："), timeout=3000)
-    rows = {
-        tree.topLevelItem(index).text(0): tree.topLevelItem(index).text(1)
-        for index in range(tree.topLevelItemCount())
-    }
-    assert rows["Runtime"] == "已验证"
-    assert rows["加速方案"] == "CPU"
-    assert rows["推理 profile"] == "win-x64-cpu"
-    assert rows["Backend"] == "0.7.0"
-    assert rows["Python"] == "3.13.12"
-    assert rows["Protocol"] == "2.1.0"
-    assert rows["Manifest"] == "a" * 12
-    # labelEnvStatus 只承载一行摘要；逐项数值在状态表内。
-    assert label.text() == "Runtime：已验证 · 服务：未连接"
-
-
-def test_install_missing_button_exists(controller):
-    """补充安装缺失依赖按钮应在 UI 中可找到"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QPushButton
-
-    btn = host.findChild(QPushButton, "btnInstallMissing")
-    assert btn is not None, "btnInstallMissing 应存在"
-
-
-def test_deps_status_tree_exists(controller):
-    """依赖状态树（QTreeWidget）应在 UI 中可找到"""
-    _ctrl, host = controller
-
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    assert tree is not None, "treeDepsStatus 应存在"
-
-
-def test_backend_row_expands_functional_dependency_groups(controller):
-    """Backend 下方应展示 manifest 发布的功能分组，而非逐包解析。"""
-    _ctrl, host = controller
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    assert tree is not None
-    backend = tree.topLevelItem(1)
-    assert backend.text(0) == "Backend Supervisor"
-    assert backend.childCount() == 2
-    assert [backend.child(index).text(0) for index in range(2)] == [
-        "OCR engine",
-        "Document parsing",
-    ]
-    assert backend.child(0).text(2) == "3.7.0"
-
-
-def test_installer_inspection_preserves_component_actual_drift_before_http_ready(
-    controller,
-) -> None:
-    ctrl, host = controller
-    inspection = ctrl._runtime_installer.inspect.return_value
-    inspection.ready = False
-    inspection.integrity = "not-installed"
-    inspection.components = (
-        RuntimeComponentDescriptor(
-            "ocr_engine",
-            "OCR engine",
-            "3.7.0",
-            desired_state="ready",
-            desired_version="3.7.0",
-            actual_state="drifted",
-            actual_version="3.6.0",
-            drift_reason="version_mismatch",
-            repairable=True,
-        ),
-    )
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-
-    ctrl._populate_deps_tree(tree, {"inspection": inspection})
-
-    component = tree.topLevelItem(1).child(0)
-    assert component.text(1) == "⚠ 已漂移 · 版本不一致"
-    assert component.text(2) == "3.6.0"
-
-
-def test_http_runtime_status_overrides_component_state(controller):
-    ctrl, host = controller
-    inspection = ctrl._runtime_installer.inspect.return_value
-    status = parse_runtime_status(
-        {
-            "schema_version": 2,
-            "instance_id": "runtime-1",
-            "service_state": "maintenance",
-            "backend_version": "0.9.0",
-            "source": {
-                "backend_version": "0.9.0",
-                "backend_source_sha": "a" * 40,
-                "runtime_manifest_sha256": "b" * 64,
-                "protocol_version": "2.3.0",
-                "protocol_manifest_sha256": "c" * 64,
-            },
-            "profile": {
-                "profile_id": "win-x64-cpu",
-                "accelerator": "cpu",
-                "components": [
-                    {
-                        "component_id": "ocr_engine",
-                        "display_name": "OCR engine",
-                        "state": "installing",
-                        "version": "3.7.0",
-                        "desired_state": "ready",
-                        "desired_version": "3.7.0",
-                        "actual_state": "missing",
-                        "actual_version": None,
-                        "drift_reason": "missing",
-                        "repairable": True,
-                    }
-                ],
-            },
-            "maintenance": {
-                "operation_id": "op-1",
-                "sequence": 4,
-                "operation": "repair",
-                "operation_state": "running",
-                "phase": "install_profile",
-                "profile_id": "win-x64-cpu",
-                "component_id": "ocr_engine",
-                "updated_at": "2026-08-05T00:00:00Z",
-            },
-        }
-    )
-    ctrl._env_refresh_generation += 1
-
-    ctrl._apply_env_maintenance_state(
-        ctrl._env_refresh_generation,
-        {"mode": "portable", "inspection": inspection, "runtime_status": status},
-    )
-
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    assert tree.topLevelItem(1).child(0).text(1) == "… 安装中 · 缺失"
-    status_tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
-    rows = {
-        status_tree.topLevelItem(index).text(0): status_tree.topLevelItem(index).text(1)
-        for index in range(status_tree.topLevelItemCount())
-    }
-    assert rows["服务"] == "维护中"
-    assert rows["Source SHA"] == "a" * 12
-    assert rows["Runtime manifest"] == "b" * 12
-    assert rows["Protocol manifest"] == "c" * 12
-    assert rows["维护"] == "install_profile · running"
-
-
-def test_reinstall_selected_button_exists(controller):
-    """旧按钮保留为整个 Runtime 修复入口。"""
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QPushButton
-
-    btn = host.findChild(QPushButton, "btnReinstallSelected")
-    assert btn is not None, "btnReinstallSelected 应存在"
-    assert btn.isEnabled()
-    assert "修复 Runtime" in btn.text()
-
-
-def test_click_install_missing_opens_dialog_with_missing_only(controller, monkeypatch):
-    """点补充安装缺失依赖：走当前后端，弹 InstallDialog(missing_only=True)
-
-    回归（问题4）：补装不再二次提示选择 GPU/CPU（旧逻辑弹 BackendChoiceDialog）。
-    改为读取 Installer 已验证的当前后端，用 InstallDialog 跑增量补装。
-    """
-    _ctrl, host = controller
-    from PySide6.QtWidgets import QMessageBox, QPushButton
-
-    btn = host.findChild(QPushButton, "btnInstallMissing")
-    btn.setEnabled(True)
-
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
-    )
-    instances = []
-
-    class FakeDialog:
-        def __init__(self, *args, **kwargs):
-            instances.append(kwargs)
-
-        def show(self):
-            pass
-
-        finished = MagicMock()
-        install_completed = MagicMock()
-        install_succeeded = MagicMock()
-
-    # 补装现在走 InstallDialog（非 BackendChoiceDialog），用当前后端
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
-    )
-    controller[0]._backend_options.current_backend = MagicMock(return_value="cpu")
-
-    btn.click()
-
-    assert len(instances) == 1, f"应打开一个 InstallDialog，实际: {instances}"
-    assert instances[0].get("missing_only") is True, "应为 missing_only 模式"
-    assert instances[0].get("force_backend") == "cpu", (
-        f"应用当前后端 cpu，实际: {instances[0].get('force_backend')}"
-    )
-
-
-def test_backend_change_opens_preview_without_stopping_service(controller, monkeypatch):
+def test_device_only_apply_declined_does_not_stop_service(controller, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
     ctrl, _host = controller
     options = MagicMock()
+    options.current_backend.return_value = None
     ctrl._backend_options = options
-    open_install = MagicMock()
-    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    show_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_show_install_dialog", show_install)
     monkeypatch.setattr(
         QMessageBox,
         "question",
         lambda *args, **kwargs: QMessageBox.StandardButton.No,
     )
 
-    ctrl._on_backend_change_requested("gpu")
+    ctrl._on_runtime_change_requested("gpu", [])
 
-    open_install.assert_called_once_with(force_backend="gpu")
+    show_install.assert_not_called()
     ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
+    options.set_change_in_progress.assert_called_once_with(False)
 
 
-def test_backend_change_confirmation_opens_visible_install(controller, monkeypatch):
+def test_device_only_apply_confirmed_requests_base_only_closure(
+    controller, monkeypatch
+):
+    """无引擎申请 = 仅基础 Runtime 闭包（()），按需切换设备。"""
     from PySide6.QtWidgets import QMessageBox
 
     ctrl, _host = controller
-    open_install = MagicMock()
-    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    options = MagicMock()
+    options.current_backend.return_value = None
+    ctrl._backend_options = options
+    show_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_show_install_dialog", show_install)
     monkeypatch.setattr(
         QMessageBox,
         "question",
         lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
     )
 
-    ctrl._on_backend_change_requested("gpu")
+    ctrl._on_runtime_change_requested("gpu", [])
 
-    open_install.assert_called_once_with(force_backend="gpu")
+    show_install.assert_called_once_with(install_component_ids=(), force_backend="gpu")
 
 
 def test_uninstalled_runtime_is_not_inferred_as_cpu(controller):
@@ -485,247 +165,11 @@ def test_uninstalled_runtime_is_not_inferred_as_cpu(controller):
     assert ctrl._runtime_backend_or_none() is None
 
 
-def test_refresh_fills_bound_runtime_components(controller, qtbot):
-    """设置页展示用户可理解的绑定组件，而非只显示 accelerator。"""
-    ctrl, host = controller
+def test_invalid_runtime_change_target_releases_widget(controller):
+    ctrl, _host = controller
+    options = MagicMock()
+    ctrl._backend_options = options
 
-    ctrl._refresh_env_maintenance_state()
+    ctrl._on_runtime_change_requested("tpu", ["paddle"])
 
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    assert tree is not None
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
-    rows = {
-        tree.topLevelItem(index).text(0): (
-            tree.topLevelItem(index).text(1),
-            tree.topLevelItem(index).text(2),
-        )
-        for index in range(tree.topLevelItemCount())
-    }
-    assert rows == {
-        "Python 运行时": ("✓ 已验证", "3.13.12"),
-        "Backend Supervisor": ("✓ 已验证", "0.7.0"),
-        "Protocol": ("✓ 已绑定", "2.1.0"),
-        "推理 profile · CPU": ("✓ 已选择", "win-x64-cpu"),
-    }
-
-
-def test_base_only_runtime_is_not_reported_as_cpu_profile(controller):
-    """仅基础 Runtime 不能显示为"已选择 CPU 框架"。
-
-    profile id 是单一事实来源：win-x64-base 即基础闭包，即使 Host 回报
-    accelerator="cpu" 也不算选择了 CPU 框架。
-    """
-    ctrl, host = controller
-
-    inspection = ctrl._runtime_installer.inspect.return_value
-    inspection.accelerator = "cpu"
-    inspection.profile = "win-x64-base"
-    inspection.components = (
-        RuntimeComponentDescriptor(
-            "rapidocr-base", "快速 OCR", "3.7.0", desired_state="ready"
-        ),
-        RuntimeComponentDescriptor(
-            "paddleocr-cpu",
-            "PaddleOCR（CPU）",
-            None,
-            desired_state="not_required",
-        ),
-        RuntimeComponentDescriptor(
-            "mineru-cpu", "MinerU（CPU）", None, desired_state="not_required"
-        ),
-    )
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-
-    ctrl._populate_deps_tree(tree, {"inspection": inspection})
-
-    profile_row = tree.topLevelItem(tree.topLevelItemCount() - 1)
-    assert profile_row.text(0) == "推理 profile"
-    assert profile_row.text(1) == "未选择（仅基础 Runtime）"
-    assert profile_row.text(2) == "—"
-
-
-def test_runtime_tree_uses_installer_inspect(controller, qtbot):
-    ctrl, host = controller
-    ctrl._refresh_env_maintenance_state()
-    qtbot.waitUntil(
-        lambda: host.findChild(QTreeWidget, "treeDepsStatus").topLevelItemCount() == 4,
-        timeout=3000,
-    )
-    assert ctrl._runtime_installer.inspect.call_count >= 1
-
-
-def test_runtime_tree_exposes_only_backend_functional_groups(controller, qtbot):
-    ctrl, host = controller
-
-    ctrl._refresh_env_maintenance_state()
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
-    assert tree.topLevelItem(0).childCount() == 0
-    assert tree.topLevelItem(1).childCount() == 2
-    assert tree.topLevelItem(2).childCount() == 0
-    assert tree.topLevelItem(3).childCount() == 0
-    assert all(
-        "paddle" not in tree.topLevelItem(1).child(index).text(0).lower()
-        for index in range(tree.topLevelItem(1).childCount())
-    )
-
-
-def test_click_reinstall_selected_repairs_whole_profile(controller, monkeypatch, qtbot):
-    """兼容按钮请求完整 profile repair，不传真实包名。"""
-    ctrl, host = controller
-    from PySide6.QtWidgets import QMessageBox, QPushButton, QTreeWidget
-
-    ctrl._refresh_env_maintenance_state()
-
-    tree = host.findChild(QTreeWidget, "treeDepsStatus")
-    qtbot.waitUntil(lambda: tree.topLevelItemCount() == 4, timeout=3000)
-
-    monkeypatch.setattr(
-        QMessageBox, "question", lambda *a, **kw: QMessageBox.StandardButton.Yes
-    )
-    instances = []
-
-    class FakeDialog:
-        def __init__(self, *args, **kwargs):
-            instances.append(kwargs)
-
-        def show(self):
-            pass
-
-        finished = MagicMock()
-        install_completed = MagicMock()
-        install_succeeded = MagicMock()
-
-    monkeypatch.setattr(
-        "vibeocr.classic.widgets.install_dialog.InstallDialog", FakeDialog
-    )
-
-    btn = host.findChild(QPushButton, "btnReinstallSelected")
-    btn.click()
-
-    assert len(instances) == 1
-    assert instances[0].get("packages") == ["runtime-profile"]
-
-
-def test_ready_environment_keeps_failed_installation_outcome(controller):
-    from uuid import uuid4
-    from vibeocr.classic.runtime_maintenance import InstallationRecord
-
-    ctrl, host = controller
-    record = InstallationRecord(
-        str(uuid4()),
-        9,
-        "failed",
-        "gpu-plan",
-        ("paddleocr-cuda",),
-        "download_failed",
-        "check_network",
-    )
-    record.save(ctrl._project_root)
-    inspection = ctrl._runtime_installer.inspect.return_value
-    status = SimpleNamespace(
-        service_state=SimpleNamespace(value="ready"),
-        maintenance=None,
-        profile=SimpleNamespace(components=()),
-    )
-    ctrl._apply_env_maintenance_state(
-        ctrl._env_refresh_generation,
-        {"mode": "portable", "inspection": inspection, "runtime_status": status},
-    )
-    text = host.findChild(QLabel, "labelEnvStatus").text()
-    assert "服务：已就绪" in text
-    assert "本次安装：失败" in text
-    assert "download_failed" in text and "check_network" in text
-    assert InstallationRecord.read(ctrl._project_root) == record
-
-
-def _ready_runtime_status_payload() -> dict:
-    """Supervisor 已就绪时的最小 getRuntimeStatus 载荷。"""
-    return {
-        "schema_version": 2,
-        "instance_id": "runtime-ready-1",
-        "service_state": "ready",
-        "backend_version": "0.14.0",
-        "profile": {
-            "profile_id": "win-x64-cpu",
-            "accelerator": "cpu",
-            "components": [],
-        },
-        "maintenance": {
-            "operation_id": "op-ready-1",
-            "sequence": 1,
-            "operation": "ensure",
-            "operation_state": "succeeded",
-            "phase": "commit_runtime",
-            "profile_id": "win-x64-cpu",
-            "updated_at": "2026-09-24T00:00:00Z",
-        },
-    }
-
-
-class _StartedRuntimeAdapter(QObject):
-    """Supervisor 已就绪的最小 adapter：环境刷新只用到这些成员。"""
-
-    residency_status = Signal(object)
-    residency_error = Signal(str)
-    settings_updated = Signal(object)
-    settings_loaded = Signal(object)
-    settings_error = Signal(str)
-    health_loaded = Signal(object)
-    health_error = Signal(str)
-    preload_completed = Signal(object)
-    preload_error = Signal(str)
-
-    def __init__(self, status_payload: dict) -> None:
-        super().__init__()
-        self.is_started = True
-        self.runtime_status_client = SimpleNamespace(
-            request_json=lambda _method: dict(status_payload)
-        )
-        self.fetch_health_calls = 0
-
-    def fetch_health(self) -> None:
-        self.fetch_health_calls += 1
-
-    def fetch_settings(self) -> None:
-        return None
-
-    def refresh_residency(self) -> None:
-        return None
-
-
-def test_supervisor_ready_refreshes_env_service_row(controller, qtbot, monkeypatch):
-    """Supervisor ready 后设置页服务行应离开启动前的“未连接”旧快照。
-
-    回归：connect_signals 在 Supervisor 启动前刷新环境状态，服务行固定
-    “未连接”；on_supervisor_ready 此前只刷新驻留/预加载，不重刷环境维护
-    快照，导致状态栏“Supervisor 已连接”与设置服务表“未连接”长期不同步
-    （backend#99 2026-09-24 Classic GUI 截图实测）。
-    """
-    ctrl, host = controller
-    label = host.findChild(QLabel, "labelEnvStatus")
-    qtbot.waitUntil(lambda: label.text().startswith("Runtime："), timeout=3000)
-    assert label.text().endswith("服务：未连接")
-
-    adapter = _StartedRuntimeAdapter(_ready_runtime_status_payload())
-    monkeypatch.setattr(
-        "vibeocr.classic.views.settings_page_controller.get_supervisor_adapter",
-        lambda: adapter,
-    )
-    config = MagicMock()
-    config.get_preload_enabled.return_value = False
-    config_class = MagicMock()
-    config_class.instance.return_value = config
-    monkeypatch.setattr(
-        "vibeocr.classic.managers.config_manager.ConfigManager", config_class
-    )
-
-    ctrl.on_supervisor_ready()
-
-    qtbot.waitUntil(lambda: label.text().endswith("服务：已就绪"), timeout=3000)
-    tree = host.findChild(QTreeWidget, "treeRuntimeStatus")
-    rows = {
-        tree.topLevelItem(index).text(0): tree.topLevelItem(index).text(1)
-        for index in range(tree.topLevelItemCount())
-    }
-    assert rows["服务"] == "已就绪"
+    options.set_change_in_progress.assert_called_once_with(False)

@@ -11,13 +11,11 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThreadPool, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -28,8 +26,6 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -49,21 +45,14 @@ from vibeocr.classic.pyside.supervisor_adapter import get_supervisor_adapter
 from vibeocr.classic.runtime_installation import RuntimeInstallerClient
 from vibeocr.classic.runtime_selection import (
     DOWNLOAD_SOURCES_CAPABILITY,
-    ENGINE_AVAILABILITY_LABELS,
     ENGINE_AVAILABILITY_READY,
     MINERU_REMOTE_API_CAPABILITY,
     RuntimeSelectionCatalog,
     RuntimeSelectionError,
-    migrate_legacy_feature_ids,
     parse_capability_catalogs,
 )
-from vibeocr.classic.runtime_status_messages import (
-    accelerator_display,
-    accelerator_framework,
-    cuda_requirement_label,
-)
+from vibeocr.classic.runtime_status_messages import accelerator_display
 from vibeocr.classic.views.background_tasks import FunctionTask
-from vibeocr.classic.widgets.backend_choice_dialog import BackendChoiceDialog
 from vibeocr.runtime_contracts import (
     PipelineSpec,
     ResidencyKind,
@@ -78,10 +67,6 @@ except ImportError:  # Protocol 2.0/2.1 compatibility: HTTP status arrived in 2.
 
 logger = logging.getLogger(__name__)
 
-# 高级 OCR 框架组件 id 前缀（paddleocr-*/mineru-*）。win-x64-base 闭包不包含
-# 它们；快照误报 missing 时按"未随当前配置安装"展示，不显示"缺失"。
-_ADVANCED_OCR_PREFIXES = ("paddleocr-", "mineru-")
-
 # MinerU 每管道 TTL 提示：本地模式是进程保活；远程模式必须明确本地
 # TTL/释放不影响远端服务，避免把本地驻留控制误读为管理远程资源。
 _MINERU_LOCAL_TTL_TIP = (
@@ -92,6 +77,13 @@ _MINERU_REMOTE_TTL_TIP = (
     "当前使用远程 MinerU API：这里的驻留 TTL 与释放只作用于本地，"
     "不管理远程服务；远程资源由自部署服务自行控制。"
 )
+
+# 运行环境选择组件的引擎家族 id → 旧子进程形态的能力 feature id 与展示名。
+_ENGINE_FEATURE_IDS = {"paddle": "paddleocr", "mineru": "mineru"}
+_ENGINE_DISPLAY_NAMES = {
+    "paddleocr": "PaddleOCR 引擎",
+    "mineru": "MinerU 文档解析",
+}
 
 # QRunnable 运行期间的进程级强引用。窗口可先于慢 WMIC/PowerShell/RPC 完成销毁；
 # 保留 wrapper 到结果回调，避免 Qt 线程池仍持有 C++ runnable 时 Python 对象被回收。
@@ -143,8 +135,8 @@ class SettingsPageController:
         self._runtime_installer = runtime_installer_client or RuntimeInstallerClient(
             project_root
         )
-        # 设置页重装/补装依赖成功后的联动回调（由 MainWindow 提供）。
-        # 回归（Bug A）：旧逻辑设置页 BackendChoiceDialog 只连 finished 刷新表格，
+        # 设置页安装/切换成功后的联动回调（由 MainWindow 提供）。
+        # 回归（Bug A）：旧逻辑设置页安装对话框只连 finished 刷新界面，
         # 没联动 MainWindow._ocr_ready / 子进程 Worker，导致装完仍提示"未就绪"。
         # 现由 MainWindow 传入一个触发 dependency_manager.check_dependencies
         # 的回调，使设置页安装成功后与首启路径行为一致（检测完成回调里自动
@@ -169,10 +161,6 @@ class SettingsPageController:
         self._runtime_settings_snapshot: SettingsSnapshot | None = None
         self._selection_catalog: RuntimeSelectionCatalog | None = None
         self._selection_load_error: str | None = None
-        self._selection_accelerator: str | None = None
-        # component_id → actual_state；由 Runtime 状态快照回填，供可选能力树
-        # 显示真实安装状态（而不是恒显"未安装"）。
-        self._runtime_component_states: dict[str, str] = {}
         self._runtime_capabilities: set[str] = set()
         # MinerU 连接状态：能力目录未达前 fail closed；existing 为 settings
         # 回读的规范化视图（api_key 仅用于保留旧值，永不回显/入日志）。
@@ -345,42 +333,6 @@ class SettingsPageController:
         btn_release_all = self._ui.findChild(QPushButton, "btnReleaseAll")
         if btn_release_all:
             btn_release_all.clicked.connect(self._on_release_all_clicked)
-
-        # --- 环境维护：重装 Python 运行时 / 重装 OCR 依赖 / 补充安装缺失依赖 ---
-        btn_reinstall_python = self._ui.findChild(QPushButton, "btnReinstallPython")
-        if btn_reinstall_python:
-            btn_reinstall_python.setText("修复运行环境")
-            btn_reinstall_python.setToolTip(
-                "检查已安装组件，仅修复损坏的已有闭包，不补装未选择的引擎。"
-            )
-            btn_reinstall_python.clicked.connect(self._on_reinstall_python)
-
-        btn_reinstall_deps = self._ui.findChild(QPushButton, "btnReinstallDeps")
-        if btn_reinstall_deps:
-            btn_reinstall_deps.setText("安装或调整运行环境")
-            btn_reinstall_deps.setToolTip(
-                "选择 CPU/GPU 运行环境；确认后通过可见安装流程校验或切换。"
-            )
-            btn_reinstall_deps.clicked.connect(self._on_reinstall_deps)
-
-        btn_install_missing = self._ui.findChild(QPushButton, "btnInstallMissing")
-        if btn_install_missing:
-            btn_install_missing.setVisible(False)
-            btn_install_missing.setText("补全当前 Runtime")
-            btn_install_missing.setToolTip(
-                "校验当前运行环境，仅在缺失或损坏时下载并补全。"
-            )
-            btn_install_missing.clicked.connect(self._on_install_missing)
-
-        btn_update_deps = self._ui.findChild(QPushButton, "btnUpdateDeps")
-        if btn_update_deps:
-            btn_update_deps.setText("检查环境状态")
-            btn_update_deps.setToolTip(
-                "Runtime 版本随 VibeOCR 产品更新统一升级；此处只刷新绑定状态。"
-            )
-            btn_update_deps.clicked.connect(self._on_update_deps)
-
-        self._refresh_env_maintenance_state()
 
         self._init_shortcut_buttons()
 
@@ -686,19 +638,21 @@ class SettingsPageController:
         self._pdf_options.settings_changed.connect(self._on_pdf_settings_changed)
 
     def _init_backend_options_in_group(self) -> None:
-        """把计算设备组件放入「运行环境与组件」页。
+        """把运行环境选择组件放入「运行环境」页。
 
-        推理后端（GPU/CPU 选择）与 OCR 依赖安装本质上是同一件事——后端决定
-        要装哪些依赖，依赖表格/重装按钮负责查看与维护这些依赖。故合并到同一
-        分组，不再单列导航项。
+        推理设备（CPU/GPU）与识别依赖（PaddleOCR/MinerU）在同一组件里选择；
+        应用请求交给控制器，在用户二次确认后通过可见、可取消的安装对话框
+        执行。
         """
         container = self._ui.findChild(QWidget, "backendOptionsContainer")
         if container is None or self._backend_options is not None:
             return
 
-        from vibeocr.classic.widgets.backend_options_widget import BackendOptionsWidget
+        from vibeocr.classic.widgets.runtime_environment_widget import (
+            RuntimeEnvironmentWidget,
+        )
 
-        self._backend_options = BackendOptionsWidget(
+        self._backend_options = RuntimeEnvironmentWidget(
             self._project_root,
             gpu_capability_callback=self._on_gpu_capability_resolved,
         )
@@ -706,8 +660,8 @@ class SettingsPageController:
         if layout is not None:
             layout.addWidget(self._backend_options)
 
-        self._backend_options.backend_change_requested.connect(
-            self._on_backend_change_requested
+        self._backend_options.runtime_change_requested.connect(
+            self._on_runtime_change_requested
         )
 
     def initialize_deferred_backend_options(self) -> None:
@@ -728,19 +682,20 @@ class SettingsPageController:
         if self._gpu_capability_callback is not None:
             self._gpu_capability_callback(bool(has_gpu))
 
-    def _on_backend_change_requested(self, target: str) -> None:
-        """二次确认后通过可见安装对话框切换完整 Runtime profile。"""
+    def _on_runtime_change_requested(self, device: str, engines: list[str]) -> None:
+        """运行环境应用入口：按所选设备与引擎走可见安装流程。"""
         from vibeocr.classic.backend_host import inprocess_backend_enabled
 
-        backend_options = self._backend_options
-        if target not in {"cpu", "gpu"}:
+        if device not in {"cpu", "gpu"}:
+            backend_options = self._backend_options
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
             return
+        engines = [engine for engine in engines if engine in {"paddle", "mineru"}]
         if inprocess_backend_enabled():
-            self._switch_engine_device_fused(target)
-            return
-        self._open_install_dialog(force_backend=target)
+            self._apply_runtime_environment_fused(device, engines)
+        else:
+            self._apply_runtime_environment_portable(device, engines)
 
     # ------------------------------------------------------------------
     # 融合形态：uv 引擎环境（Paddle/MinerU × CPU/GPU）
@@ -751,228 +706,197 @@ class SettingsPageController:
 
         return EngineEnvManager(self._project_root / "envs")
 
-    def _fused_selection_catalog_ready(self) -> bool:
-        """能力目录是否已提供当前 accelerator 的可选变体。
+    def _reset_runtime_widget_progress(self) -> None:
+        backend_options = self._backend_options
+        if backend_options is not None:
+            backend_options.set_change_in_progress(False)
 
-        融合安装入口的空选择只有在目录可选（用户能看到并取消勾选）时
-        才能解释为移除意图；目录未就绪时能力树为空是加载状态而非选择。
+    def _apply_runtime_environment_fused(self, device: str, engines: list[str]) -> None:
+        """融合形态应用入口：翻译为引擎环境组合并弹安装对话框。
+
+        勾选状态即安装意图：未勾选的引擎家族会被移除并释放磁盘；设备决定
+        各家族安装 CPU/GPU 版本。无引擎时仅持久化设备偏好，供后续安装读取。
         """
-
-        catalog = self._selection_catalog
-        accelerator = self._selection_accelerator
-        return (
-            catalog is not None
-            and accelerator is not None
-            and bool(catalog.variants_for_accelerator(accelerator))
-        )
-
-    def _install_offline_features_fused(self) -> None:
-        """融合形态的“安装所选能力…”：翻译为引擎环境组合并弹安装对话框。"""
         from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
 
-        features = set(self._selected_offline_features())
-        manager = self._engine_env_manager()
-        states = manager.inspect()
-        installed_ids = {sid for sid, state in states.items() if state.installed}
-
-        if not features:
-            if installed_ids and not self._fused_selection_catalog_ready():
-                # 目录未就绪（健康检查未完成/失败）时能力树为空并非用户
-                # 取消勾选，不得把空选择解释为移除意图；该入口可经
-                # btnReinstallDeps 转发到达，未经目录可用性门控。
-                QMessageBox.information(
-                    None,
-                    "暂不可用",
-                    "暂无法读取 Backend 的可选能力目录，请待识别服务就绪后重试。",
-                )
-                return
-            if installed_ids:
-                # 空选择 + 已装环境 + 目录可选 = 明确的全部移除意图（释放磁盘）。
-                answer = QMessageBox.question(
-                    None,
-                    "移除识别引擎",
-                    "未勾选任何识别能力。将移除所有已安装的识别引擎并释放磁盘空间。\n是否继续？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                if answer == QMessageBox.StandardButton.Yes:
-                    self._open_engine_env_dialog([], sorted(installed_ids))
-                return
-            QMessageBox.information(
+        gpu = device == "gpu"
+        self._set_engine_device_preference(device)
+        try:
+            states = self._engine_env_manager().inspect()
+        except Exception:
+            # 应用入口在 Qt 槽内同步 inspect：清单/wheel/磁盘读取异常不得
+            # 逸出槽外，否则组件停在“进行中”且无提示、无法重试。
+            logger.exception("应用运行环境更改前读取引擎环境状态失败")
+            self._reset_runtime_widget_progress()
+            QMessageBox.warning(
                 None,
-                "未选择能力",
-                "请先勾选需要安装的识别能力。",
+                "无法读取运行环境状态",
+                "读取引擎环境安装状态失败，已取消本次应用；请重试。",
             )
             return
-        paddle = "paddleocr" in features
-        mineru = "mineru" in features
-        gpu = (
-            ("gpu_runtime" in features)
-            or (self._runtime_backend_or_none() == "gpu")
-            or self._engine_device_preference() == "gpu"
+        installed_ids = {sid for sid, state in states.items() if state.installed}
+        target_ids = describe_selection(
+            paddle="paddle" in engines, mineru="mineru" in engines, gpu=gpu
         )
+        to_install = [sid for sid in target_ids if sid not in installed_ids]
+        to_remove = sorted(installed_ids - set(target_ids))
 
-        target_ids = describe_selection(paddle=paddle, mineru=mineru, gpu=gpu)
-        names = "、".join(get_engine_env_spec(spec_id).display_name for spec_id in target_ids)
-        remove_ids = sorted(installed_ids - set(target_ids))
-
-        if not target_ids and not remove_ids:
+        if not to_install and not to_remove:
+            # 已处于目标形态（例如什么都没装时切换设备）。
+            self._reset_runtime_widget_progress()
+            if not target_ids:
+                QMessageBox.information(
+                    None,
+                    "没有需要安装的引擎",
+                    "当前没有安装任何识别引擎，切换设备不会产生下载。\n"
+                    "已记住本次选择：安装引擎时会使用相应设备版本。",
+                )
             return
-        remove_note = (
-            "\n不再使用的引擎会被移除，释放磁盘空间。" if remove_ids else ""
+
+        device_label = "GPU（需要 NVIDIA 显卡）" if gpu else "CPU"
+        install_names = "、".join(
+            get_engine_env_spec(sid).display_name for sid in to_install
         )
+        remove_names = "、".join(
+            get_engine_env_spec(sid).display_name for sid in to_remove
+        )
+        parts = [f"推理设备：{device_label}。"]
+        if install_names:
+            parts.append(f"将安装：{install_names}。")
+        if remove_names:
+            parts.append(f"将移除：{remove_names}（释放磁盘空间）。")
         answer = QMessageBox.question(
             None,
-            "安装识别引擎",
+            "应用运行环境更改",
             (
-                f"将安装：{names}。\n"
-                "下载量较大，安装期间识别会暂停；进度和日志会实时显示。"
-                f"{remove_note}\n是否继续？"
+                "\n".join(parts)
+                + "\n下载量可能较大，安装期间识别会暂停；进度和日志会实时显示。\n"
+                "是否继续？"
             ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
+            self._reset_runtime_widget_progress()
             return
+        # 勾选即安装意图：与实际安装行为同步持久化，供诊断与回滚参考。
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
 
-            persisted = ConfigManager.instance().set_offline_component_features(
+            ConfigManager.instance().set_offline_component_features(
                 "nvidia_cuda" if gpu else "cpu",
-                sorted(features),
+                sorted(_ENGINE_FEATURE_IDS[engine] for engine in engines),
             )
         except Exception:
+            # 展示态跟随实际安装状态；意图持久化失败不阻断安装。
             logger.exception("能力选择持久化失败")
-            persisted = False
-        if not persisted:
-            # 写入失败时继续安装会让安装完成后的能力树读到空选择，
-            # 把已装引擎全部解释为待移除；中止并告知用户。
-            QMessageBox.warning(
+        self._open_engine_env_dialog(to_install, to_remove)
+
+    def _apply_runtime_environment_portable(
+        self, device: str, engines: list[str]
+    ) -> None:
+        """旧子进程形态应用入口：经 Installer 安装组件或切换完整 profile。"""
+        features = tuple(_ENGINE_FEATURE_IDS[engine] for engine in engines)
+        if not features:
+            answer = QMessageBox.question(
                 None,
-                "无法保存能力选择",
-                "保存识别能力选择失败（配置文件不可写）。\n"
-                "已取消本次安装；请检查磁盘空间与配置文件权限后重试。",
+                "应用运行环境更改",
+                "将把运行环境调整为仅基础 Runtime：已安装的可选识别引擎会被"
+                "移除并释放磁盘空间；并按 "
+                f"{'GPU（NVIDIA CUDA）' if device == 'gpu' else 'CPU'} 设备校验。\n"
+                "是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._reset_runtime_widget_progress()
+                return
+            # 勾选即安装意图：空选择同样持久化，避免旧意图把基础闭包
+            # 又解释成待装组件。
+            try:
+                from vibeocr.classic.managers.config_manager import ConfigManager
+
+                ConfigManager.instance().set_offline_component_features(
+                    "nvidia_cuda" if device == "gpu" else "cpu", []
+                )
+            except Exception:
+                logger.exception("能力选择持久化失败")
+            # 空闭包 () 是协议语义“仅基础 Runtime”：Installer 会把基础外
+            # 组件置为 not_required 并移除；None 则是 Backend 默认范围，
+            # 卸不掉已装的可选引擎。
+            self._show_install_dialog(
+                install_component_ids=(),
+                force_backend=(
+                    device if self._runtime_backend_or_none() != device else None
+                ),
             )
             return
-        self._open_engine_env_dialog(target_ids, remove_ids)
 
-    def _switch_engine_device_fused(self, target: str) -> None:
-        """融合形态的计算设备切换：已装引擎家族整体换 CPU/GPU 版本。"""
-        from vibeocr.classic.engine_envs import describe_selection, get_engine_env_spec
-
-        gpu = target == "gpu"
-        # 无引擎时也持久化设备偏好，安装流程会读取。
-        self._set_engine_device_preference(target)
-        manager = self._engine_env_manager()
-        states = manager.inspect()
-        installed_ids = {sid for sid, state in states.items() if state.installed}
-        families = {sid.split("-")[0] for sid in installed_ids}
-        target_ids = describe_selection(
-            paddle="paddle" in families, mineru="mineru" in families, gpu=gpu
-        )
-        remove_ids = sorted(installed_ids - set(target_ids))
-        to_install = [sid for sid in target_ids if sid not in installed_ids]
-
-        if not to_install and not remove_ids:
-            # 已处于目标形态（例如什么都没装时切换设备）。
-            backend_options = getattr(self, "_backend_options", None)
-            if backend_options is not None:
-                backend_options.set_change_in_progress(False)
+        catalog = self._selection_catalog
+        if catalog is None:
             QMessageBox.information(
                 None,
-                "没有需要安装的引擎",
-                "当前没有安装任何识别引擎，切换设备不会产生下载。\n"
-                "已记住本次选择：安装引擎时会使用相应设备版本。",
+                "暂不可用",
+                "当前 Backend 未提供可选能力目录，无法安装识别引擎。",
             )
+            self._reset_runtime_widget_progress()
             return
-
-        device_label = "GPU（需要 NVIDIA 显卡）" if gpu else "CPU"
-        names = "、".join(get_engine_env_spec(sid).display_name for sid in to_install)
+        accelerator = "nvidia_cuda" if device == "gpu" else "cpu"
+        try:
+            component_ids = catalog.component_ids_for_features(features, accelerator)
+        except RuntimeSelectionError as exc:
+            QMessageBox.warning(None, "无法解析所选能力", str(exc))
+            self._reset_runtime_widget_progress()
+            return
+        names = "、".join(_ENGINE_DISPLAY_NAMES[feature] for feature in features)
+        current_backend = self._runtime_backend_or_none()
+        force_backend = device if current_backend != device else None
         answer = QMessageBox.question(
             None,
-            "切换计算设备",
-            f"已安装的识别引擎将切换到 {device_label} 版本：{names}。\n"
-            "需要重新下载对应版本，安装期间识别会暂停。是否继续？",
+            "应用运行环境更改",
+            (
+                f"即将为 {'GPU（NVIDIA CUDA）' if device == 'gpu' else 'CPU'} "
+                f"后端在线下载并安装：{names}。\n"
+                "下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"
+            ),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
-            backend_options = getattr(self, "_backend_options", None)
-            if backend_options is not None:
-                backend_options.set_change_in_progress(False)
+            self._reset_runtime_widget_progress()
             return
-        # 能力勾选按 accelerator 分键保存：切换后能力树按目标 accelerator
-        # 渲染，若不迁移源 accelerator 的意图，刚装的引擎会显示为未勾选，
-        # 空选择还会被安装入口解释为移除全部引擎。与安装入口一致，在
-        # 用户确认切换时持久化目标 accelerator 的能力列表：以本次切换
-        # 实际安装的家族为准，并保留源 accelerator 上已勾选的安装意图。
         try:
             from vibeocr.classic.managers.config_manager import ConfigManager
-            from vibeocr.classic.runtime_selection import (
-                migrate_legacy_feature_ids,
-            )
 
-            config = ConfigManager.instance()
-            source = set(
-                migrate_legacy_feature_ids(
-                    config.get_offline_component_features(
-                        "cpu" if gpu else "nvidia_cuda"
-                    )
-                )
-            )
-            features = source | {
-                "paddleocr" if family == "paddle" else "mineru"
-                for family in families
-            }
-            # gpu_runtime 不是可独立勾选的引擎环境（融合模式能力树已隐藏，
-            # 仅随 mineru-gpu 闭包存在），不迁移该条目。
-            features.discard("gpu_runtime")
-            persisted = config.set_offline_component_features(
-                "nvidia_cuda" if gpu else "cpu",
-                sorted(features),
+            ConfigManager.instance().set_offline_component_features(
+                accelerator, sorted(features)
             )
         except Exception:
-            logger.exception("设备切换：能力选择持久化失败")
-            persisted = False
-        if not persisted:
-            # 写入失败（权限/磁盘/原子替换）不抛异常只返回 False；此时
-            # 继续安装会让切换后的能力树读到空选择，把已装引擎全部
-            # 解释为待移除。必须中止并告知用户。
-            backend_options = getattr(self, "_backend_options", None)
-            if backend_options is not None:
-                backend_options.set_change_in_progress(False)
-            QMessageBox.warning(
-                None,
-                "无法保存能力选择",
-                "保存识别能力选择失败（配置文件不可写）。\n"
-                "已取消本次设备切换；请检查磁盘空间与配置文件权限后重试。",
-            )
-            return
-        self._open_engine_env_dialog(to_install, remove_ids)
+            logger.exception("能力选择持久化失败")
+        self._show_install_dialog(
+            install_component_ids=component_ids,
+            download_source_ids=self._resolve_download_source_ids(),
+            force_backend=force_backend,
+        )
 
     def _engine_device_preference_path(self):
         return self._project_root / "config" / "engine-device.json"
 
-    def _engine_device_preference(self) -> str | None:
-        """用户在未安装引擎时选择的设备偏好（"cpu"/"gpu"/None）。"""
-        import json
-
-        try:
-            data = json.loads(
-                self._engine_device_preference_path().read_text(encoding="utf-8")
-            )
-        except (OSError, ValueError):
-            return None
-        value = data.get("device") if isinstance(data, dict) else None
-        return value if value in {"cpu", "gpu"} else None
-
     def _set_engine_device_preference(self, device: str) -> None:
+        """尽力持久化设备偏好（无引擎时的回显/后续安装参考）。
+
+        写入失败（配置目录不可写、磁盘满、原子替换失败）只影响后续
+        回显，本次应用的设备目标由调用方显式给出，不依赖该文件；
+        因此不抛出，避免异常逸出 Qt 槽并让控件停在“进行中”。
+        """
         from vibeocr.classic.json_storage import write_json_atomic
 
         if device not in {"cpu", "gpu"}:
             return
-        write_json_atomic(
-            self._engine_device_preference_path(),
-            {"schema_version": 1, "device": device},
-        )
+        try:
+            write_json_atomic(
+                self._engine_device_preference_path(),
+                {"schema_version": 1, "device": device},
+            )
+        except Exception:
+            logger.exception("设备偏好写入失败（不影响本次应用）")
 
     def _open_engine_env_dialog(
         self, install_ids: list[str], remove_ids: list[str]
@@ -1007,7 +931,9 @@ class SettingsPageController:
     def _on_engine_env_finished(self, success: bool) -> None:
         backend_options = getattr(self, "_backend_options", None)
         if backend_options is not None:
-            backend_options.set_change_in_progress(False)
+            # 安装/移除/切换改变了磁盘状态：必须重新探测回填，仅解除
+            # “进行中”标记会让界面停留在操作前的引擎与设备状态。
+            backend_options.refresh_runtime_state()
         callback = (
             self._install_succeeded_callback
             if success
@@ -1309,7 +1235,7 @@ class SettingsPageController:
         （用户反馈"部分内容显示区域很矮/看不见"）。包一层 setWidgetResizable
         的 QScrollArea 后，垂直超出自动出滚动条，水平不滚动（宽度跟随窗口）。
 
-        所有子页（pageGeneral / pageRecognition / pageRuntime / pageResidency
+        所有子页（pageGeneral / pageRuntime / pageResidency
         静态页 + 截图选项 / PDF 选项动态页）统一处理。原页 widget 从 stacked
         移除、用 scroll 替换占位，索引与导航行（currentRowChanged→setCurrentIndex）
         保持一一对应。
@@ -1426,8 +1352,6 @@ class SettingsPageController:
             # 尽早回读 settings：既为全量 PUT 守卫准备快照，也让已保存的
             # MinerU 连接模式在首次提交前生效。
             adapter.fetch_settings()
-            # 启动前的环境快照尚未连接 Supervisor，就绪后同步服务状态。
-            self._refresh_env_maintenance_state()
         if ConfigManager.instance().get_preload_enabled():
             self._on_preload_now_clicked()
         else:
@@ -1756,132 +1680,6 @@ class SettingsPageController:
         except (AttributeError, RuntimeError, TypeError):
             pass
 
-    def _open_reinstall_dialog(
-        self, reinstall_python: bool = False, missing_only: bool = False
-    ) -> None:
-        self._run_after_supervisor_invalidated(
-            lambda: self._show_reinstall_dialog(
-                reinstall_python=reinstall_python,
-                missing_only=missing_only,
-            )
-        )
-
-    def _show_reinstall_dialog(
-        self, reinstall_python: bool = False, missing_only: bool = False
-    ) -> None:
-        """以非模态方式打开重装/补装对话框（不阻塞主窗口）。
-
-        show() 后必须持有 dialog 引用以防 GC；finished 时刷新环境状态并移除引用。
-        install_succeeded 联动 MainWindow 重新检测依赖（Bug A 修复）：装完依赖后
-        由 MainWindow 触发 dependency_manager.check_dependencies，使截图界面立即可用，
-        无需重启程序。
-        """
-        dialog = BackendChoiceDialog(
-            self._project_root,
-            reinstall_python=reinstall_python,
-            missing_only=missing_only,
-        )
-
-        def _on_finished(_result: int) -> None:
-            # 成功路径由 install_succeeded 刷新一次；取消/失败才在这里刷新。
-            if _result != 1:
-                self._refresh_env_maintenance_state()
-                # 维护已先停止 Supervisor；未成功结束则联动 MainWindow
-                # 重新检测并恢复 Supervisor，不能停在“已停止”状态。
-                if self._install_abandoned_callback is not None:
-                    self._install_abandoned_callback()
-            # 移除引用，允许对话框被回收（用户也可再次打开新的）
-            try:
-                self._active_dialogs.remove(dialog)
-            except ValueError:
-                pass
-
-        def _on_install_succeeded() -> None:
-            # 装完依赖联动 MainWindow：刷新设置页状态 + 触发重新检测依赖
-            # （检测完成回调里自动设 _ocr_ready 并启动子进程 Worker）。
-            # 不直接设 _ocr_ready=True：让真实检测反映"装了但间接依赖没装完"等
-            # 异常状态，避免假就绪。
-            self._refresh_env_maintenance_state()
-            if self._install_succeeded_callback is not None:
-                self._install_succeeded_callback()
-
-        dialog.finished.connect(_on_finished)
-        dialog.install_succeeded.connect(_on_install_succeeded)
-        self._active_dialogs.append(dialog)
-        dialog.show()
-
-    def _on_reinstall_python(self) -> None:
-        """检查并修复已安装闭包，底层统一调用 Runtime Installer repair。"""
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            QMessageBox.information(
-                None,
-                "无需修复",
-                "基础识别能力已内置在主程序里，不需要修复。\n\n"
-                "如果某个识别引擎出了问题，回到“可选识别能力”，"
-                "重新勾选并安装一次即可。",
-            )
-            return
-        reply = QMessageBox.question(
-            None,
-            "确认修复 Runtime",
-            "将检查已安装组件；仅在损坏时修复已有闭包，不补装其他引擎。\n\n"
-            "不会执行逐包 pip 变更，也不会修改用户配置、模型缓存和日志。\n\n"
-            "是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self._open_install_dialog(missing_only=True)
-
-    def _on_reinstall_deps(self) -> None:
-        """Preview the current engine intent without contracting it to base-only."""
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            self._on_install_offline_features()
-            return
-        self._open_install_dialog()
-
-    def _on_install_missing(self) -> None:
-        """使用 Installer 的当前 accelerator 补全缺失 Runtime 内容。"""
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            # 融合形态没有 Runtime Installer 补装流程（manifest/installer
-            # 已不随包分发）；引擎的补全/修复由「可选识别能力」的安装
-            # 入口承担（重新勾选即重装并校验安装身份）。
-            self._on_install_offline_features()
-            return
-        reply = QMessageBox.question(
-            None,
-            "确认补充安装缺失依赖",
-            "将校验当前运行环境；仅在缺失或损坏时联网补全。\n\n"
-            "不会更改当前 CPU/GPU 选择。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        # 读当前后端作为补装后端，避免二次提示
-        current_backend = self._runtime_backend_or_none()
-        if current_backend is None:
-            self._show_settings_toast(
-                "尚未确定计算设备（可能仅安装了基础 Runtime），"
-                "请先通过「安装或调整运行环境」准备所需组件"
-            )
-            return
-        self._open_install_dialog(missing_only=True, force_backend=current_backend)
-
-    def _on_update_deps(self) -> None:
-        """组件只能随产品 component-lock 整组升级；此处只刷新完整性。"""
-        self._show_settings_toast("Runtime 版本由产品更新统一管理")
-        self._refresh_env_maintenance_state()
-
     def _runtime_backend_or_none(self) -> str | None:
         """只消费后台 Installer inspect 已回填的后端，不在 GUI 线程探测。"""
         backend_options = self._backend_options
@@ -2015,7 +1813,6 @@ class SettingsPageController:
                 pass
 
         def _on_install_succeeded() -> None:
-            self._refresh_env_maintenance_state()
             if self._install_succeeded_callback is not None:
                 self._install_succeeded_callback()
 
@@ -2037,8 +1834,7 @@ class SettingsPageController:
         )
 
     def refresh_runtime_state(self) -> None:
-        """刷新依赖区与推理后端控件的 Runtime 权威状态。"""
-        self._refresh_env_maintenance_state()
+        """刷新运行环境选择组件与 Backend 健康快照。"""
         backend_options = self._backend_options
         if backend_options is not None:
             backend_options.refresh_runtime_state()
@@ -2046,541 +1842,6 @@ class SettingsPageController:
         if adapter.is_started and not self._closing:
             adapter.fetch_health()
             adapter.fetch_settings()
-
-    def _on_reinstall_single_dep(self, pkg: str) -> None:
-        """单包重装入口（依赖表格"重装"按钮）。
-
-        旧入口迁移到整个运行环境修复；在对话框显示真实范围并再次确认。
-        """
-        self._open_install_dialog(single_pkg=pkg)
-
-    def _on_reinstall_selected(self) -> None:
-        """兼容旧按钮：修复整个不可变 Runtime profile。"""
-        reply = QMessageBox.question(
-            None,
-            "确认修复 Runtime",
-            "将检查并修复已有组件闭包；不会补装其他引擎或逐包修改。是否继续？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-        self._open_install_dialog(packages=["runtime-profile"])
-
-    def _refresh_env_maintenance_state(self) -> None:
-        """异步合并安装完整性（Installer 或引擎环境）与 Supervisor HTTP 状态。"""
-        label = self._ui.findChild(QLabel, "labelEnvStatus")
-        tree = self._ui.findChild(QTreeWidget, "treeDepsStatus")
-        if label:
-            label.setText("正在检查运行环境与安装状态...")
-        if tree:
-            tree.clear()
-        self._env_refresh_generation += 1
-        generation = self._env_refresh_generation
-        adapter = self._connect_runtime_adapter()
-        status_client = (
-            getattr(adapter, "runtime_status_client", None)
-            if getattr(adapter, "is_started", False)
-            else None
-        )
-
-        def operation() -> dict:
-            from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-            if inprocess_backend_enabled():
-                # 融合形态：产品不再随包分发 Runtime Installer 与 manifest，
-                # 状态来自本地引擎环境检查 + Supervisor HTTP 快照。
-                snapshot: dict = {
-                    "mode": "fused",
-                    "engine_envs": self._engine_env_manager().inspect(),
-                }
-            else:
-                snapshot = {
-                    "mode": "portable",
-                    "inspection": self._runtime_installer.inspect(),
-                }
-            if status_client is not None and parse_runtime_status is not None:
-                try:
-                    payload = status_client.request_json("getRuntimeStatus")
-                    snapshot["runtime_status"] = parse_runtime_status(payload)
-                except Exception as exc:
-                    logger.info("Supervisor HTTP 状态暂不可用，回退本地快照: %s", exc)
-                    snapshot["runtime_status_error"] = str(exc)
-            return snapshot
-
-        self._run_cache_operation(
-            operation,
-            lambda snapshot: self._apply_env_maintenance_state(generation, snapshot),
-            lambda error: self._on_env_refresh_error(generation, error),
-        )
-
-    def _on_env_refresh_error(self, generation: int, error: str) -> None:
-        if generation != self._env_refresh_generation:
-            return
-        label = self._ui.findChild(QLabel, "labelEnvStatus")
-        if label:
-            label.setText(f"运行时检测失败：{error}")
-        logger.warning("环境维护状态刷新失败: %s", error)
-
-    def _apply_env_maintenance_state(self, generation: int, snapshot: dict) -> None:
-        if generation != self._env_refresh_generation:
-            return
-        label = self._ui.findChild(QLabel, "labelEnvStatus")
-        btn_py = self._ui.findChild(QPushButton, "btnReinstallPython")
-        btn_deps = self._ui.findChild(QPushButton, "btnReinstallDeps")
-        btn_missing = self._ui.findChild(QPushButton, "btnInstallMissing")
-        btn_update = self._ui.findChild(QPushButton, "btnUpdateDeps")
-        btn_reinstall_sel = self._ui.findChild(QPushButton, "btnReinstallSelected")
-        tree = self._ui.findChild(QTreeWidget, "treeDepsStatus")
-
-        mode = snapshot.get("mode", "none")
-        inspection = snapshot.get("inspection")
-        runtime_status = snapshot.get("runtime_status")
-
-        if mode == "portable" and inspection is not None:
-            self._runtime_component_states = self._collect_component_states(
-                runtime_status, inspection
-            )
-            service_labels = {
-                "ready": "已就绪",
-                "degraded": "降级",
-                "maintenance": "维护中",
-            }
-            service = "未连接"
-            maintenance_text = ""
-            if runtime_status is not None:
-                service = service_labels.get(
-                    runtime_status.service_state.value,
-                    runtime_status.service_state.value,
-                )
-                if runtime_status.maintenance is not None:
-                    maintenance_text = (
-                        f"{runtime_status.maintenance.phase.value}"
-                        f" · {runtime_status.maintenance.operation_state.value}"
-                    )
-            source = getattr(runtime_status, "source", None)
-            if source is None:
-                source = getattr(inspection, "source", None)
-            accel_text = accelerator_display(
-                inspection.accelerator, inspection.profile, inspection.components
-            )
-            cuda_text = cuda_requirement_label(inspection.profile)
-            profile_value = (
-                f"{inspection.profile}（{cuda_text}）"
-                if cuda_text
-                else inspection.profile
-            )
-            status_text = "已验证" if inspection.ready else "未就绪"
-            runtime_value = (
-                status_text
-                if inspection.ready
-                else f"{status_text}（{inspection.status}）"
-            )
-            rows: list[tuple[str, str]] = [
-                ("Runtime", runtime_value),
-                ("服务", service),
-                ("加速方案", accel_text),
-                ("推理 profile", profile_value),
-                ("Python", inspection.python_version),
-                ("Backend", inspection.backend_version),
-                ("Protocol", inspection.protocol_version),
-                ("组件完整性", inspection.integrity),
-                ("Manifest", inspection.manifest_sha256[:12]),
-            ]
-            if maintenance_text:
-                rows.append(("维护", maintenance_text))
-            if source is not None:
-                rows.append(("Source SHA", source.backend_source_sha[:12]))
-                rows.append(("Runtime manifest", source.runtime_manifest_sha256[:12]))
-                protocol_sha = getattr(source, "protocol_manifest_sha256", None)
-                if protocol_sha:
-                    rows.append(("Protocol manifest", protocol_sha[:12]))
-            self._populate_runtime_status_tree(rows)
-            if label:
-                from vibeocr.classic.runtime_maintenance import (
-                    InstallationRecord,
-                    RuntimeInstallerClientError,
-                )
-
-                try:
-                    record = InstallationRecord.read(self._project_root)
-                    outcome = f"\n{record.summary}" if record is not None else ""
-                except RuntimeInstallerClientError as exc:
-                    outcome = f"\n{exc}"
-                label.setText(f"Runtime：{status_text} · 服务：{service}{outcome}")
-        elif mode == "fused":
-            self._apply_fused_env_maintenance_state(snapshot, runtime_status)
-        else:
-            self._runtime_component_states = {}
-            self._populate_runtime_status_tree([])
-            if label:
-                label.setText("Runtime：未绑定")
-
-        # 所有维护按钮都映射到 ensure/repair 或融合形态的引擎安装入口；
-        # "补全当前 Runtime"走旧 Installer 补装流程（需要随包 manifest/
-        # installer），融合形态不适用，保持禁用（槽内另有融合转发兜底）。
-        enabled = mode in {"portable", "fused"}
-        if btn_py:
-            btn_py.setEnabled(enabled)
-        if btn_deps:
-            btn_deps.setEnabled(enabled)
-        if btn_missing:
-            btn_missing.setEnabled(mode == "portable")
-        if btn_update:
-            btn_update.setEnabled(enabled)
-        # "重装选中项"初始禁用，由依赖树选择变化驱动启用状态
-        if btn_reinstall_sel:
-            btn_reinstall_sel.setVisible(False)
-            btn_reinstall_sel.setEnabled(enabled)
-            btn_reinstall_sel.setText("修复 Runtime")
-
-        # 填充依赖状态树
-        if tree and mode == "portable":
-            self._populate_deps_tree(tree, snapshot)
-            # 组件状态已刷新：可选能力树同步更新真实安装状态。
-            self._render_offline_features()
-            if not getattr(self, "_deps_tree_signals_connected", False):
-                if btn_reinstall_sel:
-                    btn_reinstall_sel.clicked.connect(self._on_reinstall_selected)
-                self._deps_tree_signals_connected = True
-        elif tree and mode == "fused":
-            self._populate_deps_tree_fused(tree, snapshot.get("engine_envs") or {})
-            self._render_offline_features()
-        elif tree:
-            tree.clear()
-
-    def _apply_fused_env_maintenance_state(
-        self, snapshot: dict, runtime_status
-    ) -> None:
-        """融合形态环境维护状态：基础识别内置 + 引擎环境安装态。"""
-        from vibeocr.classic.engine_envs import (
-            ENGINE_ENV_SPECS,
-            FUSED_COMPONENT_IDS,
-            device_framework,
-            framework_display,
-        )
-
-        states: dict = snapshot.get("engine_envs") or {}
-        framework = device_framework(states) if states else None
-        # 引擎安装/设备切换会改变生效的加速方案：每次环境刷新都重算，
-        # 让可选能力树按当前 accelerator 渲染，而不是停留在初始化时
-        # （旧 accelerator 下刚装的 GPU 能力会显示为未勾选，且把空选择
-        # 误解释为移除已安装环境）。
-        self._refresh_selection_accelerator_fused(states)
-        self._runtime_component_states = self._collect_component_states(
-            runtime_status, None
-        )
-        # 引擎环境是本地安装态的权威证据；HTTP 快照（若可用）优先，不覆盖。
-        for spec_id, component_id in FUSED_COMPONENT_IDS.items():
-            state = states.get(spec_id)
-            if state is None:
-                continue
-            self._runtime_component_states.setdefault(
-                component_id, "ready" if state.installed else "missing"
-            )
-        # mineru-gpu（win-x64-cu126）闭包含 torch/CUDA 运行环境；Paddle GPU
-        # 环境的清单不含 torch，不提供 gpu_runtime。
-        mineru_gpu = states.get("mineru-gpu")
-        if mineru_gpu is not None:
-            self._runtime_component_states.setdefault(
-                "gpu_runtime", "ready" if mineru_gpu.installed else "missing"
-            )
-        service = "未连接"
-        maintenance_text = ""
-        if runtime_status is not None:
-            service_labels = {
-                "ready": "已就绪",
-                "degraded": "降级",
-                "maintenance": "维护中",
-            }
-            service = service_labels.get(
-                runtime_status.service_state.value,
-                runtime_status.service_state.value,
-            )
-            if runtime_status.maintenance is not None:
-                maintenance_text = (
-                    f"{runtime_status.maintenance.phase.value}"
-                    f" · {runtime_status.maintenance.operation_state.value}"
-                )
-        accel_text = framework_display(framework)
-        rows: list[tuple[str, str]] = [
-            ("运行形态", "基础识别已内置"),
-            ("服务", service),
-            ("计算设备", accel_text),
-        ]
-        rows.extend(
-            (
-                spec.display_name,
-                "✓ 已安装" if states.get(spec.id) is not None and states[spec.id].installed else "未安装",
-            )
-            for spec in ENGINE_ENV_SPECS
-        )
-        if maintenance_text:
-            rows.append(("维护", maintenance_text))
-        self._populate_runtime_status_tree(rows)
-        label = self._ui.findChild(QLabel, "labelEnvStatus")
-        if label is not None:
-            label.setText(f"基础识别已内置 · 计算设备 {accel_text} · 服务：{service}")
-
-    def _refresh_selection_accelerator_fused(self, states: dict) -> None:
-        """融合形态：按已装引擎环境重算可选能力目录的加速方案。
-
-        初始化与每次环境状态刷新（引擎安装/移除/设备切换后）都会调用；
-        无任何引擎时缺省 cpu，与后端的 accelerator 缺省一致。
-        """
-
-        from vibeocr.classic.engine_envs import device_framework
-
-        framework = device_framework(states) if states else None
-        self._selection_accelerator = "nvidia_cuda" if framework == "gpu" else "cpu"
-
-    def _populate_deps_tree_fused(self, tree: QTreeWidget, states: dict) -> None:
-        """融合形态依赖树：基础识别内置与各引擎环境的安装状态。"""
-        from vibeocr.classic.engine_envs import ENGINE_ENV_SPECS
-
-        tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        tree.clear()
-        tree.addTopLevelItem(
-            QTreeWidgetItem(["基础识别（内置）", "✓ 已就绪", "—"])
-        )
-        for spec in ENGINE_ENV_SPECS:
-            state = states.get(spec.id)
-            installed = bool(getattr(state, "installed", False))
-            tree.addTopLevelItem(
-                QTreeWidgetItem(
-                    [
-                        spec.display_name,
-                        "✓ 已安装" if installed else "未安装",
-                        "—",
-                    ]
-                )
-            )
-        tree.setToolTip(
-            "基础识别随主程序内置；高级识别引擎按需安装。"
-            "出现异常时，可在“可选识别能力”里重新安装对应引擎。"
-        )
-
-    @staticmethod
-    def _collect_component_states(runtime_status, inspection) -> dict[str, str]:
-        """合并 HTTP 快照与 Installer inspection 的组件安装状态。
-
-        HTTP 快照（getRuntimeStatus）反映 Supervisor 眼中的实时状态，优先；
-        缺失时回退 Installer inspection 的组件描述。两者都没有时不作声明，
-        由消费方显示"未知"而不是猜测。
-        """
-
-        states: dict[str, str] = {}
-        profile = getattr(runtime_status, "profile", None)
-        for component in getattr(profile, "components", ()) or ():
-            component_id = getattr(component, "component_id", None)
-            actual = getattr(component, "actual_state", None)
-            if isinstance(component_id, str) and isinstance(actual, str):
-                states[component_id] = actual
-        for component in getattr(inspection, "components", ()) or ():
-            component_id = getattr(component, "component_id", None)
-            actual = getattr(component, "actual_state", None)
-            if (
-                isinstance(component_id, str)
-                and isinstance(actual, str)
-                and component_id not in states
-            ):
-                states[component_id] = actual
-        return states
-
-    def _populate_runtime_status_tree(self, rows: list[tuple[str, str]]) -> None:
-        """把结构化 Runtime 状态逐行渲染到 treeRuntimeStatus。"""
-
-        tree = self._ui.findChild(QTreeWidget, "treeRuntimeStatus")
-        if tree is None:
-            return
-        tree.clear()
-        for name, value in rows:
-            tree.addTopLevelItem(QTreeWidgetItem([name, str(value)]))
-
-    def _update_reinstall_selected_btn(
-        self, tree: QTreeWidget, btn: QPushButton | None
-    ) -> None:
-        """依赖树选择变化时保持"修复 Runtime"按钮可用（修复是全 profile 操作）。
-
-        按钮始终映射到已安装闭包的校验与修复，不随选中项变化重命名，
-        避免"重装选中项"与"修复 Runtime"两套语义在同一按钮上漂移。
-        """
-        if btn is None:
-            return
-        btn.setText("修复 Runtime")
-
-    def _populate_deps_tree(
-        self, tree: QTreeWidget, snapshot: dict | None = None
-    ) -> None:
-        """显示受产品绑定的 Runtime 组件，不向 UI 泄漏逐包安装细节。"""
-        snapshot = snapshot or {}
-        inspection = snapshot.get("inspection")
-        runtime_status_snapshot = snapshot.get("runtime_status")
-        tree.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        tree.clear()
-        if inspection is None:
-            return
-        runtime_status = "✓ 已验证" if inspection.ready else f"⚠ {inspection.integrity}"
-        accel_text = accelerator_display(
-            inspection.accelerator, inspection.profile, inspection.components
-        )
-        cuda_text = cuda_requirement_label(inspection.profile)
-        profile_value = (
-            f"{inspection.profile}（{cuda_text}）" if cuda_text else inspection.profile
-        )
-        framework = accelerator_framework(
-            inspection.accelerator, inspection.components, inspection.profile
-        )
-        base_profile = inspection.profile == "win-x64-base"
-        if framework is None:
-            profile_row = QTreeWidgetItem(
-                ["推理 profile", "未选择（仅基础 Runtime）", "—"]
-            )
-        else:
-            profile_row = QTreeWidgetItem(
-                [f"推理 profile · {accel_text}", "✓ 已选择", profile_value]
-            )
-        tree.addTopLevelItem(
-            QTreeWidgetItem(
-                ["Python 运行时", runtime_status, inspection.python_version]
-            )
-        )
-        backend_item = QTreeWidgetItem(
-            ["Backend Supervisor", runtime_status, inspection.backend_version]
-        )
-        tree.addTopLevelItem(backend_item)
-        if runtime_status_snapshot is not None:
-            state_labels = {
-                "not_required": "— 不需要",
-                "pending": "… 等待中",
-                "installing": "… 安装中",
-                "verifying": "… 验证中",
-                "ready": "✓ 已就绪",
-                "failed": "✗ 失败",
-                "cancelled": "— 已取消",
-            }
-            components = runtime_status_snapshot.profile.components
-            for component in components:
-                state_value = component.state.value
-                actual = getattr(component, "actual_state", None)
-                actual_value = getattr(actual, "value", actual)
-                drift = getattr(component, "drift_reason", None)
-                drift_value = getattr(drift, "value", drift)
-                desired = getattr(component, "desired_state", None)
-                desired_value = getattr(desired, "value", desired)
-                status_text = state_labels.get(state_value, state_value)
-                if state_value == "ready" and actual_value in {
-                    "missing",
-                    "drifted",
-                    "unknown",
-                }:
-                    actual_labels = {
-                        "missing": "✗ 缺失",
-                        "drifted": "⚠ 已漂移",
-                        "unknown": "? 未知",
-                    }
-                    status_text = actual_labels[actual_value]
-                if drift_value not in {None, "none"}:
-                    drift_labels = {
-                        "missing": "缺失",
-                        "version_mismatch": "版本不一致",
-                        "identity_mismatch": "来源不一致",
-                        "integrity_failed": "完整性失败",
-                        "unexpected": "非预期组件",
-                    }
-                    status_text += f" · {drift_labels.get(drift_value, drift_value)}"
-                if desired_value == "not_required" or (
-                    base_profile
-                    and str(getattr(component, "component_id", "")).startswith(
-                        _ADVANCED_OCR_PREFIXES
-                    )
-                ):
-                    # 未随当前 profile 安装是配置事实，不是安装损坏；
-                    # 仅当组件属于当前 profile 且校验发现文件缺失时才显示"✗ 缺失"。
-                    status_text = "未随当前配置安装"
-                version = (
-                    getattr(component, "actual_version", None)
-                    or component.version
-                    or getattr(component, "desired_version", None)
-                    or "—"
-                )
-                backend_item.addChild(
-                    QTreeWidgetItem(
-                        [
-                            component.display_name,
-                            status_text,
-                            version,
-                        ]
-                    )
-                )
-        else:
-            for component in getattr(inspection, "components", ()):
-                actual_labels = {
-                    "ready": "✓ 已就绪",
-                    "missing": "✗ 缺失",
-                    "drifted": "⚠ 已漂移",
-                    "unknown": "? 未知",
-                }
-                drift_labels = {
-                    "missing": "缺失",
-                    "version_mismatch": "版本不一致",
-                    "identity_mismatch": "来源不一致",
-                    "integrity_failed": "完整性失败",
-                    "unexpected": "非预期组件",
-                }
-                actual_state = getattr(component, "actual_state", None)
-                desired_state = getattr(component, "desired_state", None)
-                drift_reason = getattr(component, "drift_reason", None)
-                component_status = actual_labels.get(
-                    actual_state,
-                    "✓ 已验证" if inspection.ready else "⚠ 未就绪",
-                )
-                if drift_reason not in {None, "none"}:
-                    component_status += (
-                        f" · {drift_labels.get(drift_reason, drift_reason)}"
-                    )
-                if desired_state == "not_required" or (
-                    base_profile
-                    and str(getattr(component, "component_id", "")).startswith(
-                        _ADVANCED_OCR_PREFIXES
-                    )
-                ):
-                    component_status = "未随当前配置安装"
-                backend_item.addChild(
-                    QTreeWidgetItem(
-                        [
-                            component.display_name,
-                            component_status,
-                            component.actual_version
-                            or component.version
-                            or component.desired_version
-                            or "—",
-                        ]
-                    )
-                )
-        backend_item.setExpanded(True)
-        tree.addTopLevelItem(
-            QTreeWidgetItem(["Protocol", "✓ 已绑定", inspection.protocol_version])
-        )
-        tree.addTopLevelItem(profile_row)
-        tree.setToolTip(
-            "显示产品绑定的 Python、Backend、Protocol 与推理 profile。"
-            "组件状态区分 desired/actual，漂移项可由 Runtime Installer 修复；"
-            "仅安装基础 Runtime 时推理 profile 显示为未选择。"
-        )
-
-    @staticmethod
-    def _format_dep_status(
-        installed: bool, usable: bool, missing_module: str | None
-    ) -> str:
-        """把 (installed, usable, missing_module) 三元组格式化为状态列文本"""
-        if usable:
-            return "✓ 完整安装"
-        if installed and missing_module:
-            return f"⚠ 已安装，缺 {missing_module}"
-        if installed:
-            return "⚠ 安装残缺"
-        return "✗ 未安装"
 
     def _on_clear_cache_clicked(self) -> None:
         """清除 Classic 自有的启动环境检测缓存。"""
@@ -2801,149 +2062,17 @@ class SettingsPageController:
     # OCR 引擎 / 离线能力 / 下载源（Protocol 2.7 选择面）
     # ----------------------------------------------------------------
 
-    _FEATURE_LABELS = {
-        "paddleocr": "PaddleOCR 引擎",
-        "mineru": "MinerU 文档解析",
-        "gpu_runtime": "GPU 运行时",
-    }
-
     _SOURCE_KIND_LABELS = {
         "package_index": "依赖下载源",
         "model_registry": "模型下载源",
     }
 
     def _init_ocr_runtime_group(self) -> None:
-        """初始化识别能力、可选组件与下载源；catalog 等待 health。"""
+        """初始化下载源；能力目录等待 health 到达后再渲染。"""
 
-        button = self._ui.findChild(QPushButton, "btnInstallOfflineFeatures")
-        if button is not None:
-            button.clicked.connect(self._on_install_offline_features)
         save_button = self._ui.findChild(QPushButton, "btnSaveDownloadSources")
         if save_button is not None:
             save_button.clicked.connect(self._on_save_download_sources)
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            # 融合形态：无 Runtime manifest，加速方案由已装引擎环境决定，
-            # 缺省按 cpu 渲染可选能力目录（与后端默认一致）；后续环境
-            # 刷新会经 _apply_fused_env_maintenance_state 重算。
-            try:
-                states = self._engine_env_manager().inspect()
-            except Exception:
-                # 本调用位于 GUI 构造路径（_init_settings_page），随包
-                # wheel/清单不可读时不得中断设置控制器与主窗口构造；
-                # 具体错误由环境状态区的异步刷新呈现（运行时检测失败）。
-                logger.exception("引擎环境检查失败，能力目录按缺省 cpu 渲染")
-                states = {}
-            self._refresh_selection_accelerator_fused(states)
-        else:
-            try:
-                self._selection_accelerator = (
-                    self._runtime_installer.profile_descriptor().accelerator
-                )
-            except Exception:  # noqa: BLE001 - 绑定缺失时由 Runtime 状态区负责提示
-                self._selection_accelerator = None
-        self._configure_selection_tree_headers()
-        # catalog 到达前先渲染占位行，避免空树被误读为没有任何识别能力。
-        self._render_engine_availability()
-        self._refresh_selection_availability()
-
-    def _configure_selection_tree_headers(self) -> None:
-        """识别设置页两棵树的列宽与最小高度。
-
-        默认 QTreeWidget 各列约 100px，中文模式名（如“表格结构识别
-        （PaddleOCR）”）会被截断；说明列才应吃掉剩余宽度。同时给树一个
-        能容纳全部行的高度，避免在滚动页里被压扁导致行不可见。
-        """
-
-        availability = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
-        if availability is not None:
-            header = availability.header()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-            availability.setMinimumHeight(320)
-        features = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
-        if features is not None:
-            header = features.header()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            features.setMinimumHeight(120)
-
-    _MODE_FAMILY_LABELS = {
-        "text": "文本识别",
-        "document": "文档解析",
-        "specialized": "专项识别（表格 / 公式）",
-    }
-
-    @staticmethod
-    def _mode_unavailability_hint(entry) -> str:
-        """为未就绪模式生成说明列文本；就绪模式返回空串。"""
-
-        if entry.availability == ENGINE_AVAILABILITY_READY:
-            return ""
-        parts: list[str] = []
-        required = getattr(entry, "required_component", None)
-        if isinstance(required, str) and required:
-            parts.append(f"需安装组件 {required}")
-        if entry.reason_code:
-            parts.append(f"原因 {entry.reason_code}")
-        return "；".join(parts)
-
-    def _render_engine_availability(self) -> None:
-        """把各识别模式的可用性逐行渲染到 treeEngineAvailability。
-
-        旧实现把全部模式状态用"；"拼进单个 QLabel，多类目挤成一行难以阅读；
-        现按 family（文本/文档/专项）分组，每模式一行（显示名|状态|说明）。
-        """
-
-        catalog = self._selection_catalog
-        tree = self._ui.findChild(QTreeWidget, "treeEngineAvailability")
-        if tree is None:
-            return
-        tree.clear()
-        if catalog is None:
-            # Distinguish a failed catalog request from an in-flight request.
-            tree.addTopLevelItem(
-                QTreeWidgetItem(
-                    [
-                        "Backend 能力读取失败"
-                        if self._selection_load_error
-                        else "等待 Backend 识别能力目录…",
-                        "",
-                        self._selection_load_error or "连接就绪后自动填充",
-                    ]
-                )
-            )
-            return
-        # 新目录优先：它同时投影 specialized/document 模式的本地文案和
-        # 生命周期。旧 Backend 仅有 engine catalog 时由 facade 合成 text 模式。
-        entries = catalog.modes or catalog.engines
-        by_family: dict[str, list] = {}
-        for entry in entries:
-            by_family.setdefault(getattr(entry, "family", "text"), []).append(entry)
-        for family in ("text", "document", "specialized"):
-            modes = by_family.get(family)
-            if not modes:
-                continue
-            group = QTreeWidgetItem(
-                [self._MODE_FAMILY_LABELS.get(family, family), "", ""]
-            )
-            for entry in modes:
-                label = ENGINE_AVAILABILITY_LABELS.get(
-                    entry.availability, entry.availability
-                )
-                group.addChild(
-                    QTreeWidgetItem(
-                        [
-                            entry.display_name,
-                            label,
-                            self._mode_unavailability_hint(entry),
-                        ]
-                    )
-                )
-            group.setExpanded(True)
-            tree.addTopLevelItem(group)
 
     def _on_health_loaded(self, health: object) -> None:
         if self._closing or not isinstance(health, dict):
@@ -2971,10 +2100,7 @@ class SettingsPageController:
         set_active_recognition_catalog(catalog)
         if self._recognition_catalog_callback is not None:
             self._recognition_catalog_callback(catalog)
-        self._render_engine_availability()
-        self._render_offline_features()
         self._render_download_sources(capabilities)
-        self._refresh_selection_availability()
         self._refresh_mineru_connection_controls()
 
     def _on_health_error(self, error: str) -> None:
@@ -2983,226 +2109,11 @@ class SettingsPageController:
         self._selection_load_error = error
         self._selection_catalog = None
         self._refresh_lifecycle_controls()
-        self._render_engine_availability()
         self._status_callback(f"识别能力读取失败：{error}")
         status = self._ui.findChild(QLabel, "labelDownloadSourceStatus")
         if status is not None:
             status.setText(f"下载源读取失败：{error}")
         self._refresh_mineru_connection_controls()
-
-    # 可选能力树状态列：actual_state → 展示文案。无状态证据时显示"未知"，
-    # 不能恒显"未安装"——GPU profile 等能力的组件可能已在 Backend 中就绪。
-    _COMPONENT_STATE_LABELS = {
-        "ready": "✓ 已安装",
-        "missing": "✗ 未安装",
-        "drifted": "⚠ 已漂移",
-        "unknown": "? 未知",
-        "not_required": "未随当前配置安装",
-    }
-
-    def _render_offline_features(self) -> None:
-        """按当前 accelerator 渲染可选能力勾选列表（catalog 驱动）。
-
-        勾选框表达持久化的安装意图；状态列来自 Runtime 组件 actual_state，
-        在 Runtime 状态尚未读取时显示"未知"。
-        """
-
-        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
-        catalog = self._selection_catalog
-        if tree is None or catalog is None:
-            return
-        accelerator = self._selection_accelerator
-        if accelerator is None:
-            tree.clear()
-            return
-        variants = catalog.variants_for_accelerator(accelerator)
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            # 融合模式：gpu_runtime（CUDA/Torch）是 mineru-gpu 环境的闭包
-            # 组件，不是可独立安装的引擎环境——描述翻译（describe_selection）
-            # 没有对应目标。若仍可勾选，仅勾它会得到空安装集并把已装引擎
-            # 全部解释为待移除。此处隐藏该行；CUDA 运行时是否在位由
-            # mineru-gpu 的安装状态表达。
-            variants = tuple(
-                variant
-                for variant in variants
-                if variant.feature_id != "gpu_runtime"
-            )
-        try:
-            from vibeocr.classic.managers.config_manager import ConfigManager
-
-            selected = set(
-                migrate_legacy_feature_ids(
-                    ConfigManager.instance().get_offline_component_features(accelerator)
-                )
-            )
-        except RuntimeError:
-            selected = set()
-        tree.clear()
-        for variant in variants:
-            label = self._FEATURE_LABELS.get(variant.feature_id, variant.feature_id)
-            state = self._runtime_component_states.get(variant.component_id)
-            status_text = self._COMPONENT_STATE_LABELS.get(
-                state, "— 未知" if state is None else f"? {state}"
-            )
-            item = QTreeWidgetItem([label, status_text])
-            item.setData(0, Qt.ItemDataRole.UserRole, variant.feature_id)
-            item.setToolTip(1, f"组件 {variant.component_id} 的实际安装状态")
-            item.setCheckState(
-                0,
-                Qt.CheckState.Checked
-                if variant.feature_id in selected
-                else Qt.CheckState.Unchecked,
-            )
-            tree.addTopLevelItem(item)
-
-    def _selected_offline_features(self) -> tuple[str, ...]:
-        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
-        if tree is None:
-            return ()
-        features: list[str] = []
-        for index in range(tree.topLevelItemCount()):
-            item = tree.topLevelItem(index)
-            if item.checkState(0) != Qt.CheckState.Checked:
-                continue
-            feature_id = item.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(feature_id, str):
-                features.append(feature_id)
-        return tuple(features)
-
-    _ACCELERATOR_LABELS = {
-        "cpu": "CPU",
-        "nvidia_cuda": "GPU（NVIDIA CUDA）",
-    }
-
-    _ACCELERATOR_TO_BACKEND = {
-        "cpu": "cpu",
-        "nvidia_cuda": "gpu",
-    }
-
-    def _resolve_install_accelerator(self, features) -> tuple[str, bool] | None:
-        """确定可选能力安装目标；返回 (accelerator, 需切换 Runtime) 或 None。
-
-        已选定 CPU/GPU 完整 profile 时直接沿用当前后端，不再询问；仅当
-        当前是基础 Runtime（未选择加速框架）且目录声明多套加速方案时，
-        先询问用户并把所选后端作为完整 profile 切换目标，避免"顶着 CPU
-        的壳下载 GPU 组件"。None 表示用户取消或所选能力无可用后端。
-        """
-
-        catalog = self._selection_catalog
-        assert catalog is not None  # 调用方已校验
-        current_backend = self._runtime_backend_or_none()
-        current_accelerator = (
-            {"cpu": "cpu", "gpu": "nvidia_cuda"}.get(current_backend)
-            if current_backend
-            else None
-        )
-        candidates: list[str] = []
-        for accelerator in sorted({v.accelerator for v in catalog.variants}):
-            try:
-                catalog.component_ids_for_features(features, accelerator)
-            except RuntimeSelectionError:
-                continue
-            candidates.append(accelerator)
-        if not candidates:
-            return None
-        # 已选定完整 profile：直接沿用，不重复询问。
-        if current_accelerator in candidates:
-            return current_accelerator, False
-        if len(candidates) == 1:
-            return candidates[0], current_accelerator is None
-        dialog = QMessageBox()
-        dialog.setIcon(QMessageBox.Icon.Question)
-        dialog.setWindowTitle("选择计算设备")
-        dialog.setText(
-            "当前 Runtime 尚未选择加速框架（基础 Runtime）。\n"
-            "所选可选能力提供 CPU 与 GPU 组件；请选择要应用的计算设备："
-        )
-        accelerator_by_button: dict[QMessageBox.QAbstractButton, str] = {}
-        for accelerator in candidates:
-            button = dialog.addButton(
-                self._ACCELERATOR_LABELS.get(accelerator, accelerator),
-                QMessageBox.ButtonRole.AcceptRole,
-            )
-            accelerator_by_button[button] = accelerator
-        dialog.addButton(QMessageBox.StandardButton.Cancel)
-        dialog.exec()
-        chosen = accelerator_by_button.get(dialog.clickedButton())
-        if chosen is None:
-            return None
-        # 基础态下任何选择都是切换到完整 profile。
-        return chosen, True
-
-    def _on_install_offline_features(self) -> None:
-        from vibeocr.classic.backend_host import inprocess_backend_enabled
-
-        if inprocess_backend_enabled():
-            self._install_offline_features_fused()
-            return
-        catalog = self._selection_catalog
-        accelerator = self._selection_accelerator
-        if catalog is None or accelerator is None:
-            QMessageBox.information(
-                None,
-                "暂不可用",
-                "当前 Backend 未提供可选能力目录，无法安装可选组件。",
-            )
-            return
-        features = self._selected_offline_features()
-        if not features:
-            QMessageBox.information(
-                None,
-                "未选择能力",
-                "请先勾选需要安装的可选能力。",
-            )
-            return
-        resolved = self._resolve_install_accelerator(features)
-        if resolved is None:
-            return
-        accelerator, needs_backend_switch = resolved
-        try:
-            component_ids = catalog.component_ids_for_features(features, accelerator)
-        except RuntimeSelectionError as exc:
-            QMessageBox.warning(None, "无法解析所选能力", str(exc))
-            return
-        names = "、".join(
-            self._FEATURE_LABELS.get(feature, feature) for feature in features
-        )
-        accelerator_label = self._ACCELERATOR_LABELS.get(accelerator, accelerator)
-        if needs_backend_switch:
-            operation = (
-                f"当前为基础 Runtime，将切换到 {accelerator_label} 运行环境，"
-                f"并安装所选引擎组件：{names}。"
-            )
-        else:
-            operation = f"即将为 {accelerator_label} 后端在线下载并安装：{names}。"
-        answer = QMessageBox.question(
-            None,
-            "安装可选组件",
-            (f"{operation}\n下载量可能较大，安装期间会停止当前推理服务。\n是否继续？"),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            from vibeocr.classic.managers.config_manager import ConfigManager
-
-            ConfigManager.instance().set_offline_component_features(
-                accelerator, list(features)
-            )
-        except RuntimeError:
-            pass
-        source_ids = self._resolve_download_source_ids()
-        self._show_install_dialog(
-            install_component_ids=component_ids,
-            download_source_ids=source_ids,
-            force_backend=(
-                self._ACCELERATOR_TO_BACKEND.get(accelerator)
-                if needs_backend_switch
-                else None
-            ),
-        )
 
     def install_recognition_mode(self, mode) -> None:
         """按已协商 mode 的 required_component 引导安装高级能力。"""
@@ -3328,8 +2239,18 @@ class SettingsPageController:
             layout.indexOf(save_button) if save_button is not None else layout.count()
         )
         rows = (
-            ("package_index", "依赖下载来源：", PACKAGE_INDEXES, saved["package_index_id"]),
-            ("model_registry", "模型下载来源：", MODEL_SOURCES, saved["model_source_id"]),
+            (
+                "package_index",
+                "依赖下载来源：",
+                PACKAGE_INDEXES,
+                saved["package_index_id"],
+            ),
+            (
+                "model_registry",
+                "模型下载来源：",
+                MODEL_SOURCES,
+                saved["model_source_id"],
+            ),
         )
         for offset, (kind, kind_label, catalog_items, selected_id) in enumerate(rows):
             row = QWidget(self._ui)
@@ -3484,7 +2405,7 @@ class SettingsPageController:
     # ----------------------------------------------------------------
 
     def _init_mineru_connection_group(self) -> None:
-        """在「识别设置」页动态加入 MinerU 连接分组。
+        """在「运行环境」页动态加入 MinerU 连接分组。
 
         分组按 capability ``ocr.mineru-remote-api.v1`` fail closed：未声明
         该能力的 Backend 整组禁用并说明原因，不构造远程配置请求。远程解析
@@ -3492,7 +2413,7 @@ class SettingsPageController:
         """
         if self._ui.findChild(QWidget, "groupMineruConnection") is not None:
             return
-        page_layout = self._ui.findChild(QVBoxLayout, "pageRecognitionLayout")
+        page_layout = self._ui.findChild(QVBoxLayout, "pageRuntimeLayout")
         if page_layout is None:
             return
         group = QGroupBox("MinerU 连接", self._ui)
@@ -3627,7 +2548,7 @@ class SettingsPageController:
                 label.setToolTip(tip)
 
     def _on_mineru_api_key_edited(self, _text: str) -> None:
-        """用户输入新 Key 即撤销“清除”请求，避免误删已保存凭据。"""
+        """用户输入新 Key 即撤销"清除"请求，避免误删已保存凭据。"""
         if not self._mineru_key_clear_requested:
             return
         self._mineru_key_clear_requested = False
@@ -3833,18 +2754,6 @@ class SettingsPageController:
         prepare_button = self._ui.findChild(QPushButton, "btnPrepareMineruRemote")
         if prepare_button is not None:
             prepare_button.setEnabled(True)
-
-    def _refresh_selection_availability(self) -> None:
-        """Backend 未声明选择能力时禁用对应 UI，而不是构造请求。"""
-
-        catalog = self._selection_catalog
-        tree = self._ui.findChild(QTreeWidget, "treeOfflineFeatures")
-        button = self._ui.findChild(QPushButton, "btnInstallOfflineFeatures")
-        has_variants = catalog is not None and bool(catalog.variants)
-        if tree is not None:
-            tree.setEnabled(has_variants)
-        if button is not None:
-            button.setEnabled(has_variants)
 
     def _on_residency_status(self, status: object) -> None:
         if self._closing or not isinstance(status, ResidencyStatus):

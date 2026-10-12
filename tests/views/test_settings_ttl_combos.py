@@ -101,12 +101,8 @@ def env(qtbot, tmp_path):
     ui.setupUi(host)
     with (
         patch(
-            "vibeocr.classic.widgets.backend_options_widget."
-            "BackendOptionsWidget._start_gpu_detection"
-        ),
-        patch(
-            "vibeocr.classic.views.settings_page_controller."
-            "SettingsPageController._refresh_env_maintenance_state"
+            "vibeocr.classic.widgets.runtime_environment_widget."
+            "RuntimeEnvironmentWidget._start_gpu_detection"
         ),
         patch(
             "vibeocr.classic.views.settings_page_controller.is_cache_valid",

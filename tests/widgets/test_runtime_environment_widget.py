@@ -98,7 +98,7 @@ class _SlowQThreadGpuDetectWorker(QThread):
                 "runtime_installed": True,
                 "runtime_device": "cpu",
                 "runtime_profile": "win-x64-cpu",
-                "installed_engines": (),
+                "installed_envs": (),
                 "device_preference": None,
             }
         )
@@ -108,7 +108,7 @@ def _make_widget(
     tmp_path,
     has_gpu=True,
     runtime_device: str | None = "cpu",
-    installed_engines: tuple[str, ...] = (),
+    installed_envs: tuple[str, ...] = (),
     device_preference: str | None = None,
     worker_cls: type[_StubGpuDetectWorker]
     | type[_RunningStubGpuDetectWorker] = _StubGpuDetectWorker,
@@ -130,7 +130,7 @@ def _make_widget(
             "gpu": "win-x64-cu126",
             None: "win-x64-base",
         }[runtime_device],
-        "installed_engines": installed_engines,
+        "installed_envs": installed_envs,
         "device_preference": device_preference,
     }
 
@@ -155,7 +155,7 @@ def _cleanup():
 
 def test_shows_current_device_gpu(_cleanup, qtbot, tmp_path):
     widget = _make_widget(
-        tmp_path, has_gpu=True, runtime_device="gpu", installed_engines=("paddle",)
+        tmp_path, has_gpu=True, runtime_device="gpu", installed_envs=("paddle-gpu",)
     )
     qtbot.addWidget(widget)
     assert widget.current_backend() == "gpu"
@@ -168,7 +168,7 @@ def test_shows_current_device_gpu(_cleanup, qtbot, tmp_path):
 
 def test_shows_current_device_cpu_when_no_gpu(_cleanup, qtbot, tmp_path):
     widget = _make_widget(
-        tmp_path, has_gpu=False, runtime_device="cpu", installed_engines=("mineru",)
+        tmp_path, has_gpu=False, runtime_device="cpu", installed_envs=("mineru-cpu",)
     )
     qtbot.addWidget(widget)
     assert widget.current_backend() == "cpu"
@@ -226,15 +226,44 @@ def test_apply_disabled_when_selection_matches_state(_cleanup, qtbot, tmp_path):
         tmp_path,
         has_gpu=True,
         runtime_device="gpu",
-        installed_engines=("paddle", "mineru"),
+        installed_envs=("mineru-gpu", "paddle-gpu"),
     )
     qtbot.addWidget(widget)
     # 状态回填后单选/勾选与安装态一致，无变更可应用。
     assert not widget._apply_button.isEnabled()
 
 
+def test_mixed_flavors_keep_apply_enabled_for_cleanup(_cleanup, qtbot, tmp_path):
+    """设备切换中断留下的新旧双版本（paddle-cpu + paddle-gpu）可再次应用清理。
+
+    按家族折叠会把混合态显示成“GPU + Paddle 已选”，应用按钮被错误禁用，
+    用户只能卸载整个引擎重装。
+    """
+    widget = _make_widget(
+        tmp_path,
+        has_gpu=True,
+        runtime_device="gpu",
+        installed_envs=("paddle-cpu", "paddle-gpu"),
+    )
+    qtbot.addWidget(widget)
+    assert widget._paddle_check.isChecked()
+    assert widget._gpu_radio.isChecked()
+    assert widget._can_apply() is True
+    assert widget._apply_button.isEnabled()
+
+
+def test_fresh_state_without_preference_not_applyable(_cleanup, qtbot, tmp_path):
+    """全新安装（无引擎、无偏好）时默认 CPU 不算待应用变更。"""
+    widget = _make_widget(tmp_path, has_gpu=True, runtime_device=None)
+    qtbot.addWidget(widget)
+    assert widget._cpu_radio.isChecked()
+    assert widget._can_apply() is False
+
+
 def test_engine_uncheck_counts_as_change(_cleanup, qtbot, tmp_path):
-    widget = _make_widget(tmp_path, runtime_device="cpu", installed_engines=("paddle",))
+    widget = _make_widget(
+        tmp_path, runtime_device="cpu", installed_envs=("paddle-cpu",)
+    )
     qtbot.addWidget(widget)
     assert not widget._apply_button.isEnabled()
     widget._paddle_check.setChecked(False)
@@ -263,7 +292,7 @@ def test_current_backend_matches_installed_state_not_live_detect(
         tmp_path,
         has_gpu=False,
         runtime_device="gpu",
-        installed_engines=("paddle",),
+        installed_envs=("paddle-gpu",),
     )
     qtbot.addWidget(widget)
     assert widget.current_backend() == "gpu"
@@ -284,8 +313,9 @@ def test_gpu_worker_uses_runtime_installer_state(
         accelerator="nvidia_cuda",
         profile="win-x64-cu126",
         components=(
-            SimpleNamespace(component_id="paddleocr-cuda"),
-            SimpleNamespace(component_id="rapidocr-base"),
+            SimpleNamespace(component_id="paddleocr-cuda", actual_state="ready"),
+            SimpleNamespace(component_id="rapidocr-base", actual_state="ready"),
+            SimpleNamespace(component_id="mineru-cuda", actual_state="missing"),
         ),
     )
     monkeypatch.setattr(
@@ -309,7 +339,8 @@ def test_gpu_worker_uses_runtime_installer_state(
 
     info = received[0]
     assert info["runtime_device"] == "gpu"
-    assert info["installed_engines"] == ("paddle",)
+    # missing 的 mineru-cuda 不计入已装；ready 的 paddleocr-cuda 投影为 spec。
+    assert info["installed_envs"] == ("paddle-gpu",)
     client.inspect.assert_called_once_with()
 
 
@@ -369,7 +400,7 @@ def test_gpu_worker_fused_uses_engine_envs(_cleanup, qtbot, tmp_path, monkeypatc
     # 基础识别内置即就绪；paddle-gpu 在位 → GPU 设备与 paddle 引擎。
     assert info["runtime_installed"] is True
     assert info["runtime_device"] == "gpu"
-    assert info["installed_engines"] == ("paddle",)
+    assert info["installed_envs"] == ("paddle-gpu",)
 
 
 def test_gpu_worker_fused_base_only_reports_no_device(
@@ -419,7 +450,7 @@ def test_gpu_worker_fused_base_only_reports_no_device(
     info = received[0]
     assert info["runtime_installed"] is True
     assert info["runtime_device"] is None
-    assert info["installed_engines"] == ()
+    assert info["installed_envs"] == ()
 
 
 def test_gpu_worker_fused_inspect_failure_still_emits(
@@ -530,7 +561,7 @@ def test_close_drops_late_gpu_detection_result(_cleanup, qtbot, tmp_path):
                 "runtime_installed": True,
                 "runtime_device": "gpu",
                 "runtime_profile": "win-x64-cu126",
-                "installed_engines": ("paddle",),
+                "installed_envs": ("paddle-gpu",),
                 "device_preference": None,
             }
         )

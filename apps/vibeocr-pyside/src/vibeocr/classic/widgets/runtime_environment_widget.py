@@ -58,17 +58,27 @@ def _read_engine_device_preference(project_root: Path) -> str | None:
     return value if value in {"cpu", "gpu"} else None
 
 
-def _legacy_installed_engines(components: tuple[Any, ...]) -> tuple[str, ...]:
-    """从 Installer 组件闭包投影已安装引擎家族（paddle/mineru）。"""
+def _legacy_installed_envs(
+    components: tuple[Any, ...], accelerator: str | None
+) -> tuple[str, ...]:
+    """从 Installer 组件闭包投影已装引擎环境（spec id 词汇）。
 
-    engines: set[str] = set()
+    只统计 ``actual_state == "ready"`` 的组件：inspection 的闭包同时包含
+    ``missing`` / ``drifted`` / ``not_required`` 的可选组件，仅凭
+    component_id 前缀会把未安装组件回显成已勾选，并让应用按钮错误禁用。
+    """
+
+    device = "gpu" if accelerator == "nvidia_cuda" else "cpu"
+    envs: set[str] = set()
     for component in components:
+        if getattr(component, "actual_state", None) != "ready":
+            continue
         component_id = getattr(component, "component_id", "") or ""
         if component_id.startswith("paddleocr-"):
-            engines.add("paddle")
+            envs.add(f"paddle-{device}")
         elif component_id.startswith("mineru-"):
-            engines.add("mineru")
-    return tuple(sorted(engines))
+            envs.add(f"mineru-{device}")
+    return tuple(sorted(envs))
 
 
 class _GpuDetectWorker(QThread):
@@ -117,13 +127,11 @@ class _GpuDetectWorker(QThread):
                 framework = device_framework(states)
                 runtime_installed = True
                 runtime_device = framework
-                installed_engines = tuple(
+                # 保留具体 spec（paddle-cpu / paddle-gpu / …）：切换中断可能
+                # 同时留下新旧两个版本，按家族折叠会掩盖这种残留态。
+                installed_envs = tuple(
                     sorted(
-                        {
-                            spec_id.split("-")[0]
-                            for spec_id, state in states.items()
-                            if state.installed
-                        }
+                        spec_id for spec_id, state in states.items() if state.installed
                     )
                 )
                 runtime_profile = {
@@ -138,7 +146,7 @@ class _GpuDetectWorker(QThread):
                 logger.exception("[RuntimeEnvironment] 引擎环境状态读取异常")
                 runtime_installed = False
                 runtime_device = None
-                installed_engines = ()
+                installed_envs = ()
                 runtime_profile = ""
             device_preference = _read_engine_device_preference(self._project_root)
         else:
@@ -165,21 +173,21 @@ class _GpuDetectWorker(QThread):
                 runtime_profile = (
                     getattr(inspection, "profile", "") if runtime_installed else ""
                 )
-                installed_engines = _legacy_installed_engines(
-                    tuple(getattr(inspection, "components", ()) or ())
+                installed_envs = _legacy_installed_envs(
+                    tuple(getattr(inspection, "components", ()) or ()), accelerator
                 )
             except Exception:
                 logger.exception("[RuntimeEnvironment] Runtime Installer 状态读取异常")
                 runtime_installed = False
                 runtime_device = None
-                installed_engines = ()
+                installed_envs = ()
                 runtime_profile = ""
         if self._cancelled.is_set():
             return
         info["runtime_installed"] = runtime_installed
         info["runtime_device"] = runtime_device
         info["runtime_profile"] = runtime_profile
-        info["installed_engines"] = installed_engines
+        info["installed_envs"] = installed_envs
         info["device_preference"] = device_preference
         self.finished_info.emit(dict(info))
 
@@ -210,7 +218,7 @@ class RuntimeEnvironmentWidget(QWidget):
         self._project_root = project_root
         self._has_gpu = False
         self._current_device: str | None = None
-        self._installed_engines: tuple[str, ...] = ()
+        self._installed_envs: frozenset[str] = frozenset()
         self._device_preference: str | None = None
         self._runtime_installed = False
         self._change_in_progress = False
@@ -309,7 +317,7 @@ class RuntimeEnvironmentWidget(QWidget):
 
     def _show_detecting_state(self) -> None:
         self._current_device = None
-        self._installed_engines = ()
+        self._installed_envs = frozenset()
         self._device_preference = None
         self._runtime_installed = False
         self._status_label.setText("运行环境：检测中...")
@@ -418,7 +426,7 @@ class RuntimeEnvironmentWidget(QWidget):
         self._current_device = info.get("runtime_device")
         if self._current_device not in {"cpu", "gpu"}:
             self._current_device = None
-        self._installed_engines = tuple(info.get("installed_engines") or ())
+        self._installed_envs = frozenset(info.get("installed_envs") or ())
         self._device_preference = info.get("device_preference")
 
         if not self._has_gpu:
@@ -443,6 +451,10 @@ class RuntimeEnvironmentWidget(QWidget):
         self._update_apply_state()
         self.gpu_capability_resolved.emit(self._current_device == "gpu")
 
+    def _installed_families(self) -> set[str]:
+        """已装引擎的家族集合（paddle/mineru），用于勾选框回显。"""
+        return {spec_id.split("-")[0] for spec_id in self._installed_envs}
+
     def _render_current_state(self) -> None:
         """按当前安装态渲染状态行与控件可用性。"""
         if not self._runtime_installed:
@@ -457,7 +469,7 @@ class RuntimeEnvironmentWidget(QWidget):
                 )
             engines = "、".join(
                 _ENGINE_LABELS[engine]
-                for engine in self._installed_engines
+                for engine in sorted(self._installed_families())
                 if engine in _ENGINE_LABELS
             )
             parts.append(f"已安装引擎：{engines}" if engines else "未安装可选引擎")
@@ -477,8 +489,9 @@ class RuntimeEnvironmentWidget(QWidget):
         if device == "gpu" and not (self._has_gpu or self._current_device == "gpu"):
             device = "cpu"
         (self._gpu_radio if device == "gpu" else self._cpu_radio).setChecked(True)
+        families = self._installed_families()
         for engine, check in self._engine_checks.items():
-            check.setChecked(engine in self._installed_engines)
+            check.setChecked(engine in families)
 
     def current_backend(self) -> str | None:
         return self._current_device
@@ -491,16 +504,30 @@ class RuntimeEnvironmentWidget(QWidget):
             engine for engine, check in self._engine_checks.items() if check.isChecked()
         )
 
-    def _effective_current_device(self) -> str | None:
-        """比较应用按钮状态用的“当前设备”：安装态优先，其次保存的偏好。"""
-        return self._current_device or self._device_preference
+    def _selected_envs(self) -> frozenset[str]:
+        """当前选择对应的目标引擎环境集合（spec id，含设备 flavor）。"""
+        device = self.selected_device()
+        return frozenset(f"{engine}-{device}" for engine in self.selected_engines())
+
+    def _effective_current_device(self) -> str:
+        """比较应用按钮状态用的“当前设备”：安装态优先，其次偏好，缺省 CPU。"""
+        return self._current_device or self._device_preference or "cpu"
 
     def _can_apply(self) -> bool:
+        """选择是否偏离安装态。
+
+        按完整 spec 集合比较：设备切换中断可能同时留下新旧两个版本
+        （如 paddle-cpu + paddle-gpu），按家族折叠会掩盖残留、禁用清理
+        入口；spec 级比较让残留态始终可再次应用清理。
+        """
         if self._change_in_progress:
             return False
-        if self.selected_device() != self._effective_current_device():
+        if self._selected_envs() != self._installed_envs:
             return True
-        return set(self.selected_engines()) != set(self._installed_engines)
+        # 无引擎时设备偏好仍可独立变更（安装流程读取该偏好）。
+        return not self._selected_envs() and (
+            self.selected_device() != self._effective_current_device()
+        )
 
     def _update_apply_state(self) -> None:
         self._apply_button.setEnabled(self._can_apply())

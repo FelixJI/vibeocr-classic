@@ -721,7 +721,19 @@ class SettingsPageController:
 
         gpu = device == "gpu"
         self._set_engine_device_preference(device)
-        states = self._engine_env_manager().inspect()
+        try:
+            states = self._engine_env_manager().inspect()
+        except Exception:
+            # 应用入口在 Qt 槽内同步 inspect：清单/wheel/磁盘读取异常不得
+            # 逸出槽外，否则组件停在“进行中”且无提示、无法重试。
+            logger.exception("应用运行环境更改前读取引擎环境状态失败")
+            self._reset_runtime_widget_progress()
+            QMessageBox.warning(
+                None,
+                "无法读取运行环境状态",
+                "读取引擎环境安装状态失败，已取消本次应用；请重试。",
+            )
+            return
         installed_ids = {sid for sid, state in states.items() if state.installed}
         target_ids = describe_selection(
             paddle="paddle" in engines, mineru="mineru" in engines, gpu=gpu
@@ -787,16 +799,35 @@ class SettingsPageController:
         if not features:
             answer = QMessageBox.question(
                 None,
-                "切换计算设备",
-                "将切换到 "
-                f"{'GPU（NVIDIA CUDA）' if device == 'gpu' else 'CPU'} 运行环境，"
-                "确认后通过可见安装流程校验或切换。\n是否继续？",
+                "应用运行环境更改",
+                "将把运行环境调整为仅基础 Runtime：已安装的可选识别引擎会被"
+                "移除并释放磁盘空间；并按 "
+                f"{'GPU（NVIDIA CUDA）' if device == 'gpu' else 'CPU'} 设备校验。\n"
+                "是否继续？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
                 self._reset_runtime_widget_progress()
                 return
-            self._open_install_dialog(force_backend=device)
+            # 勾选即安装意图：空选择同样持久化，避免旧意图把基础闭包
+            # 又解释成待装组件。
+            try:
+                from vibeocr.classic.managers.config_manager import ConfigManager
+
+                ConfigManager.instance().set_offline_component_features(
+                    "nvidia_cuda" if device == "gpu" else "cpu", []
+                )
+            except Exception:
+                logger.exception("能力选择持久化失败")
+            # 空闭包 () 是协议语义“仅基础 Runtime”：Installer 会把基础外
+            # 组件置为 not_required 并移除；None 则是 Backend 默认范围，
+            # 卸不掉已装的可选引擎。
+            self._show_install_dialog(
+                install_component_ids=(),
+                force_backend=(
+                    device if self._runtime_backend_or_none() != device else None
+                ),
+            )
             return
 
         catalog = self._selection_catalog
@@ -891,7 +922,9 @@ class SettingsPageController:
     def _on_engine_env_finished(self, success: bool) -> None:
         backend_options = getattr(self, "_backend_options", None)
         if backend_options is not None:
-            backend_options.set_change_in_progress(False)
+            # 安装/移除/切换改变了磁盘状态：必须重新探测回填，仅解除
+            # “进行中”标记会让界面停留在操作前的引擎与设备状态。
+            backend_options.refresh_runtime_state()
         callback = (
             self._install_succeeded_callback
             if success

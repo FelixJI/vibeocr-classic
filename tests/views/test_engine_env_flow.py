@@ -186,6 +186,40 @@ def test_apply_switches_installed_engine_flavor(
     assert opened == [(["paddle-gpu"], ["paddle-cpu"])]
 
 
+def test_engine_env_finish_refreshes_widget_state(fused_controller) -> None:
+    """引擎环境对话框结束后必须重新探测，而不是用旧状态解除进行中标记。"""
+    from unittest.mock import MagicMock
+
+    controller, _host, _manager = fused_controller
+    options = MagicMock()
+    controller._backend_options = options
+
+    controller._on_engine_env_finished(True)
+
+    options.refresh_runtime_state.assert_called_once_with()
+    options.set_change_in_progress.assert_not_called()
+
+
+def test_fused_apply_inspect_failure_recovers_widget(
+    fused_controller, monkeypatch
+) -> None:
+    """应用阶段引擎环境检查抛错：提示用户并恢复控件，异常不逸出槽外。"""
+    from PySide6.QtWidgets import QMessageBox
+
+    controller, _host, manager = fused_controller
+    manager.inspect.side_effect = RuntimeError("resources unreadable")
+
+    warnings: list[tuple] = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: warnings.append(a))
+    opened = _install_engine_env_dialog(monkeypatch)
+
+    controller._on_runtime_change_requested("cpu", ["paddle"])
+
+    assert opened == []
+    assert len(warnings) == 1
+    assert controller._backend_options._change_in_progress is False
+
+
 def test_engine_env_finished_invokes_succeeded_callback(fused_controller) -> None:
     controller, _host, _manager = fused_controller
     calls: list[str] = []

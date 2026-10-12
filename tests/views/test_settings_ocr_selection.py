@@ -426,6 +426,38 @@ def test_apply_portable_skips_backend_switch_when_already_on_device(
     assert captured["force_backend"] is None
 
 
+def test_apply_portable_empty_engines_requests_base_only(
+    selection_controller,
+) -> None:
+    """便携形态取消全部引擎：空闭包 () 表示仅基础 Runtime，可卸载可选组件。"""
+    controller, _host, _adapter, config, _manager = selection_controller
+    controller._backend_options = MagicMock(
+        current_backend=lambda: "cpu",
+        set_change_in_progress=MagicMock(),
+    )
+
+    controller._on_health_loaded(_health_payload())
+
+    captured: dict[str, object] = {}
+
+    def _fake_show_install_dialog(**kwargs) -> None:
+        captured.update(kwargs)
+
+    controller._show_install_dialog = _fake_show_install_dialog  # type: ignore[method-assign]
+
+    with patch(
+        "vibeocr.classic.views.settings_page_controller.QMessageBox.question",
+        return_value=QMessageBox.StandardButton.Yes,
+    ):
+        controller._on_runtime_change_requested("cpu", [])
+
+    # () 是协议的“仅基础 Runtime”；None 会退回 Backend 默认范围卸不掉组件。
+    assert captured["install_component_ids"] == ()
+    # 已在 CPU 设备上，无需切换。
+    assert captured["force_backend"] is None
+    config.set_offline_component_features.assert_called_once_with("cpu", [])
+
+
 def test_apply_portable_declined_does_not_install(
     selection_controller,
 ) -> None:

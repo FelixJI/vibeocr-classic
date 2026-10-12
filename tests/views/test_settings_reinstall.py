@@ -117,8 +117,8 @@ def test_device_only_apply_declined_does_not_stop_service(controller, monkeypatc
     options = MagicMock()
     options.current_backend.return_value = None
     ctrl._backend_options = options
-    open_install = MagicMock()
-    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    show_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_show_install_dialog", show_install)
     monkeypatch.setattr(
         QMessageBox,
         "question",
@@ -127,20 +127,23 @@ def test_device_only_apply_declined_does_not_stop_service(controller, monkeypatc
 
     ctrl._on_runtime_change_requested("gpu", [])
 
-    open_install.assert_not_called()
+    show_install.assert_not_called()
     ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
     options.set_change_in_progress.assert_called_once_with(False)
 
 
-def test_device_only_apply_confirmed_opens_visible_install(controller, monkeypatch):
+def test_device_only_apply_confirmed_requests_base_only_closure(
+    controller, monkeypatch
+):
+    """无引擎申请 = 仅基础 Runtime 闭包（()），按需切换设备。"""
     from PySide6.QtWidgets import QMessageBox
 
     ctrl, _host = controller
     options = MagicMock()
     options.current_backend.return_value = None
     ctrl._backend_options = options
-    open_install = MagicMock()
-    monkeypatch.setattr(ctrl, "_open_install_dialog", open_install)
+    show_install = MagicMock()
+    monkeypatch.setattr(ctrl, "_show_install_dialog", show_install)
     monkeypatch.setattr(
         QMessageBox,
         "question",
@@ -149,7 +152,7 @@ def test_device_only_apply_confirmed_opens_visible_install(controller, monkeypat
 
     ctrl._on_runtime_change_requested("gpu", [])
 
-    open_install.assert_called_once_with(force_backend="gpu")
+    show_install.assert_called_once_with(install_component_ids=(), force_backend="gpu")
 
 
 def test_uninstalled_runtime_is_not_inferred_as_cpu(controller):

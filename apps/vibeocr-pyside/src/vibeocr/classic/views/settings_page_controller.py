@@ -880,14 +880,23 @@ class SettingsPageController:
         return self._project_root / "config" / "engine-device.json"
 
     def _set_engine_device_preference(self, device: str) -> None:
+        """尽力持久化设备偏好（无引擎时的回显/后续安装参考）。
+
+        写入失败（配置目录不可写、磁盘满、原子替换失败）只影响后续
+        回显，本次应用的设备目标由调用方显式给出，不依赖该文件；
+        因此不抛出，避免异常逸出 Qt 槽并让控件停在“进行中”。
+        """
         from vibeocr.classic.json_storage import write_json_atomic
 
         if device not in {"cpu", "gpu"}:
             return
-        write_json_atomic(
-            self._engine_device_preference_path(),
-            {"schema_version": 1, "device": device},
-        )
+        try:
+            write_json_atomic(
+                self._engine_device_preference_path(),
+                {"schema_version": 1, "device": device},
+            )
+        except Exception:
+            logger.exception("设备偏好写入失败（不影响本次应用）")
 
     def _open_engine_env_dialog(
         self, install_ids: list[str], remove_ids: list[str]

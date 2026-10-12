@@ -200,6 +200,25 @@ def test_engine_env_finish_refreshes_widget_state(fused_controller) -> None:
     options.set_change_in_progress.assert_not_called()
 
 
+def test_fused_apply_survives_preference_write_failure(
+    fused_controller, monkeypatch
+) -> None:
+    """设备偏好写入失败只记日志：应用目标由本次请求显式给出，不阻断安装。"""
+
+    controller, _host, _manager = fused_controller
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("vibeocr.classic.json_storage.write_json_atomic", _boom)
+    _auto_confirm(monkeypatch, _yes())
+    opened = _install_engine_env_dialog(monkeypatch)
+
+    controller._on_runtime_change_requested("cpu", ["paddle"])
+
+    assert opened == [(["paddle-cpu"], [])]
+
+
 def test_fused_apply_inspect_failure_recovers_widget(
     fused_controller, monkeypatch
 ) -> None:

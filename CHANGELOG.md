@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.4
+
+### Features
+
+- **settings:** 整合运行环境与识别依赖为统一选择页 (#126) (81cfc53)
+
 ## 0.11.3
 
 ### Bug Fixes

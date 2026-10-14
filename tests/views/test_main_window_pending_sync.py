@@ -43,6 +43,14 @@ def test_legacy_pending_backend_does_not_control_startup() -> None:
         _ocr_ready=True,
         _machine_cache_data={"pending_backend": "gpu"},
         _start_supervisor=MagicMock(),
+        _subprocess_manager=SimpleNamespace(maintenance_in_progress=False),
+        _supervisor_start_retry_timer=None,
+    )
+    window._start_supervisor_when_maintenance_done = (
+        MainWindow._start_supervisor_when_maintenance_done.__get__(window)
+    )
+    window._stop_supervisor_start_retry = (
+        MainWindow._stop_supervisor_start_retry.__get__(window)
     )
 
     MainWindow._continue_ready_startup(window)

@@ -106,6 +106,11 @@ class MainWindow(QMainWindow):
         self._shutdown_gui_probes: tuple[tuple[str, Any], ...] = ()
         self._startup_update_task: Any = None
         self._pending_maintenance_dialog: Any = None
+        # 维护协调器探针用：首启安装对话框 exec() 打开期间为 True。
+        self._install_dialog_open = False
+        self._pending_maintenance_token: Any = None
+        # 维护期间推迟 Supervisor 恢复启动的重试定时器。
+        self._supervisor_start_retry_timer: Any = None
         self._shutdown_poll_timer = QTimer(self)
         self._shutdown_poll_timer.setInterval(self._SHUTDOWN_POLL_INTERVAL_MS)
         self._shutdown_poll_timer.timeout.connect(self._poll_shutdown_state)
@@ -835,7 +840,55 @@ class MainWindow(QMainWindow):
         if self._closing or not self._ocr_ready:
             return
 
+        self._start_supervisor_when_maintenance_done()
+
+    #: 维护期间 Supervisor 启动重试间隔（测试可缩短）。
+    _SUPERVISOR_START_RETRY_INTERVAL_MS = 500
+
+    def _start_supervisor_when_maintenance_done(self) -> None:
+        """维护（含排队）全部结束前不启动 Supervisor。
+
+        前一维护完成后的依赖检查是异步的：其迟到恢复若在下一个维护
+        流程进行中启动 Supervisor，会抢占正在安装/删除的 Runtime 与
+        引擎环境。维护期间改为定时重试，全部结束后再启动。
+        """
+        if self._closing:
+            self._stop_supervisor_start_retry()
+            return
+        manager = self._subprocess_manager
+        if (
+            getattr(manager, "maintenance_in_progress", False)
+            or getattr(manager, "is_invalidating", False)
+            or getattr(manager, "is_starting", False)
+        ):
+            # 维护/失效/启动在途：启动要么抢占维护、要么被底层拒绝，
+            # 继续等待重试。
+            self._ensure_supervisor_start_retry()
+            return
+        if getattr(manager, "holds_runtime_process", False) or not self._ocr_ready:
+            # 失效失败会留下未确认退出的进程 owner：此时启动会叠加
+            # 第二个 Supervisor 并覆盖旧句柄，旧后端泄漏；_ocr_ready
+            # 也可能已被后续检测改变。停止重试，交还用户入口处理。
+            self._stop_supervisor_start_retry()
+            return
+        self._stop_supervisor_start_retry()
         self._start_supervisor()
+
+    def _ensure_supervisor_start_retry(self) -> None:
+        if self._supervisor_start_retry_timer is None:
+            self._supervisor_start_retry_timer = QTimer(self)
+            self._supervisor_start_retry_timer.setInterval(
+                self._SUPERVISOR_START_RETRY_INTERVAL_MS
+            )
+            self._supervisor_start_retry_timer.timeout.connect(
+                self._start_supervisor_when_maintenance_done
+            )
+        if not self._supervisor_start_retry_timer.isActive():
+            self._supervisor_start_retry_timer.start()
+
+    def _stop_supervisor_start_retry(self) -> None:
+        if self._supervisor_start_retry_timer is not None:
+            self._supervisor_start_retry_timer.stop()
 
     def _check_pending_sync(self) -> bool:
         """清理旧逐包同步标记；组件升级不再接管启动流程。"""
@@ -949,25 +1002,42 @@ class MainWindow(QMainWindow):
             return
 
         self._pending_maintenance_dialog = continuation
+        # 每次请求独立 token：探针不得读共享 pending 字段判断持有者——
+        # 首个对话框 exec() 期间排队的第二个请求会把许可永久拖住。
+        token = object()
+        self._pending_maintenance_token = token
         manager = self._subprocess_manager
-        manager.invalidation_finished.connect(
-            self._on_supervisor_invalidated_for_maintenance
-        )
-        started = manager.invalidate_supervisor()
-        if not started:
-            self._cancel_pending_maintenance_dialog()
-            if manager.is_invalidating:
-                self._statusbar.showMessage(
-                    "已有 Supervisor 维护准备正在进行，请稍候..."
-                )
+
+        def _request_is_active() -> bool:
+            if (
+                self._pending_maintenance_dialog is not None
+                and self._pending_maintenance_token is token
+            ):
+                return True
+            # 只有获批流程的安装对话框会 exec()：该标记即当前持有者。
+            return self._install_dialog_open
+
+        def _on_granted() -> None:
+            # 获得许可后才订阅：排队期间订阅会消费其他 owner 的完成
+            # 广播，绕过许可与自己的失效直接执行 continuation。
+            manager.invalidation_finished.connect(
+                self._on_supervisor_invalidated_for_maintenance
+            )
+            started = manager.invalidate_supervisor()
+            if started:
+                self._statusbar.showMessage("正在停止 OCR Supervisor...")
                 return
+            self._cancel_pending_maintenance_dialog()
             QMessageBox.warning(
                 self,
                 "无法开始维护",
                 "OCR Supervisor 无法安全停止，安装未开始。",
             )
-            return
-        self._statusbar.showMessage("正在停止 OCR Supervisor...")
+
+        # 统一协调器串行化：设置页运行环境变更等维护持有许可时排队
+        # 等待；获得许可后执行自己的失效，不复用别人的完成广播。
+        self._statusbar.showMessage("正在停止 OCR Supervisor，请稍候...")
+        manager.acquire_maintenance(_on_granted, is_active=_request_is_active)
 
     @Slot(bool, str)
     def _on_supervisor_invalidated_for_maintenance(
@@ -990,6 +1060,7 @@ class MainWindow(QMainWindow):
         if self._pending_maintenance_dialog is None:
             return
         self._pending_maintenance_dialog = None
+        self._pending_maintenance_token = None
         try:
             self._subprocess_manager.invalidation_finished.disconnect(
                 self._on_supervisor_invalidated_for_maintenance
@@ -1020,7 +1091,12 @@ class MainWindow(QMainWindow):
         )
         dialog.finished.connect(self._on_install_finished)
         dialog.install_succeeded.connect(self._on_install_succeeded)
-        dialog.exec()
+        # 维护协调器据此探针把许可保留到对话框关闭为止。
+        self._install_dialog_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._install_dialog_open = False
 
     def _start_install(self) -> None:
         """开始安装依赖（保留入口，直接走首启合并对话框）"""
@@ -1035,8 +1111,8 @@ class MainWindow(QMainWindow):
             return
         if result == 1:
             self._statusbar.showMessage("识别引擎安装成功")
-            # 安装成功后启动识别服务
-            self._start_supervisor()
+            # 安装成功后启动识别服务；仍有维护排队时由重试定时器推迟
+            self._start_supervisor_when_maintenance_done()
             # 双保险刷新设置页（覆盖只发 finished 不发 install_succeeded 的路径）
             self._refresh_settings_env_state()
         else:

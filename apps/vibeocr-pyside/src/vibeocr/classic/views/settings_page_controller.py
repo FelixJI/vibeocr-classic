@@ -155,6 +155,9 @@ class SettingsPageController:
         self._defer_backend_initialization = defer_backend_initialization
         self._defer_machine_cache_status = defer_machine_cache_status
         self._pending_maintenance_dialog: Callable[[], None] | None = None
+        self._pending_maintenance_token: object | None = None
+        self._pending_maintenance_permit: object | None = None
+        self._maintenance_grant_token: object | None = None
         self._runtime_adapter = None
         # 引擎环境安装对话框的强引用（无父对象，防 GC 销毁）。
         self._engine_env_dialog = None
@@ -206,8 +209,10 @@ class SettingsPageController:
         安装期间自动重启 Supervisor 抢占 Runtime 文件锁。
         """
 
-        return self._pending_maintenance_dialog is not None or bool(
-            self._active_dialogs
+        return (
+            self._pending_maintenance_dialog is not None
+            or getattr(self, "_engine_env_dialog", None) is not None
+            or bool(self._active_dialogs)
         )
 
     def request_shutdown(self) -> None:
@@ -913,6 +918,7 @@ class SettingsPageController:
                 on_finished=self._on_engine_env_finished,
                 parent=None,
             )
+            dialog._maintenance_token = self._maintenance_grant_token
             # 无父对象的顶层窗口必须持有强引用，否则会被 GC 销毁，
             # 且销毁路径不会可靠触发 on_finished 恢复识别服务。
             self._engine_env_dialog = dialog
@@ -929,6 +935,11 @@ class SettingsPageController:
             self._engine_env_dialog = None
 
     def _on_engine_env_finished(self, success: bool) -> None:
+        env_dialog = getattr(self, "_engine_env_dialog", None)
+        if env_dialog is not None:
+            # 引擎任务到达终态即解除许可标记：结果窗口保留展示期间
+            # 不应继续持有维护许可，Supervisor 恢复无需等用户关闭。
+            env_dialog._maintenance_token = None
         backend_options = getattr(self, "_backend_options", None)
         if backend_options is not None:
             # 安装/移除/切换改变了磁盘状态：必须重新探测回填，仅解除
@@ -1629,31 +1640,63 @@ class SettingsPageController:
             return
 
         self._pending_maintenance_dialog = continuation
+        # 每次请求独立 token：探针只统计本请求的对话框，不能读全局
+        # is_maintenance_active——排队请求自己已打开的对话框会被计入
+        # 当前持有者，导致许可永不释放、UI 互相等待。
+        token = object()
+        self._pending_maintenance_token = token
         manager = self._subprocess_manager
-        manager.invalidation_finished.connect(
-            self._on_supervisor_invalidated_for_maintenance
-        )
-        started = manager.invalidate_supervisor()
-        if not started:
+
+        def _request_is_active() -> bool:
+            if (
+                self._pending_maintenance_dialog is not None
+                and self._pending_maintenance_token is token
+            ):
+                return True
+            env_dialog = getattr(self, "_engine_env_dialog", None)
+            if (
+                env_dialog is not None
+                and getattr(env_dialog, "_maintenance_token", None) is token
+            ):
+                return True
+            return any(
+                getattr(dialog, "_maintenance_token", None) is token
+                for dialog in getattr(self, "_active_dialogs", ())
+            )
+
+        def _on_granted() -> None:
+            # 获得许可后才订阅：排队期间订阅会消费其他 owner 的完成
+            # 广播，绕过许可与自己的失效直接执行 continuation。
+            manager.invalidation_finished.connect(
+                self._on_supervisor_invalidated_for_maintenance
+            )
+            started = manager.invalidate_supervisor()
+            if started:
+                self._status_callback("正在停止 OCR Supervisor...")
+                return
             self._cancel_pending_maintenance_dialog()
             backend_options = getattr(self, "_backend_options", None)
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
-            if manager.is_invalidating:
-                self._status_callback("已有 Supervisor 维护准备正在进行，请稍候...")
-                return
             QMessageBox.warning(
                 None,
                 "无法开始维护",
                 "OCR Supervisor 无法安全停止，安装或更新未开始。",
             )
-            return
-        self._status_callback("正在停止 OCR Supervisor...")
+
+        # 统一协调器串行化：其他维护流程（如首启自动安装）持有许可时
+        # 排队等待；获得许可后执行自己的失效，不复用别人的完成广播
+        # （持有者可能在许可期间重启 Supervisor，使旧前置失效）。
+        self._status_callback("正在停止 OCR Supervisor，请稍候...")
+        self._pending_maintenance_permit = manager.acquire_maintenance(
+            _on_granted, is_active=_request_is_active
+        )
 
     def _on_supervisor_invalidated_for_maintenance(
         self, success: bool, error: str
     ) -> None:
         continuation = self._pending_maintenance_dialog
+        grant_token = self._pending_maintenance_token
         self._cancel_pending_maintenance_dialog()
         if self._closing or continuation is None:
             return
@@ -1667,12 +1710,24 @@ class SettingsPageController:
                 f"OCR Supervisor 未能安全停止，安装或更新未开始。\n{error}",
             )
             return
-        continuation()
+        # continuation 打开的对话框用本请求 token 标记，供探针只统计
+        # 本请求的维护 UI。
+        self._maintenance_grant_token = grant_token
+        try:
+            continuation()
+        finally:
+            self._maintenance_grant_token = None
 
     def _cancel_pending_maintenance_dialog(self) -> None:
         if self._pending_maintenance_dialog is None:
             return
         self._pending_maintenance_dialog = None
+        self._pending_maintenance_token = None
+        permit = self._pending_maintenance_permit
+        self._pending_maintenance_permit = None
+        if permit is not None:
+            # 撤销仍在协调器排队的请求；已获批的请求撤销为 no-op。
+            permit.cancel()
         try:
             self._subprocess_manager.invalidation_finished.disconnect(
                 self._on_supervisor_invalidated_for_maintenance
@@ -1735,6 +1790,10 @@ class SettingsPageController:
         maintenance_started = False
 
         def before_install(continuation: Callable[[], None]) -> None:
+            # 本对话框的确认触发了维护请求：排队期间对话框关闭时据此
+            # 撤销该请求，不误撤其他对话框的排队请求。
+            dialog._owns_maintenance_request = True
+
             def start() -> None:
                 nonlocal maintenance_started
                 maintenance_started = True
@@ -1742,6 +1801,7 @@ class SettingsPageController:
                     if self._install_abandoned_callback is not None:
                         self._install_abandoned_callback()
                     return
+                dialog._maintenance_token = self._maintenance_grant_token
                 continuation()
 
             self._run_after_supervisor_invalidated(start)
@@ -1767,6 +1827,10 @@ class SettingsPageController:
 
         def _on_completed(success: bool, message: str) -> None:
             nonlocal restored_after_failure
+            # 安装任务到达终态即解除对话框的许可标记：失败/取消时
+            # InstallDialog 会保留详情窗口等待用户关闭，许可不能绑定
+            # 在窗口可见性上，否则 runtime 恢复被无限推迟。
+            dialog._maintenance_token = None
             result_callback = self._maintenance_result_callback
             if result_callback is not None:
                 if success:
@@ -1798,6 +1862,17 @@ class SettingsPageController:
 
         def _on_finished(_result: int) -> None:
             self.refresh_runtime_state()
+            if not maintenance_started and getattr(
+                dialog, "_owns_maintenance_request", False
+            ):
+                permit = self._pending_maintenance_permit
+                if permit is None or not permit.granted:
+                    # 仍在排队等待许可：用户关闭对话框即撤销请求，避免
+                    # 获批后无谓停止 Supervisor 再走 abandoned 恢复。
+                    # 已获批且失效在途时不能撤销：订阅必须保留到失效完
+                    # 成，由 start() 的 can_start_installation() 防御联动
+                    # abandoned 恢复，否则识别服务会一直停着无人恢复。
+                    self._cancel_pending_maintenance_dialog()
             if (
                 _result != 1
                 and maintenance_started

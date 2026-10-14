@@ -135,7 +135,7 @@ class EngineEnvDialog(QDialog):
         self._log_view = QTextEdit()
         self._log_view.setReadOnly(True)
         self._log_view.setPlaceholderText("安装日志会实时显示在这里。")
-        self._log_view.setMaximumBlockCount(2000)
+        self._log_view.document().setMaximumBlockCount(2000)
         layout.addWidget(self._log_view, 3)
 
         self._confirm_button = QPushButton("开始安装")

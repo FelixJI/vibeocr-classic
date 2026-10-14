@@ -46,6 +46,9 @@ def _immediate_invalidation_manager() -> MagicMock:
         return True
 
     manager.invalidate_supervisor.side_effect = invalidate_supervisor
+    manager.acquire_maintenance.side_effect = lambda on_granted, *, is_active: (
+        on_granted()
+    )
     return manager
 
 
@@ -121,6 +124,65 @@ def _auto_confirm(monkeypatch, answer) -> None:
     from PySide6.QtWidgets import QMessageBox
 
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **kw: answer)
+
+
+class _QueueingInvalidationManager(QObject):
+    """真实协调器排队语义的假 manager：记录探针并支持许可占用。"""
+
+    invalidation_finished = Signal(bool, str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.probes: list = []
+        self.invalidates = 0
+        self.busy = False
+        self.queued: list = []
+
+    def invalidate_supervisor(self) -> bool:
+        self.invalidates += 1
+        self.invalidation_finished.emit(True, "")
+        return True
+
+    def acquire_maintenance(self, on_granted, *, is_active) -> None:
+        self.probes.append(is_active)
+        if self.busy:
+            self.queued.append(on_granted)
+            return
+        self.busy = True
+        on_granted()
+
+
+def test_holder_probe_ignores_queued_request_dialogs(fused_controller) -> None:
+    """当前持有者的探针只统计本请求的对话框。
+
+    回归：探针曾读全局 ``is_maintenance_active``，排队请求自己已打开的
+    安装对话框会被计入当前持有者，许可永不释放、两套维护 UI 互相等待。
+    """
+    controller, _host, _engine_manager = fused_controller
+    manager = _QueueingInvalidationManager()
+    controller._subprocess_manager = manager
+
+    # 请求 1：真实引擎环境流程（真实对话框打上本请求 token）。
+    controller._open_engine_env_dialog(["paddle-cpu"], [])
+    dialog1 = controller._engine_env_dialog
+    assert dialog1 is not None
+    probe1 = manager.probes[0]
+    assert probe1() is True
+
+    # 请求 2 排队：其安装对话框已提前打开（未打请求 1 的标记）。
+    controller._active_dialogs.append(MagicMock())
+    controller._run_after_supervisor_invalidated(lambda: None)
+    assert len(manager.queued) == 1
+
+    # 持有者关闭引擎环境对话框：探针必须回落，不被排队请求的对话框拖住。
+    dialog1.close()
+    controller._release_engine_env_dialog(dialog1)
+    assert probe1() is False
+
+    # 请求 2 获得许可后重新执行自己的失效并推进。
+    invalidates_before = manager.invalidates
+    manager.queued.pop(0)()
+    assert manager.invalidates == invalidates_before + 1
 
 
 def test_apply_installs_selected_engine_cpu(fused_controller, monkeypatch) -> None:
@@ -433,3 +495,21 @@ def test_refresh_machine_cache_operation_fused_reports_engine_failure(
     assert success is False
     assert "基础识别引擎初始化失败" in summary
     assert "default_models.yaml" in summary
+
+
+def test_engine_env_permit_released_on_finish_callback(fused_controller) -> None:
+    """引擎任务终态（on_finished 回调）即释放许可，不等用户关闭结果窗口。"""
+    controller, _host, _engine_manager = fused_controller
+    manager = _QueueingInvalidationManager()
+    controller._subprocess_manager = manager
+
+    controller._open_engine_env_dialog(["paddle-cpu"], [])
+    dialog = controller._engine_env_dialog
+    assert dialog is not None
+    probe = manager.probes[0]
+    assert probe() is True
+
+    controller._on_engine_env_finished(False)
+
+    assert controller._engine_env_dialog is dialog  # 结果窗口仍由控制器持有
+    assert probe() is False  # worker 终态即解除许可标记

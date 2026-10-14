@@ -156,6 +156,7 @@ class SettingsPageController:
         self._defer_machine_cache_status = defer_machine_cache_status
         self._pending_maintenance_dialog: Callable[[], None] | None = None
         self._pending_maintenance_token: object | None = None
+        self._pending_maintenance_permit: object | None = None
         self._maintenance_grant_token: object | None = None
         self._runtime_adapter = None
         # 引擎环境安装对话框的强引用（无父对象，防 GC 销毁）。
@@ -1682,7 +1683,9 @@ class SettingsPageController:
         # 排队等待；获得许可后执行自己的失效，不复用别人的完成广播
         # （持有者可能在许可期间重启 Supervisor，使旧前置失效）。
         self._status_callback("正在停止 OCR Supervisor，请稍候...")
-        manager.acquire_maintenance(_on_granted, is_active=_request_is_active)
+        self._pending_maintenance_permit = manager.acquire_maintenance(
+            _on_granted, is_active=_request_is_active
+        )
 
     def _on_supervisor_invalidated_for_maintenance(
         self, success: bool, error: str
@@ -1715,6 +1718,11 @@ class SettingsPageController:
             return
         self._pending_maintenance_dialog = None
         self._pending_maintenance_token = None
+        permit = self._pending_maintenance_permit
+        self._pending_maintenance_permit = None
+        if permit is not None:
+            # 撤销仍在协调器排队的请求；已获批的请求撤销为 no-op。
+            permit.cancel()
         try:
             self._subprocess_manager.invalidation_finished.disconnect(
                 self._on_supervisor_invalidated_for_maintenance
@@ -1777,6 +1785,10 @@ class SettingsPageController:
         maintenance_started = False
 
         def before_install(continuation: Callable[[], None]) -> None:
+            # 本对话框的确认触发了维护请求：排队期间对话框关闭时据此
+            # 撤销该请求，不误撤其他对话框的排队请求。
+            dialog._owns_maintenance_request = True
+
             def start() -> None:
                 nonlocal maintenance_started
                 maintenance_started = True
@@ -1841,6 +1853,12 @@ class SettingsPageController:
 
         def _on_finished(_result: int) -> None:
             self.refresh_runtime_state()
+            if not maintenance_started and getattr(
+                dialog, "_owns_maintenance_request", False
+            ):
+                # 等待许可期间用户关闭对话框：撤销仍在排队的维护请求，
+                # 避免获批后无谓停止 Supervisor 再走 abandoned 恢复。
+                self._cancel_pending_maintenance_dialog()
             if (
                 _result != 1
                 and maintenance_started

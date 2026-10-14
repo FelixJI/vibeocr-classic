@@ -7,8 +7,20 @@ from unittest.mock import Mock
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
 
+import pytest
+
 from vibeocr.classic.views.main_window import MainWindow
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
+
+
+class _FakePermit:
+    """真实 MaintenancePermit 的测试桩：撤销排队中的请求。"""
+
+    def __init__(self, entry: dict) -> None:
+        self._entry = entry
+
+    def cancel(self) -> None:
+        self._entry["cancelled"] = True
 
 
 class _FakeManager(QObject):
@@ -19,8 +31,11 @@ class _FakeManager(QObject):
         self.invalidate_calls = 0
         self.is_invalidating = False
         self.maintenance_in_progress = False
+        self.is_starting = False
+        self.holds_runtime_process = False
+        self.probes: list = []
         self._maintenance_busy = False
-        self._deferred_grants: list = []
+        self._queued_entries: list[dict] = []
 
     def invalidate_supervisor(self) -> bool:
         self.invalidate_calls += 1
@@ -33,20 +48,28 @@ class _FakeManager(QObject):
         self.is_invalidating = False
         self.invalidation_finished.emit(success, error)
 
-    def acquire_maintenance(self, on_granted, *, is_active) -> None:
+    def acquire_maintenance(self, on_granted, *, is_active) -> _FakePermit:
         # 立即授予（未竞争场景）；测试可用 hold_maintenance 模拟许可被占。
+        self.probes.append(is_active)
+        entry = {"on_granted": on_granted, "cancelled": False}
         if self._maintenance_busy:
-            self._deferred_grants.append(on_granted)
-            return
+            self._queued_entries.append(entry)
+            return _FakePermit(entry)
         self._maintenance_busy = True
         on_granted()
+        return _FakePermit(entry)
 
     def hold_maintenance(self) -> None:
         self._maintenance_busy = True
 
     def grant_pending_maintenance(self) -> None:
-        assert self._deferred_grants, "没有排队的维护请求"
-        self._deferred_grants.pop(0)()
+        while self._queued_entries:
+            entry = self._queued_entries.pop(0)
+            if entry["cancelled"]:
+                continue
+            entry["on_granted"]()
+            return
+        raise AssertionError("没有可授予的排队维护请求")
 
 
 class _MainWindowHarness(QWidget):
@@ -61,6 +84,7 @@ class _MainWindowHarness(QWidget):
         MainWindow._start_supervisor_when_maintenance_done
     )
     _stop_supervisor_start_retry = MainWindow._stop_supervisor_start_retry
+    _ensure_supervisor_start_retry = MainWindow._ensure_supervisor_start_retry
     _SUPERVISOR_START_RETRY_INTERVAL_MS = MainWindow._SUPERVISOR_START_RETRY_INTERVAL_MS
 
     def __init__(self, manager: _FakeManager) -> None:
@@ -281,3 +305,83 @@ def test_install_finished_startup_deferred_while_maintenance_active(
 
     manager.maintenance_in_progress = False
     qtbot.waitUntil(lambda: window._start_supervisor.called, timeout=5000)
+
+
+def test_main_window_holder_probe_ignores_queued_request(qapp) -> None:
+    """主窗口持有者探针只描述本请求；排队请求的 pending 不得拖住许可。
+
+    回归：首启自动安装对话框 exec() 期间再次触发安装（如 300ms 定时
+    弹窗与用户手动安装竞争）时，探针曾读共享 pending 字段，首个对话框
+    关闭后许可仍因排队请求保持 active，永远无法释放。
+    """
+    manager = _FakeManager()
+    window = _MainWindowHarness(manager)
+
+    window._run_after_supervisor_invalidated(Mock())
+    manager.finish(True)
+    # 模拟获批 continuation 打开的首启安装对话框 exec()。
+    window._install_dialog_open = True
+    probe1 = manager.probes[0]
+    assert probe1() is True
+
+    window._run_after_supervisor_invalidated(Mock())
+
+    window._install_dialog_open = False
+    assert probe1() is False
+
+
+def test_deferred_startup_blocked_by_residual_process(qapp, qtbot, monkeypatch) -> None:
+    """维护结束但失效失败留下残留进程 owner 时，延迟恢复不得启动。
+
+    回归：重试定时器曾直接 _start_supervisor()，该底层方法不检查
+    holds_runtime_process，会叠加第二个 Supervisor 并覆盖旧句柄。
+    """
+    monkeypatch.setattr(MainWindow, "_SUPERVISOR_START_RETRY_INTERVAL_MS", 10)
+    manager = _FakeManager()
+    manager.maintenance_in_progress = True
+    window = _MainWindowHarness(manager)
+
+    window._continue_ready_startup()
+    window._start_supervisor.assert_not_called()
+
+    manager.maintenance_in_progress = False
+    manager.holds_runtime_process = True
+    qtbot.wait(60)
+    window._start_supervisor.assert_not_called()
+
+    manager.holds_runtime_process = False
+    window._start_supervisor_when_maintenance_done()
+    window._start_supervisor.assert_called_once_with()
+
+
+def test_deferred_startup_rechecks_ocr_ready(qapp, monkeypatch) -> None:
+    monkeypatch.setattr(MainWindow, "_SUPERVISOR_START_RETRY_INTERVAL_MS", 10)
+    manager = _FakeManager()
+    manager.maintenance_in_progress = True
+    window = _MainWindowHarness(manager)
+
+    window._continue_ready_startup()
+    window._ocr_ready = False  # 等待期间后续检测把就绪状态改回 false
+    manager.maintenance_in_progress = False
+    window._start_supervisor_when_maintenance_done()
+
+    window._start_supervisor.assert_not_called()
+
+
+def test_cancelled_request_revokes_queued_maintenance(qapp) -> None:
+    """用户关闭等待中的对话框等撤销路径必须撤掉排队中的维护请求。"""
+    manager = _FakeManager()
+    manager.hold_maintenance()
+    controller = _SettingsHarness(manager)
+    continuation = Mock()
+
+    controller._run_after_supervisor_invalidated(continuation)
+    assert len(manager._queued_entries) == 1
+    permit = controller._pending_maintenance_permit
+    assert permit is not None
+
+    controller._cancel_pending_maintenance_dialog()
+
+    with pytest.raises(AssertionError):
+        manager.grant_pending_maintenance()
+    continuation.assert_not_called()

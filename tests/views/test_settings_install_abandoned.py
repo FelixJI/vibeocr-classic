@@ -37,8 +37,8 @@ def _immediate_invalidation_manager() -> MagicMock:
         return True
 
     manager.invalidate_supervisor.side_effect = invalidate_supervisor
-    manager.acquire_maintenance.side_effect = (
-        lambda on_granted, *, is_active: on_granted()
+    manager.acquire_maintenance.side_effect = lambda on_granted, *, is_active: (
+        on_granted()
     )
     return manager
 
@@ -380,3 +380,41 @@ def test_replayed_failed_operation_restores_service_without_new_install(
         ctrl._subprocess_manager.invalidate_supervisor.assert_not_called()
     finally:
         dialog.close()
+
+
+def test_dialog_closed_while_queued_revokes_maintenance(controller, monkeypatch):
+    """等待许可期间用户关闭对话框：撤销排队请求而非停服后走恢复。
+
+    回归：排队请求此前没有撤销路径，前一流程结束后仍会获批并停止
+    Supervisor，随后才因 worker 已取消走 abandoned 恢复——用户取消后
+    出现不必要的服务中断，等待期间设置页也被 pending 锁住。
+    """
+    from tests.views.test_supervisor_maintenance_lifecycle import _FakeManager
+
+    ctrl, _host, install_cb, abandoned_cb = controller
+    manager = _FakeManager()
+    manager.hold_maintenance()
+    ctrl._subprocess_manager = manager
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
+    )
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+
+    # 用户点击确认：维护请求进入协调器排队（许可被其他流程持有）。
+    dialog.before_install(lambda: None)
+    assert len(manager._queued_entries) == 1
+    assert ctrl._pending_maintenance_dialog is not None
+
+    # 等待期间用户直接关闭对话框：排队请求被撤销，不再持有 pending。
+    dialog.finished.emit(0)
+    assert ctrl._pending_maintenance_dialog is None
+    assert manager._queued_entries[0]["cancelled"] is True
+
+    # 前一流程结束后被撤销的请求不获批、不失效、不触发恢复回调。
+    with pytest.raises(AssertionError):
+        manager.grant_pending_maintenance()
+    assert manager.invalidate_calls == 0
+    abandoned_cb.assert_not_called()
+    install_cb.assert_not_called()

@@ -26,6 +26,29 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+class _MaintenanceEntry:
+    """协调器队列中的单个维护请求。"""
+
+    __slots__ = ("on_granted", "is_active", "cancelled")
+
+    def __init__(self, on_granted, is_active) -> None:
+        self.on_granted = on_granted
+        self.is_active = is_active
+        self.cancelled = False
+
+
+class MaintenancePermit:
+    """维护排队许可句柄：排队期间可撤销，获批后撤销为无害 no-op。"""
+
+    def __init__(self, manager: "SubprocessManager", entry: _MaintenanceEntry) -> None:
+        self._manager = manager
+        self._entry = entry
+
+    def cancel(self) -> None:
+        """撤销仍在排队的请求；已获批的请求不受影响。"""
+        self._entry.cancelled = True
+
+
 class SubprocessStartSignals(QObject):
     """Supervisor 启动任务信号。"""
 
@@ -175,7 +198,7 @@ class SubprocessManager(QObject):
         # 执行自己的失效，避免多个 owner 消费同一次 invalidation_finished
         # 广播后带着已失效的“旧 Supervisor 已退出”前置继续执行。
         self._maintenance_busy = False
-        self._maintenance_queue: list[tuple[Any, Any]] = []
+        self._maintenance_queue: list[_MaintenanceEntry] = []
         self._maintenance_probe: Any | None = None
         self._maintenance_timer: QTimer | None = None
 
@@ -377,7 +400,7 @@ class SubprocessManager(QObject):
         on_granted: Callable[[], None],
         *,
         is_active: Callable[[], bool],
-    ) -> None:
+    ) -> MaintenancePermit:
         """串行化跨入口的维护请求（首启自动安装 vs 设置页运行环境变更等）。
 
         同一时刻最多一个维护流程持有许可：其余请求排队，直到持有者的
@@ -385,27 +408,34 @@ class SubprocessManager(QObject):
         并**重新执行自己的失效**而不是复用别人的完成广播——持有者的
         流程可能在许可期间重启 Supervisor，使早先的“已退出”前置失效。
         探针异常按已结束处理，保证许可不会因探测失败而永久滞留。
+        返回句柄可在排队期间撤销（如用户关闭等待中的对话框）。
         """
 
-        self._maintenance_queue.append((on_granted, is_active))
+        entry = _MaintenanceEntry(on_granted, is_active)
+        self._maintenance_queue.append(entry)
         self._pump_maintenance()
+        return MaintenancePermit(self, entry)
 
     def _pump_maintenance(self) -> None:
         if self._application_shutdown_requested:
             # 关闭阶段不再授予维护许可：过期闭包的失效会失败并在退出
             # draining 阶段弹阻塞警告框，卡住应用退出。
             return
-        if self._maintenance_busy or not self._maintenance_queue:
+        if self._maintenance_busy:
             return
-        on_granted, is_active = self._maintenance_queue.pop(0)
-        self._maintenance_busy = True
-        self._maintenance_probe = is_active
-        if self._maintenance_timer is None:
-            self._maintenance_timer = QTimer(self)
-            self._maintenance_timer.setInterval(self._MAINTENANCE_PROBE_INTERVAL_MS)
-            self._maintenance_timer.timeout.connect(self._on_maintenance_probe)
-        self._maintenance_timer.start()
-        on_granted()
+        while self._maintenance_queue:
+            entry = self._maintenance_queue.pop(0)
+            if entry.cancelled:
+                continue
+            self._maintenance_busy = True
+            self._maintenance_probe = entry.is_active
+            if self._maintenance_timer is None:
+                self._maintenance_timer = QTimer(self)
+                self._maintenance_timer.setInterval(self._MAINTENANCE_PROBE_INTERVAL_MS)
+                self._maintenance_timer.timeout.connect(self._on_maintenance_probe)
+            self._maintenance_timer.start()
+            entry.on_granted()
+            return
 
     def _drop_maintenance_requests(self) -> None:
         """应用关闭时丢弃排队的维护回调并停掉探测计时器。
@@ -586,6 +616,7 @@ class SubprocessManager(QObject):
 
 
 __all__ = [
+    "MaintenancePermit",
     "SubprocessManager",
     "SubprocessStartSignals",
     "SupervisorStartTask",

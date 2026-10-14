@@ -1634,14 +1634,17 @@ class SettingsPageController:
             self._on_supervisor_invalidated_for_maintenance
         )
         started = manager.invalidate_supervisor()
+        if not started and manager.is_invalidating:
+            # 其他入口（如首启自动安装）的失效任务在途：保持挂起等待共享的
+            # invalidation_finished。该任务完成即满足“旧 Supervisor 已退出”
+            # 前置；此处丢弃 continuation 会让用户的维护请求永远没有后续。
+            self._status_callback("已有 Supervisor 维护准备正在进行，请稍候...")
+            return
         if not started:
             self._cancel_pending_maintenance_dialog()
             backend_options = getattr(self, "_backend_options", None)
             if backend_options is not None:
                 backend_options.set_change_in_progress(False)
-            if manager.is_invalidating:
-                self._status_callback("已有 Supervisor 维护准备正在进行，请稍候...")
-                return
             QMessageBox.warning(
                 None,
                 "无法开始维护",

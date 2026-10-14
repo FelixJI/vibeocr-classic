@@ -120,6 +120,46 @@ def test_settings_repeated_actions_keep_only_first_continuation(qapp) -> None:
     controller._show_install_dialog.assert_called_once()
 
 
+def test_settings_continuation_survives_inflight_invalidation_from_other_owner(
+    qapp,
+) -> None:
+    """首启自动安装等外部维护在途时，设置页请求必须等待而不是被丢弃。
+
+    回归：旧逻辑在 ``invalidate_supervisor()`` 因已有任务在途返回 False 时
+    取消自己的 continuation，用户的运行环境变更永远停在“正在停止
+    OCR Supervisor...”，没有任何后续反应。
+    """
+    manager = _FakeManager()
+    manager.is_invalidating = True  # 其他 owner（如首启自动安装）已发起失效
+    controller = _SettingsHarness(manager)
+    continuation = Mock()
+
+    controller._run_after_supervisor_invalidated(continuation)
+
+    controller._status_callback.assert_called_once()
+    continuation.assert_not_called()
+
+    manager.finish(True)  # 在途任务完成，invalidation_finished 广播
+    continuation.assert_called_once_with()
+
+
+def test_main_window_continuation_survives_inflight_invalidation_from_other_owner(
+    qapp,
+) -> None:
+    manager = _FakeManager()
+    manager.is_invalidating = True
+    window = _MainWindowHarness(manager)
+    continuation = Mock()
+
+    window._run_after_supervisor_invalidated(continuation)
+
+    window._statusbar.showMessage.assert_called_once()
+    continuation.assert_not_called()
+
+    manager.finish(True)
+    continuation.assert_called_once_with()
+
+
 def test_settings_close_drops_late_invalidation_callback(qapp) -> None:
     manager = _FakeManager()
     controller = _SettingsHarness(manager)

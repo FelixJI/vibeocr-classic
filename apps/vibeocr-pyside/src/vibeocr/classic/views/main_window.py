@@ -954,13 +954,13 @@ class MainWindow(QMainWindow):
             self._on_supervisor_invalidated_for_maintenance
         )
         started = manager.invalidate_supervisor()
+        if not started and manager.is_invalidating:
+            # 其他入口（如设置页运行环境变更）的失效任务在途：保持挂起等待
+            # 共享的 invalidation_finished，任务完成即满足维护前置，不能丢弃。
+            self._statusbar.showMessage("已有 Supervisor 维护准备正在进行，请稍候...")
+            return
         if not started:
             self._cancel_pending_maintenance_dialog()
-            if manager.is_invalidating:
-                self._statusbar.showMessage(
-                    "已有 Supervisor 维护准备正在进行，请稍候..."
-                )
-                return
             QMessageBox.warning(
                 self,
                 "无法开始维护",

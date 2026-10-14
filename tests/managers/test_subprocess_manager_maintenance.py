@@ -100,3 +100,28 @@ def test_maintenance_permit_released_when_request_never_becomes_active(
     assert state["grants"] == ["A"]
     _wait_until(qtbot, lambda: state["grants"] == ["A", "B"])
     assert state["invalidates"] == 2
+
+
+def test_request_shutdown_drops_queued_maintenance(coordinator, qtbot) -> None:
+    """应用关闭时丢弃排队回调并停止授予，避免退出 draining 被阻塞。"""
+    manager, state = coordinator
+    make_owner = state["make_owner"]
+
+    grant_a, _ = make_owner("A", "a_active")
+    grant_b, _ = make_owner("B", "b_active")
+    manager.acquire_maintenance(grant_a, is_active=lambda: state["a_active"])
+    manager.acquire_maintenance(grant_b, is_active=lambda: state["b_active"])
+
+    assert state["grants"] == ["A"]
+
+    manager.request_shutdown()
+    state["a_active"] = False
+    qtbot.wait(80)
+
+    # 排队回调被撤销：B 永不获得许可，也不会再触发失效。
+    assert state["grants"] == ["A"]
+    assert state["invalidates"] == 1
+    assert manager._maintenance_queue == []
+    assert (
+        manager._maintenance_timer is None or not manager._maintenance_timer.isActive()
+    )

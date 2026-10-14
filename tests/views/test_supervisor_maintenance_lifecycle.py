@@ -176,6 +176,48 @@ def test_main_window_request_queues_behind_other_maintenance(qapp) -> None:
     continuation.assert_called_once_with()
 
 
+def test_queued_settings_request_ignores_broadcast_until_granted(qapp) -> None:
+    """排队中的请求不得消费其他 owner 的失效完成广播。
+
+    回归：旧实现在排队前就订阅全局 ``invalidation_finished``，首启安装
+    的失效完成会绕过许可与自己的失效直接执行排队的 continuation。
+    """
+    manager = _FakeManager()
+    manager.hold_maintenance()
+    controller = _SettingsHarness(manager)
+    continuation = Mock()
+
+    controller._run_after_supervisor_invalidated(continuation)
+
+    # 其他 owner 的失效完成广播：排队中的请求必须无动于衷。
+    manager.finish(True)
+    continuation.assert_not_called()
+    assert manager.invalidate_calls == 0
+
+    manager.grant_pending_maintenance()
+    assert manager.invalidate_calls == 1
+    manager.finish(True)
+    continuation.assert_called_once_with()
+
+
+def test_queued_main_window_request_ignores_broadcast_until_granted(qapp) -> None:
+    manager = _FakeManager()
+    manager.hold_maintenance()
+    window = _MainWindowHarness(manager)
+    continuation = Mock()
+
+    window._run_after_supervisor_invalidated(continuation)
+
+    manager.finish(True)
+    continuation.assert_not_called()
+    assert manager.invalidate_calls == 0
+
+    manager.grant_pending_maintenance()
+    assert manager.invalidate_calls == 1
+    manager.finish(True)
+    continuation.assert_called_once_with()
+
+
 def test_settings_close_drops_late_invalidation_callback(qapp) -> None:
     manager = _FakeManager()
     controller = _SettingsHarness(manager)

@@ -1632,11 +1632,13 @@ class SettingsPageController:
 
         self._pending_maintenance_dialog = continuation
         manager = self._subprocess_manager
-        manager.invalidation_finished.connect(
-            self._on_supervisor_invalidated_for_maintenance
-        )
 
         def _on_granted() -> None:
+            # 获得许可后才订阅：排队期间订阅会消费其他 owner 的完成
+            # 广播，绕过许可与自己的失效直接执行 continuation。
+            manager.invalidation_finished.connect(
+                self._on_supervisor_invalidated_for_maintenance
+            )
             started = manager.invalidate_supervisor()
             if started:
                 self._status_callback("正在停止 OCR Supervisor...")

@@ -381,6 +381,10 @@ class SubprocessManager(QObject):
         self._pump_maintenance()
 
     def _pump_maintenance(self) -> None:
+        if self._application_shutdown_requested:
+            # 关闭阶段不再授予维护许可：过期闭包的失效会失败并在退出
+            # draining 阶段弹阻塞警告框，卡住应用退出。
+            return
         if self._maintenance_busy or not self._maintenance_queue:
             return
         on_granted, is_active = self._maintenance_queue.pop(0)
@@ -392,6 +396,20 @@ class SubprocessManager(QObject):
             self._maintenance_timer.timeout.connect(self._on_maintenance_probe)
         self._maintenance_timer.start()
         on_granted()
+
+    def _drop_maintenance_requests(self) -> None:
+        """应用关闭时丢弃排队的维护回调并停掉探测计时器。
+
+        owner 的关闭逻辑只清除各自 pending；排队的 ``on_granted`` 闭包
+        仍留在协调器里，当前持有者结束后会被授予并触发其失效失败
+        路径的阻塞警告框。此处统一撤销，保证退出 draining 不被卡住。
+        """
+
+        self._maintenance_queue.clear()
+        self._maintenance_busy = False
+        self._maintenance_probe = None
+        if self._maintenance_timer is not None:
+            self._maintenance_timer.stop()
 
     def _on_maintenance_probe(self) -> None:
         if not self._maintenance_busy:
@@ -416,6 +434,7 @@ class SubprocessManager(QObject):
         """请求取消 Qt 启动任务；调用方通过 ``is_drained`` 非阻塞轮询。"""
 
         self._request_runtime_stop(application_shutdown=True)
+        self._drop_maintenance_requests()
 
     def _request_runtime_stop(self, *, application_shutdown: bool) -> None:
         if application_shutdown:

@@ -418,3 +418,65 @@ def test_dialog_closed_while_queued_revokes_maintenance(controller, monkeypatch)
     assert manager.invalidate_calls == 0
     abandoned_cb.assert_not_called()
     install_cb.assert_not_called()
+
+
+def test_dialog_closed_after_grant_keeps_invalidation_subscription(
+    controller, monkeypatch
+):
+    """已获批、失效在途时关闭对话框：保留订阅，结束后走 abandoned 恢复。
+
+    回归：撤销条件此前只看 maintenance_started，无法区分“仍在排队”与
+    “已获批并开始失效”——失效在途时关闭对话框会断开订阅，失效仍停服
+    但无人继续安装或恢复，识别服务一直停着；探针还可能提前放许可。
+    """
+    from tests.views.test_supervisor_maintenance_lifecycle import _FakeManager
+
+    ctrl, _host, install_cb, abandoned_cb = controller
+    manager = _FakeManager()  # 立即授予；invalidate 启动后不广播（在途）
+    ctrl._subprocess_manager = manager
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
+    )
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+
+    dialog.before_install(lambda: None)
+    assert manager.invalidate_calls == 1
+    assert ctrl._pending_maintenance_dialog is not None
+    assert ctrl._pending_maintenance_permit.granted is True
+
+    # 失效完成前用户关闭对话框：worker 随之取消，但订阅不得断开。
+    dialog.can_start_installation = lambda: False
+    dialog.finished.emit(0)
+    assert ctrl._pending_maintenance_dialog is not None
+
+    # 失效完成广播：start() 发现 worker 已取消 → abandoned 恢复联动。
+    manager.finish(True)
+    abandoned_cb.assert_called_once_with()
+    install_cb.assert_not_called()
+
+
+def test_permit_released_on_worker_terminal(controller, monkeypatch):
+    """安装失败/取消后详情窗口保留期间（finished 未发），许可随 worker 终态释放。"""
+    from tests.views.test_supervisor_maintenance_lifecycle import _FakeManager
+
+    ctrl, _host, install_cb, abandoned_cb = controller
+    manager = _FakeManager()
+    ctrl._subprocess_manager = manager
+
+    monkeypatch.setattr(
+        "vibeocr.classic.widgets.install_dialog.InstallDialog", _FakeInstallDialog
+    )
+    ctrl._show_install_dialog()
+    dialog = ctrl._active_dialogs[-1]
+
+    dialog.before_install(lambda: None)
+    manager.finish(True)  # 失效完成 → start() 放行 continuation
+    probe = manager.probes[0]
+    assert probe() is True  # 安装进行中：对话框带本请求 token
+
+    dialog.install_completed.emit(False, "Runtime Installer 操作已取消")
+    assert dialog in ctrl._active_dialogs  # 失败详情窗口仍打开
+    assert probe() is False  # worker 终态即释放许可
+    abandoned_cb.assert_called_once_with()

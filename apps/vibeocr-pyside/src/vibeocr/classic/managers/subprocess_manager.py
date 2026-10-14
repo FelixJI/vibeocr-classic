@@ -29,12 +29,13 @@ if TYPE_CHECKING:
 class _MaintenanceEntry:
     """协调器队列中的单个维护请求。"""
 
-    __slots__ = ("on_granted", "is_active", "cancelled")
+    __slots__ = ("on_granted", "is_active", "cancelled", "granted")
 
     def __init__(self, on_granted, is_active) -> None:
         self.on_granted = on_granted
         self.is_active = is_active
         self.cancelled = False
+        self.granted = False
 
 
 class MaintenancePermit:
@@ -43,6 +44,11 @@ class MaintenancePermit:
     def __init__(self, manager: "SubprocessManager", entry: _MaintenanceEntry) -> None:
         self._manager = manager
         self._entry = entry
+
+    @property
+    def granted(self) -> bool:
+        """请求是否已获得许可（已获批时撤销排队语义不再适用）。"""
+        return self._entry.granted
 
     def cancel(self) -> None:
         """撤销仍在排队的请求；已获批的请求不受影响。"""
@@ -427,6 +433,7 @@ class SubprocessManager(QObject):
             entry = self._maintenance_queue.pop(0)
             if entry.cancelled:
                 continue
+            entry.granted = True
             self._maintenance_busy = True
             self._maintenance_probe = entry.is_active
             if self._maintenance_timer is None:

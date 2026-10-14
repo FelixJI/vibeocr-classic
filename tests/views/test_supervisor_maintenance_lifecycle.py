@@ -19,6 +19,10 @@ class _FakePermit:
     def __init__(self, entry: dict) -> None:
         self._entry = entry
 
+    @property
+    def granted(self) -> bool:
+        return self._entry["granted"]
+
     def cancel(self) -> None:
         self._entry["cancelled"] = True
 
@@ -51,10 +55,11 @@ class _FakeManager(QObject):
     def acquire_maintenance(self, on_granted, *, is_active) -> _FakePermit:
         # 立即授予（未竞争场景）；测试可用 hold_maintenance 模拟许可被占。
         self.probes.append(is_active)
-        entry = {"on_granted": on_granted, "cancelled": False}
+        entry = {"on_granted": on_granted, "cancelled": False, "granted": False}
         if self._maintenance_busy:
             self._queued_entries.append(entry)
             return _FakePermit(entry)
+        entry["granted"] = True
         self._maintenance_busy = True
         on_granted()
         return _FakePermit(entry)
@@ -67,6 +72,7 @@ class _FakeManager(QObject):
             entry = self._queued_entries.pop(0)
             if entry["cancelled"]:
                 continue
+            entry["granted"] = True
             entry["on_granted"]()
             return
         raise AssertionError("没有可授予的排队维护请求")

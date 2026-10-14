@@ -495,3 +495,21 @@ def test_refresh_machine_cache_operation_fused_reports_engine_failure(
     assert success is False
     assert "基础识别引擎初始化失败" in summary
     assert "default_models.yaml" in summary
+
+
+def test_engine_env_permit_released_on_finish_callback(fused_controller) -> None:
+    """引擎任务终态（on_finished 回调）即释放许可，不等用户关闭结果窗口。"""
+    controller, _host, _engine_manager = fused_controller
+    manager = _QueueingInvalidationManager()
+    controller._subprocess_manager = manager
+
+    controller._open_engine_env_dialog(["paddle-cpu"], [])
+    dialog = controller._engine_env_dialog
+    assert dialog is not None
+    probe = manager.probes[0]
+    assert probe() is True
+
+    controller._on_engine_env_finished(False)
+
+    assert controller._engine_env_dialog is dialog  # 结果窗口仍由控制器持有
+    assert probe() is False  # worker 终态即解除许可标记

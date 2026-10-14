@@ -935,6 +935,11 @@ class SettingsPageController:
             self._engine_env_dialog = None
 
     def _on_engine_env_finished(self, success: bool) -> None:
+        env_dialog = getattr(self, "_engine_env_dialog", None)
+        if env_dialog is not None:
+            # 引擎任务到达终态即解除许可标记：结果窗口保留展示期间
+            # 不应继续持有维护许可，Supervisor 恢复无需等用户关闭。
+            env_dialog._maintenance_token = None
         backend_options = getattr(self, "_backend_options", None)
         if backend_options is not None:
             # 安装/移除/切换改变了磁盘状态：必须重新探测回填，仅解除
@@ -1822,6 +1827,10 @@ class SettingsPageController:
 
         def _on_completed(success: bool, message: str) -> None:
             nonlocal restored_after_failure
+            # 安装任务到达终态即解除对话框的许可标记：失败/取消时
+            # InstallDialog 会保留详情窗口等待用户关闭，许可不能绑定
+            # 在窗口可见性上，否则 runtime 恢复被无限推迟。
+            dialog._maintenance_token = None
             result_callback = self._maintenance_result_callback
             if result_callback is not None:
                 if success:
@@ -1856,9 +1865,14 @@ class SettingsPageController:
             if not maintenance_started and getattr(
                 dialog, "_owns_maintenance_request", False
             ):
-                # 等待许可期间用户关闭对话框：撤销仍在排队的维护请求，
-                # 避免获批后无谓停止 Supervisor 再走 abandoned 恢复。
-                self._cancel_pending_maintenance_dialog()
+                permit = self._pending_maintenance_permit
+                if permit is None or not permit.granted:
+                    # 仍在排队等待许可：用户关闭对话框即撤销请求，避免
+                    # 获批后无谓停止 Supervisor 再走 abandoned 恢复。
+                    # 已获批且失效在途时不能撤销：订阅必须保留到失效完
+                    # 成，由 start() 的 can_start_installation() 防御联动
+                    # abandoned 恢复，否则识别服务会一直停着无人恢复。
+                    self._cancel_pending_maintenance_dialog()
             if (
                 _result != 1
                 and maintenance_started

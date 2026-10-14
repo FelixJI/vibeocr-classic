@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.5
+
+### Bug Fixes
+
+- **settings:** 修复引擎环境对话框构造崩溃与维护请求丢失 (#128) (09e76dd)
+
 ## 0.11.4
 
 ### Features

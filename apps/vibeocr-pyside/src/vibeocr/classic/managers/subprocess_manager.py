@@ -192,6 +192,16 @@ class SubprocessManager(QObject):
         return self._invalidation_job is not None
 
     @property
+    def maintenance_in_progress(self) -> bool:
+        """维护协调器是否有流程持有许可或仍有排队请求。
+
+        供 MainWindow 在维护期间推迟 Supervisor 恢复启动：前一维护
+        完成后的依赖检查是异步的，迟到的恢复会抢占下一个维护流程
+        正在安装/删除的 Runtime 与引擎环境。
+        """
+        return self._maintenance_busy or bool(self._maintenance_queue)
+
+    @property
     def holds_runtime_process(self) -> bool:
         """是否仍持有未确认退出的 Supervisor 进程。
 

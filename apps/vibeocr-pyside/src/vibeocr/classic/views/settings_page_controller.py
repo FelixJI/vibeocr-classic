@@ -155,6 +155,8 @@ class SettingsPageController:
         self._defer_backend_initialization = defer_backend_initialization
         self._defer_machine_cache_status = defer_machine_cache_status
         self._pending_maintenance_dialog: Callable[[], None] | None = None
+        self._pending_maintenance_token: object | None = None
+        self._maintenance_grant_token: object | None = None
         self._runtime_adapter = None
         # 引擎环境安装对话框的强引用（无父对象，防 GC 销毁）。
         self._engine_env_dialog = None
@@ -915,6 +917,7 @@ class SettingsPageController:
                 on_finished=self._on_engine_env_finished,
                 parent=None,
             )
+            dialog._maintenance_token = self._maintenance_grant_token
             # 无父对象的顶层窗口必须持有强引用，否则会被 GC 销毁，
             # 且销毁路径不会可靠触发 on_finished 恢复识别服务。
             self._engine_env_dialog = dialog
@@ -1631,7 +1634,29 @@ class SettingsPageController:
             return
 
         self._pending_maintenance_dialog = continuation
+        # 每次请求独立 token：探针只统计本请求的对话框，不能读全局
+        # is_maintenance_active——排队请求自己已打开的对话框会被计入
+        # 当前持有者，导致许可永不释放、UI 互相等待。
+        token = object()
+        self._pending_maintenance_token = token
         manager = self._subprocess_manager
+
+        def _request_is_active() -> bool:
+            if (
+                self._pending_maintenance_dialog is not None
+                and self._pending_maintenance_token is token
+            ):
+                return True
+            env_dialog = getattr(self, "_engine_env_dialog", None)
+            if (
+                env_dialog is not None
+                and getattr(env_dialog, "_maintenance_token", None) is token
+            ):
+                return True
+            return any(
+                getattr(dialog, "_maintenance_token", None) is token
+                for dialog in getattr(self, "_active_dialogs", ())
+            )
 
         def _on_granted() -> None:
             # 获得许可后才订阅：排队期间订阅会消费其他 owner 的完成
@@ -1657,14 +1682,13 @@ class SettingsPageController:
         # 排队等待；获得许可后执行自己的失效，不复用别人的完成广播
         # （持有者可能在许可期间重启 Supervisor，使旧前置失效）。
         self._status_callback("正在停止 OCR Supervisor，请稍候...")
-        manager.acquire_maintenance(
-            _on_granted, is_active=lambda: self.is_maintenance_active
-        )
+        manager.acquire_maintenance(_on_granted, is_active=_request_is_active)
 
     def _on_supervisor_invalidated_for_maintenance(
         self, success: bool, error: str
     ) -> None:
         continuation = self._pending_maintenance_dialog
+        grant_token = self._pending_maintenance_token
         self._cancel_pending_maintenance_dialog()
         if self._closing or continuation is None:
             return
@@ -1678,12 +1702,19 @@ class SettingsPageController:
                 f"OCR Supervisor 未能安全停止，安装或更新未开始。\n{error}",
             )
             return
-        continuation()
+        # continuation 打开的对话框用本请求 token 标记，供探针只统计
+        # 本请求的维护 UI。
+        self._maintenance_grant_token = grant_token
+        try:
+            continuation()
+        finally:
+            self._maintenance_grant_token = None
 
     def _cancel_pending_maintenance_dialog(self) -> None:
         if self._pending_maintenance_dialog is None:
             return
         self._pending_maintenance_dialog = None
+        self._pending_maintenance_token = None
         try:
             self._subprocess_manager.invalidation_finished.disconnect(
                 self._on_supervisor_invalidated_for_maintenance
@@ -1753,6 +1784,7 @@ class SettingsPageController:
                     if self._install_abandoned_callback is not None:
                         self._install_abandoned_callback()
                     return
+                dialog._maintenance_token = self._maintenance_grant_token
                 continuation()
 
             self._run_after_supervisor_invalidated(start)

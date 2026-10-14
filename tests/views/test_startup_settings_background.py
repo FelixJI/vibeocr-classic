@@ -79,6 +79,14 @@ def test_machine_cache_validation_does_not_block_gui(qtbot, tmp_path, monkeypatc
     window._settings_controller = MagicMock()
     window._check_pending_sync = MagicMock(return_value=False)
     window._start_supervisor = MagicMock()
+    window._subprocess_manager = SimpleNamespace(maintenance_in_progress=False)
+    window._supervisor_start_retry_timer = None
+    window._start_supervisor_when_maintenance_done = (
+        MainWindow._start_supervisor_when_maintenance_done.__get__(window)
+    )
+    window._stop_supervisor_start_retry = (
+        MainWindow._stop_supervisor_start_retry.__get__(window)
+    )
     window._request_machine_cache_load = MainWindow._request_machine_cache_load.__get__(
         window
     )

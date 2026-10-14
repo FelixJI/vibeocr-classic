@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import Mock
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QWidget
 
 from vibeocr.classic.views.main_window import MainWindow
 from vibeocr.classic.views.settings_page_controller import SettingsPageController
@@ -17,6 +18,7 @@ class _FakeManager(QObject):
         super().__init__()
         self.invalidate_calls = 0
         self.is_invalidating = False
+        self.maintenance_in_progress = False
         self._maintenance_busy = False
         self._deferred_grants: list = []
 
@@ -47,20 +49,32 @@ class _FakeManager(QObject):
         self._deferred_grants.pop(0)()
 
 
-class _MainWindowHarness:
+class _MainWindowHarness(QWidget):
     _run_after_supervisor_invalidated = MainWindow._run_after_supervisor_invalidated
     _on_supervisor_invalidated_for_maintenance = (
         MainWindow._on_supervisor_invalidated_for_maintenance
     )
     _cancel_pending_maintenance_dialog = MainWindow._cancel_pending_maintenance_dialog
     _show_install_dialog = MainWindow._show_install_dialog
+    _continue_ready_startup = MainWindow._continue_ready_startup
+    _start_supervisor_when_maintenance_done = (
+        MainWindow._start_supervisor_when_maintenance_done
+    )
+    _stop_supervisor_start_retry = MainWindow._stop_supervisor_start_retry
+    _SUPERVISOR_START_RETRY_INTERVAL_MS = MainWindow._SUPERVISOR_START_RETRY_INTERVAL_MS
 
     def __init__(self, manager: _FakeManager) -> None:
+        super().__init__()
         self._closing = False
         self._pending_maintenance_dialog = None
         self._subprocess_manager = manager
         self._statusbar = Mock()
         self._show_install_dialog_after_invalidation = Mock()
+        self._ocr_ready = True
+        self._install_dialog_open = False
+        self._supervisor_start_retry_timer = None
+        self._start_supervisor = Mock()
+        self._refresh_settings_env_state = Mock()
 
 
 class _SettingsHarness:
@@ -228,3 +242,42 @@ def test_settings_close_drops_late_invalidation_callback(qapp) -> None:
     manager.finish(True)
 
     controller._show_install_dialog.assert_not_called()
+
+
+def test_supervisor_recovery_deferred_while_maintenance_active(
+    qapp, qtbot, monkeypatch
+) -> None:
+    """维护（含排队）期间迟到的 Supervisor 恢复不得启动，维护结束后再启动。
+
+    回归：前一维护完成后的依赖检查是异步的，其恢复路径曾直接
+    ``_start_supervisor()``，会抢占下一个维护流程正在安装/删除的
+    Runtime 与引擎环境。
+    """
+    monkeypatch.setattr(MainWindow, "_SUPERVISOR_START_RETRY_INTERVAL_MS", 10)
+    manager = _FakeManager()
+    manager.maintenance_in_progress = True
+    window = _MainWindowHarness(manager)
+
+    window._continue_ready_startup()
+    window._start_supervisor.assert_not_called()
+
+    # 维护结束（许可释放且队列清空）后，重试定时器接管启动。
+    manager.maintenance_in_progress = False
+    qtbot.waitUntil(lambda: window._start_supervisor.called, timeout=5000)
+    window._start_supervisor.assert_called_once_with()
+
+
+def test_install_finished_startup_deferred_while_maintenance_active(
+    qapp, qtbot, monkeypatch
+) -> None:
+    monkeypatch.setattr(MainWindow, "_SUPERVISOR_START_RETRY_INTERVAL_MS", 10)
+    manager = _FakeManager()
+    manager.maintenance_in_progress = True
+    window = _MainWindowHarness(manager)
+    install_finished = MainWindow._on_install_finished
+
+    install_finished(window, 1)
+    window._start_supervisor.assert_not_called()
+
+    manager.maintenance_in_progress = False
+    qtbot.waitUntil(lambda: window._start_supervisor.called, timeout=5000)

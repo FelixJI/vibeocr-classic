@@ -108,6 +108,8 @@ class MainWindow(QMainWindow):
         self._pending_maintenance_dialog: Any = None
         # 维护协调器探针用：首启安装对话框 exec() 打开期间为 True。
         self._install_dialog_open = False
+        # 维护期间推迟 Supervisor 恢复启动的重试定时器。
+        self._supervisor_start_retry_timer: Any = None
         self._shutdown_poll_timer = QTimer(self)
         self._shutdown_poll_timer.setInterval(self._SHUTDOWN_POLL_INTERVAL_MS)
         self._shutdown_poll_timer.timeout.connect(self._poll_shutdown_state)
@@ -837,7 +839,39 @@ class MainWindow(QMainWindow):
         if self._closing or not self._ocr_ready:
             return
 
+        self._start_supervisor_when_maintenance_done()
+
+    #: 维护期间 Supervisor 启动重试间隔（测试可缩短）。
+    _SUPERVISOR_START_RETRY_INTERVAL_MS = 500
+
+    def _start_supervisor_when_maintenance_done(self) -> None:
+        """维护（含排队）全部结束前不启动 Supervisor。
+
+        前一维护完成后的依赖检查是异步的：其迟到恢复若在下一个维护
+        流程进行中启动 Supervisor，会抢占正在安装/删除的 Runtime 与
+        引擎环境。维护期间改为定时重试，全部结束后再启动。
+        """
+        if self._closing:
+            self._stop_supervisor_start_retry()
+            return
+        if getattr(self._subprocess_manager, "maintenance_in_progress", False):
+            if self._supervisor_start_retry_timer is None:
+                self._supervisor_start_retry_timer = QTimer(self)
+                self._supervisor_start_retry_timer.setInterval(
+                    self._SUPERVISOR_START_RETRY_INTERVAL_MS
+                )
+                self._supervisor_start_retry_timer.timeout.connect(
+                    self._start_supervisor_when_maintenance_done
+                )
+            if not self._supervisor_start_retry_timer.isActive():
+                self._supervisor_start_retry_timer.start()
+            return
+        self._stop_supervisor_start_retry()
         self._start_supervisor()
+
+    def _stop_supervisor_start_retry(self) -> None:
+        if self._supervisor_start_retry_timer is not None:
+            self._supervisor_start_retry_timer.stop()
 
     def _check_pending_sync(self) -> bool:
         """清理旧逐包同步标记；组件升级不再接管启动流程。"""
@@ -975,8 +1009,10 @@ class MainWindow(QMainWindow):
         self._statusbar.showMessage("正在停止 OCR Supervisor，请稍候...")
         manager.acquire_maintenance(
             _on_granted,
-            is_active=lambda: self._pending_maintenance_dialog is not None
-            or self._install_dialog_open,
+            is_active=lambda: (
+                self._pending_maintenance_dialog is not None
+                or self._install_dialog_open
+            ),
         )
 
     @Slot(bool, str)
@@ -1050,8 +1086,8 @@ class MainWindow(QMainWindow):
             return
         if result == 1:
             self._statusbar.showMessage("识别引擎安装成功")
-            # 安装成功后启动识别服务
-            self._start_supervisor()
+            # 安装成功后启动识别服务；仍有维护排队时由重试定时器推迟
+            self._start_supervisor_when_maintenance_done()
             # 双保险刷新设置页（覆盖只发 finished 不发 install_succeeded 的路径）
             self._refresh_settings_env_state()
         else:

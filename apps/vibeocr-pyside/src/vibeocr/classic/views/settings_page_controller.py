@@ -206,8 +206,10 @@ class SettingsPageController:
         安装期间自动重启 Supervisor 抢占 Runtime 文件锁。
         """
 
-        return self._pending_maintenance_dialog is not None or bool(
-            self._active_dialogs
+        return (
+            self._pending_maintenance_dialog is not None
+            or getattr(self, "_engine_env_dialog", None) is not None
+            or bool(self._active_dialogs)
         )
 
     def request_shutdown(self) -> None:
@@ -1633,14 +1635,12 @@ class SettingsPageController:
         manager.invalidation_finished.connect(
             self._on_supervisor_invalidated_for_maintenance
         )
-        started = manager.invalidate_supervisor()
-        if not started and manager.is_invalidating:
-            # 其他入口（如首启自动安装）的失效任务在途：保持挂起等待共享的
-            # invalidation_finished。该任务完成即满足“旧 Supervisor 已退出”
-            # 前置；此处丢弃 continuation 会让用户的维护请求永远没有后续。
-            self._status_callback("已有 Supervisor 维护准备正在进行，请稍候...")
-            return
-        if not started:
+
+        def _on_granted() -> None:
+            started = manager.invalidate_supervisor()
+            if started:
+                self._status_callback("正在停止 OCR Supervisor...")
+                return
             self._cancel_pending_maintenance_dialog()
             backend_options = getattr(self, "_backend_options", None)
             if backend_options is not None:
@@ -1650,8 +1650,14 @@ class SettingsPageController:
                 "无法开始维护",
                 "OCR Supervisor 无法安全停止，安装或更新未开始。",
             )
-            return
-        self._status_callback("正在停止 OCR Supervisor...")
+
+        # 统一协调器串行化：其他维护流程（如首启自动安装）持有许可时
+        # 排队等待；获得许可后执行自己的失效，不复用别人的完成广播
+        # （持有者可能在许可期间重启 Supervisor，使旧前置失效）。
+        self._status_callback("正在停止 OCR Supervisor，请稍候...")
+        manager.acquire_maintenance(
+            _on_granted, is_active=lambda: self.is_maintenance_active
+        )
 
     def _on_supervisor_invalidated_for_maintenance(
         self, success: bool, error: str

@@ -17,6 +17,8 @@ class _FakeManager(QObject):
         super().__init__()
         self.invalidate_calls = 0
         self.is_invalidating = False
+        self._maintenance_busy = False
+        self._deferred_grants: list = []
 
     def invalidate_supervisor(self) -> bool:
         self.invalidate_calls += 1
@@ -28,6 +30,21 @@ class _FakeManager(QObject):
     def finish(self, success: bool, error: str = "") -> None:
         self.is_invalidating = False
         self.invalidation_finished.emit(success, error)
+
+    def acquire_maintenance(self, on_granted, *, is_active) -> None:
+        # 立即授予（未竞争场景）；测试可用 hold_maintenance 模拟许可被占。
+        if self._maintenance_busy:
+            self._deferred_grants.append(on_granted)
+            return
+        self._maintenance_busy = True
+        on_granted()
+
+    def hold_maintenance(self) -> None:
+        self._maintenance_busy = True
+
+    def grant_pending_maintenance(self) -> None:
+        assert self._deferred_grants, "没有排队的维护请求"
+        self._deferred_grants.pop(0)()
 
 
 class _MainWindowHarness:
@@ -120,42 +137,41 @@ def test_settings_repeated_actions_keep_only_first_continuation(qapp) -> None:
     controller._show_install_dialog.assert_called_once()
 
 
-def test_settings_continuation_survives_inflight_invalidation_from_other_owner(
-    qapp,
-) -> None:
-    """首启自动安装等外部维护在途时，设置页请求必须等待而不是被丢弃。
+def test_settings_request_queues_behind_other_maintenance(qapp) -> None:
+    """其他维护持有许可时请求必须排队，获得许可后执行自己的失效。
 
-    回归：旧逻辑在 ``invalidate_supervisor()`` 因已有任务在途返回 False 时
-    取消自己的 continuation，用户的运行环境变更永远停在“正在停止
-    OCR Supervisor...”，没有任何后续反应。
+    回归：旧逻辑在共享广播上等待/丢弃 continuation，会带着失效的
+    “旧 Supervisor 已退出”前置执行（持有者可能已重启 Supervisor）。
     """
     manager = _FakeManager()
-    manager.is_invalidating = True  # 其他 owner（如首启自动安装）已发起失效
+    manager.hold_maintenance()
     controller = _SettingsHarness(manager)
     continuation = Mock()
 
     controller._run_after_supervisor_invalidated(continuation)
 
-    controller._status_callback.assert_called_once()
+    assert manager.invalidate_calls == 0
     continuation.assert_not_called()
 
-    manager.finish(True)  # 在途任务完成，invalidation_finished 广播
+    manager.grant_pending_maintenance()
+    assert manager.invalidate_calls == 1
+    manager.finish(True)
     continuation.assert_called_once_with()
 
 
-def test_main_window_continuation_survives_inflight_invalidation_from_other_owner(
-    qapp,
-) -> None:
+def test_main_window_request_queues_behind_other_maintenance(qapp) -> None:
     manager = _FakeManager()
-    manager.is_invalidating = True
+    manager.hold_maintenance()
     window = _MainWindowHarness(manager)
     continuation = Mock()
 
     window._run_after_supervisor_invalidated(continuation)
 
-    window._statusbar.showMessage.assert_called_once()
+    assert manager.invalidate_calls == 0
     continuation.assert_not_called()
 
+    manager.grant_pending_maintenance()
+    assert manager.invalidate_calls == 1
     manager.finish(True)
     continuation.assert_called_once_with()
 

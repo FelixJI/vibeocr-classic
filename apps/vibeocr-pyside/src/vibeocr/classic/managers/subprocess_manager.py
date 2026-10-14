@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Signal
 
 from vibeocr.classic.backend_host import inprocess_backend_enabled
 from vibeocr.classic.runtime_installation import (
@@ -150,6 +150,9 @@ class SubprocessManager(QObject):
     progress_update = Signal(str)
     invalidation_finished = Signal(bool, str)
 
+    #: 维护活动探测间隔（测试可缩短以加快排队流转断言）。
+    _MAINTENANCE_PROBE_INTERVAL_MS = 250
+
     def __init__(
         self,
         project_root: Path,
@@ -163,10 +166,18 @@ class SubprocessManager(QObject):
         self._is_ready = False
         self._start_task: SupervisorStartTask | None = None
         self._start_signals_connected = False
-        self._supervisor_process: Any = None
+        self._supervisor_process: Any | None = None
         self._shutdown_requested = False
         self._application_shutdown_requested = False
         self._invalidation_job: ExternalShutdownJob | None = None
+        # 跨入口维护协调器：同一时刻最多一个维护流程持有许可，后续
+        # 请求排队；持有者的失效与维护 UI 全部结束后，下一个请求重新
+        # 执行自己的失效，避免多个 owner 消费同一次 invalidation_finished
+        # 广播后带着已失效的“旧 Supervisor 已退出”前置继续执行。
+        self._maintenance_busy = False
+        self._maintenance_queue: list[tuple[Any, Any]] = []
+        self._maintenance_probe: Any | None = None
+        self._maintenance_timer: QTimer | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -346,6 +357,60 @@ class SubprocessManager(QObject):
         job.finished.connect(self._on_invalidation_finished)
         job.start()
         return True
+
+    # ------------------------------------------------------------------
+    # 跨入口维护协调器
+    # ------------------------------------------------------------------
+
+    def acquire_maintenance(
+        self,
+        on_granted: Callable[[], None],
+        *,
+        is_active: Callable[[], bool],
+    ) -> None:
+        """串行化跨入口的维护请求（首启自动安装 vs 设置页运行环境变更等）。
+
+        同一时刻最多一个维护流程持有许可：其余请求排队，直到持有者的
+        ``is_active`` 探针回落（其维护 UI 关闭或请求终止）才获得许可，
+        并**重新执行自己的失效**而不是复用别人的完成广播——持有者的
+        流程可能在许可期间重启 Supervisor，使早先的“已退出”前置失效。
+        探针异常按已结束处理，保证许可不会因探测失败而永久滞留。
+        """
+
+        self._maintenance_queue.append((on_granted, is_active))
+        self._pump_maintenance()
+
+    def _pump_maintenance(self) -> None:
+        if self._maintenance_busy or not self._maintenance_queue:
+            return
+        on_granted, is_active = self._maintenance_queue.pop(0)
+        self._maintenance_busy = True
+        self._maintenance_probe = is_active
+        if self._maintenance_timer is None:
+            self._maintenance_timer = QTimer(self)
+            self._maintenance_timer.setInterval(self._MAINTENANCE_PROBE_INTERVAL_MS)
+            self._maintenance_timer.timeout.connect(self._on_maintenance_probe)
+        self._maintenance_timer.start()
+        on_granted()
+
+    def _on_maintenance_probe(self) -> None:
+        if not self._maintenance_busy:
+            return
+        probe = self._maintenance_probe
+        active = False
+        if probe is not None:
+            try:
+                active = bool(probe())
+            except Exception:
+                logger.exception("[SubprocessManager] 维护活动探测失败，按已结束处理")
+                active = False
+        if active:
+            return
+        self._maintenance_busy = False
+        self._maintenance_probe = None
+        if self._maintenance_timer is not None:
+            self._maintenance_timer.stop()
+        self._pump_maintenance()
 
     def request_shutdown(self) -> None:
         """请求取消 Qt 启动任务；调用方通过 ``is_drained`` 非阻塞轮询。"""

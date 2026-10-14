@@ -46,6 +46,9 @@ def _immediate_invalidation_manager() -> MagicMock:
         return True
 
     manager.invalidate_supervisor.side_effect = invalidate_supervisor
+    manager.acquire_maintenance.side_effect = (
+        lambda on_granted, *, is_active: on_granted()
+    )
     return manager
 
 

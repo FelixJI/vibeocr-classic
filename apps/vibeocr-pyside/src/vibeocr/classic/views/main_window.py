@@ -355,8 +355,10 @@ class MainWindow(QMainWindow):
         """初始化截图组件"""
         self._overlay = ScreenCaptureOverlay()
         self._retired_overlays: set[ScreenCaptureOverlay] = set()
-        # 记录截图开始前主窗口的最小化状态，用于截图结束后恢复窗口状态。
+        # 记录截图开始前主窗口的最小化/隐藏状态，用于截图结束后恢复窗口状态。
         self._main_window_minimized_before_capture = False
+        # 隐藏 = 最小化到托盘：此时截图全程不应把窗口重新拉出来。
+        self._main_window_hidden_before_capture = False
 
     def _add_lazy_tab(
         self, title: str, role: str, builder: Any, at_end: bool = False
@@ -1314,7 +1316,11 @@ class MainWindow(QMainWindow):
 
         # 记录截图前主窗口的最小化状态，截图结束后据此恢复（不抢焦点）。
         self._main_window_minimized_before_capture = self.isMinimized()
-        self.showMinimized()
+        # 主窗口隐藏在托盘时保持隐藏：showMinimized 会把隐藏窗口重新显示
+        # 到任务栏，纯截图+复制/保存的静默流程不应弹出主窗口。
+        self._main_window_hidden_before_capture = not self.isVisible()
+        if not self._main_window_hidden_before_capture:
+            self.showMinimized()
         # 延迟启动截图，让窗口有时间最小化
         QTimer.singleShot(200, self._start_fresh_overlay_capture)
 
@@ -1329,7 +1335,9 @@ class MainWindow(QMainWindow):
             return
 
         self._main_window_minimized_before_capture = self.isMinimized()
-        self.showMinimized()
+        self._main_window_hidden_before_capture = not self.isVisible()
+        if not self._main_window_hidden_before_capture:
+            self.showMinimized()
         # 预设管道，截图选区完成后自动用该管道识别
         QTimer.singleShot(200, lambda: self._start_fresh_overlay_capture(pipeline_name))
 
@@ -1424,14 +1432,17 @@ class MainWindow(QMainWindow):
         """截图结束后恢复主窗口状态。
 
         静默操作（复制/保存/取消）：仅当截图前主窗口未被最小化时恢复可见，
-        截图前已最小化则保持最小化（不抢焦点）。
-        识别操作（activate=True）：用户明确想看结果，无论截图前是否最小化都恢复
+        截图前已最小化则保持最小化（不抢焦点）；截图前隐藏在托盘的，
+        静默操作全程保持隐藏。
+        识别操作（activate=True）：用户明确想看结果，无论截图前状态如何都恢复
         可见——否则工具栏/托盘触发截图后窗口永远不出现。
 
         Args:
             activate: True 时额外激活窗口并置顶（仅识别路径）。
         """
         if self._closing:
+            return
+        if self._main_window_hidden_before_capture and not activate:
             return
         if activate or not self._main_window_minimized_before_capture:
             self.showNormal()

@@ -389,6 +389,105 @@ class TestOverlayWindowRestore:
             mock_activate.assert_not_called()
             mock_raise.assert_not_called()
 
+    def test_hidden_before_capture_cancel_keeps_hidden(self, main_window, qtbot):
+        """托盘隐藏状态截图，取消后应保持隐藏（不 showNormal 弹出）。
+
+        回归：旧逻辑只记录 isMinimized，隐藏窗口 isMinimized()=False，
+        取消恢复时 showNormal 会把托盘里的主窗口完整弹出。
+        """
+        import unittest.mock as _mock
+
+        main_window._main_window_minimized_before_capture = False
+        main_window._main_window_hidden_before_capture = True
+
+        with (
+            _mock.patch.object(main_window, "showNormal") as mock_show,
+            _mock.patch.object(main_window, "activateWindow") as mock_activate,
+            _mock.patch.object(main_window, "raise_") as mock_raise,
+        ):
+            main_window._on_overlay_cancelled()
+
+        mock_show.assert_not_called()
+        mock_activate.assert_not_called()
+        mock_raise.assert_not_called()
+
+    def test_hidden_before_capture_confirm_still_shows(self, main_window, qtbot):
+        """托盘隐藏状态截图识别：结果路径仍应恢复可见并激活。"""
+        import unittest.mock as _mock
+
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(Qt.GlobalColor.white)
+
+        main_window._main_window_minimized_before_capture = True
+        main_window._main_window_hidden_before_capture = True
+
+        with (
+            _mock.patch.object(main_window, "showNormal") as mock_show,
+            _mock.patch.object(main_window, "activateWindow") as mock_activate,
+            _mock.patch.object(main_window, "raise_") as mock_raise,
+            _mock.patch.object(main_window._single_tab, "run_ocr"),
+            _mock.patch.object(main_window._single_tab, "set_image_for_recognition"),
+            _mock.patch.object(main_window._single_tab, "set_pixmap"),
+        ):
+            main_window._on_overlay_confirmed(pixmap, None)
+
+        mock_show.assert_called_once()
+        mock_activate.assert_called_once()
+        mock_raise.assert_called_once()
+
+    def test_screenshot_from_hidden_window_skips_minimize(
+        self, main_window, qtbot, monkeypatch
+    ):
+        """主窗口隐藏在托盘时触发截图：不调用 showMinimized。
+
+        showMinimized 会把隐藏窗口重新显示（任务栏出现主窗口按钮），
+        纯截图+复制/保存的静默流程不应有此可见痕迹。
+        """
+        import unittest.mock as _mock
+
+        class _NoopQTimer:
+            @staticmethod
+            def singleShot(*_args, **_kwargs):
+                pass
+
+        monkeypatch.setattr("vibeocr.classic.views.main_window.QTimer", _NoopQTimer)
+        monkeypatch.setattr(main_window, "isVisible", lambda: False)
+        monkeypatch.setattr(main_window, "isMinimized", lambda: False)
+
+        with (
+            _mock.patch.object(main_window, "showMinimized") as mock_minimize,
+            _mock.patch.object(main_window, "_check_ocr_ready", return_value=True),
+        ):
+            main_window._on_screenshot()
+
+        mock_minimize.assert_not_called()
+        assert main_window._main_window_hidden_before_capture is True
+        assert main_window._main_window_minimized_before_capture is False
+
+    def test_screenshot_from_visible_window_minimizes(
+        self, main_window, qtbot, monkeypatch
+    ):
+        """主窗口可见时触发截图：仍最小化让出屏幕，并记录未隐藏。"""
+        import unittest.mock as _mock
+
+        class _NoopQTimer:
+            @staticmethod
+            def singleShot(*_args, **_kwargs):
+                pass
+
+        monkeypatch.setattr("vibeocr.classic.views.main_window.QTimer", _NoopQTimer)
+        monkeypatch.setattr(main_window, "isVisible", lambda: True)
+        monkeypatch.setattr(main_window, "isMinimized", lambda: False)
+
+        with (
+            _mock.patch.object(main_window, "showMinimized") as mock_minimize,
+            _mock.patch.object(main_window, "_check_ocr_ready", return_value=True),
+        ):
+            main_window._on_screenshot()
+
+        mock_minimize.assert_called_once()
+        assert main_window._main_window_hidden_before_capture is False
+
 
 class TestOcrFinishedRaisesWindow:
     """识别完成（截图来源）后应把主窗口提到前台。

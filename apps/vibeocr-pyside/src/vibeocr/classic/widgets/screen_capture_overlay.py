@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +82,34 @@ logger = logging.getLogger(__name__)
 # 已经由用户确认的保存任务不能随着覆盖层的下一次 capture generation 失效。
 # 模块级引用还确保覆盖层关闭后，QRunnable 的完成回调对象不会被提前回收。
 _ACTIVE_SAVE_JOB_CONTROLLERS: set[GenerationImageJobs] = set()
+
+# 另存为建议名「snapshot_日期_时间」的同秒流水号状态；进程内生效，仅用于
+# 预填对话框文件名，不承担跨进程唯一性。
+_SNAPSHOT_NAME_LOCK = threading.Lock()
+_SNAPSHOT_NAME_LAST_KEY: str | None = None
+_SNAPSHOT_NAME_SERIAL = 0
+
+
+def build_snapshot_suggested_name(now: datetime | None = None) -> str:
+    """生成另存为对话框的预填文件名（不含扩展名）。
+
+    形如 ``snapshot_20261020_153012``；同一秒内多次生成时追加递增
+    流水号（``_2``、``_3`` …），保证连续截图的建议名互不重复。
+    """
+    global _SNAPSHOT_NAME_LAST_KEY, _SNAPSHOT_NAME_SERIAL
+
+    current = datetime.now() if now is None else now
+    key = current.strftime("%Y%m%d_%H%M%S")
+    with _SNAPSHOT_NAME_LOCK:
+        if key == _SNAPSHOT_NAME_LAST_KEY:
+            _SNAPSHOT_NAME_SERIAL += 1
+        else:
+            _SNAPSHOT_NAME_LAST_KEY = key
+            _SNAPSHOT_NAME_SERIAL = 1
+        serial = _SNAPSHOT_NAME_SERIAL
+    if serial > 1:
+        return f"snapshot_{key}_{serial}"
+    return f"snapshot_{key}"
 
 
 class ScreenCaptureOverlay(QWidget):
@@ -935,8 +964,9 @@ class ScreenCaptureOverlay(QWidget):
         from PySide6.QtWidgets import QFileDialog
 
         pixmap = self._canvas.export_image()
+        suggested = f"{build_snapshot_suggested_name()}.png"
         path, _ = QFileDialog.getSaveFileName(
-            self, "另存为", "", "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)"
+            self, "另存为", suggested, "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)"
         )
         if path:
             image = pixmap.toImage().copy()

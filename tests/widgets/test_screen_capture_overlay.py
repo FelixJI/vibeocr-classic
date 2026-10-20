@@ -470,7 +470,10 @@ class TestTempClipFileManagement:
         # 手动构造已不存在的幽灵路径
         from pathlib import Path
 
-        overlay._temp_clip_files = [Path("nonexistent_a.png"), Path("nonexistent_b.png")]
+        overlay._temp_clip_files = [
+            Path("nonexistent_a.png"),
+            Path("nonexistent_b.png"),
+        ]
         overlay._prune_temp_clip_files()
         assert overlay._temp_clip_files == []
 
@@ -496,3 +499,82 @@ class TestTempClipFileManagement:
         data = SCO._pixmap_to_png(pixmap)
         assert data is not None
         assert data.startswith(b"\x89PNG")
+
+
+class _FakeCanvas:
+    """仅支撑 _on_save 所需接口的最小画布桩。"""
+
+    def __init__(self) -> None:
+        self.pixmap = QPixmap(4, 4)
+        self.pixmap.fill(Qt.GlobalColor.red)
+
+    def export_image(self) -> QPixmap:
+        return self.pixmap
+
+    def deleteLater(self) -> None:
+        pass
+
+
+class TestSnapshotSuggestedName:
+    """另存为建议文件名：snapshot_日期_时间，同秒追加递增流水号。"""
+
+    def _reset_module_state(self) -> None:
+        import vibeocr.classic.widgets.screen_capture_overlay as sco_module
+
+        sco_module._SNAPSHOT_NAME_LAST_KEY = None
+        sco_module._SNAPSHOT_NAME_SERIAL = 0
+
+    def test_first_name_in_second_has_no_serial(self):
+        from datetime import datetime
+
+        from vibeocr.classic.widgets.screen_capture_overlay import (
+            build_snapshot_suggested_name,
+        )
+
+        self._reset_module_state()
+        now = datetime(2026, 10, 20, 15, 30, 12)
+        assert build_snapshot_suggested_name(now) == "snapshot_20261020_153012"
+
+    def test_same_second_appends_incrementing_serial(self):
+        from datetime import datetime
+
+        from vibeocr.classic.widgets.screen_capture_overlay import (
+            build_snapshot_suggested_name,
+        )
+
+        self._reset_module_state()
+        now = datetime(2026, 10, 20, 15, 30, 12)
+        assert build_snapshot_suggested_name(now) == "snapshot_20261020_153012"
+        assert build_snapshot_suggested_name(now) == "snapshot_20261020_153012_2"
+        assert build_snapshot_suggested_name(now) == "snapshot_20261020_153012_3"
+
+    def test_new_second_resets_serial(self):
+        from datetime import datetime
+
+        from vibeocr.classic.widgets.screen_capture_overlay import (
+            build_snapshot_suggested_name,
+        )
+
+        self._reset_module_state()
+        first = datetime(2026, 10, 20, 15, 30, 12)
+        second = datetime(2026, 10, 20, 15, 30, 13)
+        build_snapshot_suggested_name(first)
+        build_snapshot_suggested_name(first)
+        assert build_snapshot_suggested_name(second) == "snapshot_20261020_153013"
+
+    def test_on_save_prefills_suggested_name(self, qapp):
+        """另存为对话框应预填 snapshot_日期_时间流水号文件名（.png）。"""
+        import re
+        from unittest.mock import patch
+
+        overlay = ScreenCaptureOverlay()
+        overlay._canvas = _FakeCanvas()
+
+        with patch(
+            "PySide6.QtWidgets.QFileDialog.getSaveFileName",
+            return_value=("", ""),
+        ) as mock_dialog:
+            overlay._on_save()
+
+        suggested = mock_dialog.call_args.args[2]
+        assert re.fullmatch(r"snapshot_\d{8}_\d{6}(_\d+)?\.png", suggested), suggested

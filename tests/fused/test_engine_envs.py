@@ -163,6 +163,30 @@ def test_contracts_distribution_fails_closed_when_frozen_without_wheel(
     assert contracts_distribution() == wheel
 
 
+def test_ensure_paddle_fails_closed_before_cleanup_without_bundled_wheel(
+    envs, monkeypatch
+) -> None:
+    """冻结形态缺随包 wheel：清理旧环境/执行任何 uv 命令之前 fail closed。
+
+    回归（PR #131 评审）：解析来源若发生在安装末尾，注定失败的修复会先
+    删掉可用的旧环境并下载约 1 GB 依赖。
+    """
+    manager, root = envs
+    env_root = root / "paddle-cpu"
+    (env_root / "Scripts").mkdir(parents=True)
+    (env_root / "Scripts" / "python.exe").write_bytes(b"old-env")
+    monkeypatch.delenv("VIBEOCR_CONTRACTS_DIST", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    fake = FakeUvRunner()
+    manager._uv = fake
+
+    with pytest.raises(EngineEnvError, match="随包"):
+        manager.ensure("paddle-cpu")
+
+    assert fake.commands == []
+    assert (env_root / "Scripts" / "python.exe").read_bytes() == b"old-env"
+
+
 def test_inspect_detects_contracts_wheel_drift(envs, monkeypatch, tmp_path) -> None:
     """产品升级更换随包 contracts wheel 后，旧 paddle 环境应判为未安装。"""
     wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"

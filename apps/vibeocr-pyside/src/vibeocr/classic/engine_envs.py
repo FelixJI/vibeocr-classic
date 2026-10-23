@@ -425,6 +425,13 @@ class EngineEnvManager:
         if not lock_file.is_file():
             raise EngineEnvError(f"找不到依赖清单：{lock_file}")
 
+        # Paddle 环境先解析 contracts 来源：打包形态随包 wheel 缺失时必须
+        # 在清理旧环境与下载依赖之前 fail closed——否则注定失败的安装会
+        # 先删掉可用的旧环境，再无谓下载约 1 GB 依赖。
+        contracts_source = (
+            str(contracts_distribution()) if spec.id.startswith("paddle") else None
+        )
+
         def _phase(message: str) -> None:
             logger.info("[EngineEnv] %s", message)
             if on_phase is not None:
@@ -497,7 +504,7 @@ class EngineEnvManager:
                     "--python",
                     str(python),
                     "--no-deps",
-                    str(contracts_distribution()),
+                    contracts_source,
                 ],
                 on_line=_log,
                 cancel_event=cancel_event,

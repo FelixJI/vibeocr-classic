@@ -12,6 +12,7 @@ from vibeocr.classic.engine_envs import (
     EngineEnvError,
     EngineEnvManager,
     UvRunner,
+    contracts_distribution,
     describe_selection,
     runtime_profiles_root,
 )
@@ -63,8 +64,11 @@ def test_inspect_empty(envs) -> None:
     assert all(not state.installed for state in states.values())
 
 
-def test_ensure_paddle_runs_full_command_sequence(envs) -> None:
+def test_ensure_paddle_runs_full_command_sequence(envs, monkeypatch) -> None:
     manager, _ = envs
+    # 开发态回退：未指向随包 wheel 时按 uv.lock 同源的固定 URL 安装。
+    monkeypatch.delenv("VIBEOCR_CONTRACTS_DIST", raising=False)
+    monkeypatch.delenv("VIBEOCR_BACKEND_DIST", raising=False)
     fake = FakeUvRunner(lines=["Resolved 90 packages", "Installed 90 packages"])
     logs: list[str] = []
     phases: list[str] = []
@@ -93,6 +97,60 @@ def test_ensure_paddle_runs_full_command_sequence(envs) -> None:
     assert fourth[-1].startswith("vibeocr-runtime-contracts @ ")
     assert "Resolved 90 packages" in logs
     assert any("安装完成" in phase for phase in phases)
+
+
+def test_ensure_paddle_installs_bundled_contracts_wheel(
+    envs, monkeypatch, tmp_path
+) -> None:
+    """打包形态：contracts 从随包 wheel 本地安装，不再触网下载。"""
+    import hashlib
+    import json
+
+    manager, root = envs
+    wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    wheel.write_bytes(b"bundled-contracts-wheel")
+    monkeypatch.setenv("VIBEOCR_CONTRACTS_DIST", str(wheel))
+    fake = FakeUvRunner()
+    manager._uv = fake
+
+    state = manager.ensure("paddle-cpu")
+
+    assert state.installed
+    fourth = fake.commands[3]
+    assert fourth[-1] == str(wheel)
+    marker = json.loads(
+        (root / "paddle-cpu" / ".vibeocr-engine-env.json").read_text(encoding="utf-8")
+    )
+    assert (
+        marker["identity"]["contracts_dist"]
+        == hashlib.sha256(b"bundled-contracts-wheel").hexdigest()
+    )
+
+
+def test_contracts_distribution_fails_closed_when_bundled_wheel_missing(
+    monkeypatch, tmp_path
+) -> None:
+    """随包变量已指向但文件缺失：fail closed，不静默回退外部下载。"""
+    monkeypatch.setenv(
+        "VIBEOCR_CONTRACTS_DIST", str(tmp_path / "missing-contracts.whl")
+    )
+
+    with pytest.raises(EngineEnvError, match="contracts wheel"):
+        contracts_distribution()
+
+
+def test_inspect_detects_contracts_wheel_drift(envs, monkeypatch, tmp_path) -> None:
+    """产品升级更换随包 contracts wheel 后，旧 paddle 环境应判为未安装。"""
+    wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    wheel.write_bytes(b"contracts-v1")
+    monkeypatch.setenv("VIBEOCR_CONTRACTS_DIST", str(wheel))
+
+    manager, root = envs
+    _mark_installed(manager, root, "paddle-cpu")
+    assert manager.inspect()["paddle-cpu"].installed is True
+
+    wheel.write_bytes(b"contracts-v2")
+    assert manager.inspect()["paddle-cpu"].installed is False
 
 
 def test_ensure_respects_explicit_package_index(envs) -> None:

@@ -45,12 +45,32 @@ def _sha256_file(path: Path) -> str:
 
 
 # Protocol SDK wheel（不在公共 PyPI）。引擎环境里的 Paddle worker 需要
-# 导入 contracts；URL 版本与仓库 uv.lock 的来源保持一致。
+# 导入 contracts；打包产品随包分发这只 wheel（``VIBEOCR_CONTRACTS_DIST``，
+# 见 classic_release_entry），以下固定 URL 仅作开发态源码运行的回退，
+# 版本与仓库 uv.lock 的来源保持一致。
 _CONTRACTS_WHEEL_URL = (
     "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/"
     "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
 )
 _CONTRACTS_REQUIREMENT = f"vibeocr-runtime-contracts @ {_CONTRACTS_WHEEL_URL}"
+
+
+def contracts_distribution() -> Path | str:
+    """引擎环境安装 Protocol contracts 的来源。
+
+    优先 ``VIBEOCR_CONTRACTS_DIST``（打包产品指向随包 wheel，安装全程
+    不触网）；已设置但文件缺失时 fail closed——产品布局破损不允许静默
+    回退到外部下载。未设置（开发态源码运行）回到与 uv.lock 一致的
+    固定 URL。
+    """
+
+    override = os.environ.get("VIBEOCR_CONTRACTS_DIST")
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return path
+        raise EngineEnvError(f"未找到随包 Protocol contracts wheel：{override}")
+    return _CONTRACTS_REQUIREMENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,9 +334,9 @@ class EngineEnvManager:
     def inspect(self) -> dict[str, EngineEnvState]:
         """返回每个环境的安装状态。
 
-        除目录与标记文件外还核对安装身份（依赖清单哈希与随包后端
-        wheel 哈希）：产品升级后清单或后端变化会让旧环境判为未安装，
-        引导用户重装，避免旧依赖无限期滞留。
+        除目录与标记文件外还核对安装身份（依赖清单哈希与随包后端、
+        Protocol contracts wheel 哈希）：产品升级后清单或随包 wheel
+        变化会让旧环境判为未安装，引导用户重装，避免旧依赖无限期滞留。
         """
 
         states: dict[str, EngineEnvState] = {}
@@ -344,7 +364,7 @@ class EngineEnvManager:
         return states
 
     def _current_identity(self) -> dict[str, str]:
-        """当前安装身份：依赖清单与后端发行内容的指纹。"""
+        """当前安装身份：依赖清单与随包发行内容的指纹。"""
 
         identity: dict[str, str] = {}
         for spec in ENGINE_ENV_SPECS:
@@ -358,6 +378,9 @@ class EngineEnvManager:
         dist = os.environ.get("VIBEOCR_BACKEND_DIST")
         if dist and Path(dist).is_file():
             identity["backend_dist"] = _sha256_file(Path(dist))
+        contracts = os.environ.get("VIBEOCR_CONTRACTS_DIST")
+        if contracts and Path(contracts).is_file():
+            identity["contracts_dist"] = _sha256_file(Path(contracts))
         return identity
 
     def ensure(
@@ -464,7 +487,7 @@ class EngineEnvManager:
                     "--python",
                     str(python),
                     "--no-deps",
-                    _CONTRACTS_REQUIREMENT,
+                    str(contracts_distribution()),
                 ],
                 on_line=_log,
                 cancel_event=cancel_event,

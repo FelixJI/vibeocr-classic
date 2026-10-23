@@ -14,6 +14,7 @@ from vibeocr.classic.engine_envs import (
     UvRunner,
     contracts_distribution,
     describe_selection,
+    get_engine_env_spec,
     runtime_profiles_root,
 )
 
@@ -153,6 +154,35 @@ def test_inspect_detects_contracts_wheel_drift(envs, monkeypatch, tmp_path) -> N
     assert manager.inspect()["paddle-cpu"].installed is False
 
 
+def test_inspect_mineru_ignores_contracts_wheel(envs, monkeypatch, tmp_path) -> None:
+    """MinerU 环境不消费 contracts wheel：其变化与该键的新增都不失效它。
+
+    回归（PR #131 评审）：身份按 spec 计算，contracts_dist 只进 Paddle
+    身份——否则升级后 MinerU 会因身份多出未知键被判未安装，迫使用户
+    重下约 2 GB 却从不安装这只 wheel。
+    """
+    wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    wheel.write_bytes(b"contracts-v1")
+    monkeypatch.setenv("VIBEOCR_CONTRACTS_DIST", str(wheel))
+
+    manager, root = envs
+    _mark_installed(manager, root, "mineru-cpu")
+    assert manager.inspect()["mineru-cpu"].installed is True
+
+    # wheel 字节变化：MinerU 仍视为已安装。
+    wheel.write_bytes(b"contracts-v2")
+    assert manager.inspect()["mineru-cpu"].installed is True
+
+    # 旧版本升级场景：marker 身份里没有 contracts_dist 键也不失效 MinerU。
+    import json
+
+    marker = root / "mineru-cpu" / ".vibeocr-engine-env.json"
+    recorded = json.loads(marker.read_text(encoding="utf-8"))
+    recorded["identity"].pop("contracts_dist", None)
+    marker.write_text(json.dumps(recorded), encoding="utf-8")
+    assert manager.inspect()["mineru-cpu"].installed is True
+
+
 def test_ensure_respects_explicit_package_index(envs) -> None:
     manager, _ = envs
     fake = FakeUvRunner()
@@ -217,7 +247,7 @@ def _mark_installed(manager, root: Path, spec_id: str) -> None:
         json.dumps(
             {
                 "spec_id": spec_id,
-                "identity": manager._current_identity(),
+                "identity": manager._current_identity(get_engine_env_spec(spec_id)),
             }
         ),
         encoding="utf-8",

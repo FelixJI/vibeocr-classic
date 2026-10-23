@@ -334,13 +334,13 @@ class EngineEnvManager:
     def inspect(self) -> dict[str, EngineEnvState]:
         """返回每个环境的安装状态。
 
-        除目录与标记文件外还核对安装身份（依赖清单哈希与随包后端、
-        Protocol contracts wheel 哈希）：产品升级后清单或随包 wheel
-        变化会让旧环境判为未安装，引导用户重装，避免旧依赖无限期滞留。
+        除目录与标记文件外还按 spec 核对安装身份（依赖清单哈希与随包
+        后端、Protocol contracts wheel 哈希）：产品升级后清单或该 spec
+        消费的随包 wheel 变化会让旧环境判为未安装，引导用户重装，避免
+        旧依赖无限期滞留。
         """
 
         states: dict[str, EngineEnvState] = {}
-        identity = self._current_identity()
         for spec in ENGINE_ENV_SPECS:
             root = self.env_root(spec.id)
             marker = root / _MARKER_NAME
@@ -351,10 +351,9 @@ class EngineEnvManager:
                     recorded = json.loads(marker.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     recorded = {}
-                installed = (
-                    isinstance(recorded, dict)
-                    and recorded.get("identity") == identity
-                )
+                if not isinstance(recorded, dict):
+                    recorded = {}
+                installed = recorded.get("identity") == self._current_identity(spec)
             states[spec.id] = EngineEnvState(
                 spec_id=spec.id,
                 installed=installed,
@@ -363,24 +362,28 @@ class EngineEnvManager:
             )
         return states
 
-    def _current_identity(self) -> dict[str, str]:
-        """当前安装身份：依赖清单与随包发行内容的指纹。"""
+    def _current_identity(self, spec: EngineEnvSpec) -> dict[str, str]:
+        """单个环境的安装身份：依赖清单与随包发行内容的指纹。
+
+        ``contracts_dist`` 只进 Paddle 环境的身份——``ensure`` 只为
+        paddle 安装这只 wheel，MinerU 不消费它，不应因它的变化或
+        从旧版本升级新增该键而被判为未安装（避免无意义的大体积重装）。
+        """
 
         identity: dict[str, str] = {}
-        for spec in ENGINE_ENV_SPECS:
-            lock_file = (
-                runtime_profiles_root() / spec.profile / spec.lock_file_name
-            )
+        for other in ENGINE_ENV_SPECS:
+            lock_file = runtime_profiles_root() / other.profile / other.lock_file_name
             try:
-                identity[spec.profile] = _sha256_file(lock_file)
+                identity[other.profile] = _sha256_file(lock_file)
             except OSError:
-                identity[spec.profile] = ""
+                identity[other.profile] = ""
         dist = os.environ.get("VIBEOCR_BACKEND_DIST")
         if dist and Path(dist).is_file():
             identity["backend_dist"] = _sha256_file(Path(dist))
-        contracts = os.environ.get("VIBEOCR_CONTRACTS_DIST")
-        if contracts and Path(contracts).is_file():
-            identity["contracts_dist"] = _sha256_file(Path(contracts))
+        if spec.id.startswith("paddle"):
+            contracts = os.environ.get("VIBEOCR_CONTRACTS_DIST")
+            if contracts and Path(contracts).is_file():
+                identity["contracts_dist"] = _sha256_file(Path(contracts))
         return identity
 
     def ensure(
@@ -499,7 +502,7 @@ class EngineEnvManager:
                 {
                     "spec_id": spec.id,
                     "profile": spec.profile,
-                    "identity": self._current_identity(),
+                    "identity": self._current_identity(spec),
                 },
                 ensure_ascii=False,
             ),

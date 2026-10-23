@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import threading
 from pathlib import Path
 
@@ -138,6 +139,28 @@ def test_contracts_distribution_fails_closed_when_bundled_wheel_missing(
 
     with pytest.raises(EngineEnvError, match="contracts wheel"):
         contracts_distribution()
+
+
+def test_contracts_distribution_fails_closed_when_frozen_without_wheel(
+    monkeypatch, tmp_path
+) -> None:
+    """冻结进程（PyInstaller 打包形态）不得因变量未设置而回退网络。
+
+    回归（PR #131 评审）：wheel 被杀软隔离/解压不完整时入口 glob 落空、
+    不设置 VIBEOCR_CONTRACTS_DIST——此时必须仍按打包态 fail closed，
+    而不是误判为开发态访问归档 Release。
+    """
+    monkeypatch.delenv("VIBEOCR_CONTRACTS_DIST", raising=False)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+    with pytest.raises(EngineEnvError, match="随包"):
+        contracts_distribution()
+
+    # 冻结进程 + 随包 wheel 在位 → 正常本地安装。
+    wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    wheel.write_bytes(b"bundled-contracts-wheel")
+    monkeypatch.setenv("VIBEOCR_CONTRACTS_DIST", str(wheel))
+    assert contracts_distribution() == wheel
 
 
 def test_inspect_detects_contracts_wheel_drift(envs, monkeypatch, tmp_path) -> None:

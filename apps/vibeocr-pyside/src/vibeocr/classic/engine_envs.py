@@ -59,9 +59,11 @@ def contracts_distribution() -> Path | str:
     """引擎环境安装 Protocol contracts 的来源。
 
     优先 ``VIBEOCR_CONTRACTS_DIST``（打包产品指向随包 wheel，安装全程
-    不触网）；已设置但文件缺失时 fail closed——产品布局破损不允许静默
-    回退到外部下载。未设置（开发态源码运行）回到与 uv.lock 一致的
-    固定 URL。
+    不触网）；变量已设置但文件缺失时 fail closed。冻结进程（PyInstaller
+    打包形态）即使变量未设置——例如 wheel 被杀软隔离或解压不完整、
+    入口 glob 落空——也一律 fail closed，不把产品布局破损误判为开发态
+    而回退外部下载。只有开发态源码运行（``sys.frozen`` 不存在）才回到
+    与 uv.lock 一致的固定 URL。
     """
 
     override = os.environ.get("VIBEOCR_CONTRACTS_DIST")
@@ -70,6 +72,11 @@ def contracts_distribution() -> Path | str:
         if path.is_file():
             return path
         raise EngineEnvError(f"未找到随包 Protocol contracts wheel：{override}")
+    if getattr(sys, "frozen", False):
+        raise EngineEnvError(
+            "打包产品缺少随包 Protocol contracts wheel"
+            "（VIBEOCR_CONTRACTS_DIST 未设置），请重新安装或修复程序目录。"
+        )
     return _CONTRACTS_REQUIREMENT
 
 

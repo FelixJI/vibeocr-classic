@@ -154,6 +154,41 @@ def _verify_frontend_protocol_lock(
     return frontend_lock
 
 
+def _verify_bundled_contracts_wheel(
+    contracts_wheel: Path,
+    frontend_lock: dict[str, object],
+) -> None:
+    """随包 Protocol contracts wheel 必须与身份锁锁定的字节一致。
+
+    引擎环境安装 contracts 时直接用这只 wheel（不触网下载）。这里以
+    frontend-protocol-lock 记录的 SHA-256（来源：vibeocr-protocol Release
+    的 SHA256SUMS，构建期已按它校验下载）作为跨系统资产交接的权威摘要。
+    """
+
+    artifacts = frontend_lock.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise RuntimeError("embedded frontend Protocol lock has no artifacts")
+    pinned = {
+        name: record
+        for name, record in artifacts.items()
+        if isinstance(name, str) and name.startswith("vibeocr_runtime_contracts-")
+    }
+    if len(pinned) != 1:
+        raise RuntimeError(
+            "frontend Protocol lock does not pin exactly one contracts wheel"
+        )
+    name, record = next(iter(pinned.items()))
+    if contracts_wheel.name != name:
+        raise RuntimeError(
+            "bundled contracts wheel differs from locked artifact: "
+            f"{contracts_wheel.name} != {name}"
+        )
+    expected = record.get("sha256") if isinstance(record, dict) else None
+    actual = hashlib.sha256(contracts_wheel.read_bytes()).hexdigest()
+    if not isinstance(expected, str) or actual != expected:
+        raise RuntimeError("bundled Protocol contracts wheel hash mismatch")
+
+
 def _verify_rapidocr_payload_layout(root: Path) -> None:
     """Require the bundled base OCR engine's package data in the frozen tree.
 
@@ -587,6 +622,10 @@ def main() -> int:
             raise RuntimeError(f"required PySide files missing: {missing}")
         if not sorted((root / "backend").glob("vibeocr_backend-*.whl")):
             raise RuntimeError("required PySide files missing: ['backend/*.whl']")
+        if len(sorted((root / "backend").glob("vibeocr_runtime_contracts-*.whl"))) != 1:
+            raise RuntimeError(
+                "required PySide files missing: ['backend/vibeocr_runtime_contracts-*.whl']"
+            )
         prohibited = [
             path.name
             for path in root.iterdir()
@@ -624,7 +663,7 @@ def main() -> int:
         if lock_hash != manifest.get("component_lock_sha256"):
             raise RuntimeError("embedded component lock hash mismatch")
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
-        _verify_frontend_protocol_lock(root, manifest, lock)
+        frontend_lock = _verify_frontend_protocol_lock(root, manifest, lock)
         backend = lock.get("backend", {})
         verify_component_policy_binding(lock_path, args.policy)
 
@@ -632,6 +671,10 @@ def main() -> int:
         actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
         if actual != backend.get("artifact_sha256"):
             raise RuntimeError("bound backend wheel hash mismatch")
+        contracts_wheel = sorted(
+            (root / "backend").glob("vibeocr_runtime_contracts-*.whl")
+        )[0]
+        _verify_bundled_contracts_wheel(contracts_wheel, frontend_lock)
         with zipfile.ZipFile(wheel) as wheel_archive:
             members = set(wheel_archive.namelist())
         if "vibeocr/backend/supervisor/main.py" not in members:

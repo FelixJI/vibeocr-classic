@@ -53,19 +53,21 @@ def locks(tmp_path: Path) -> tuple[Path, Path]:
     )
 
 
-def _artifacts(tmp_path: Path) -> tuple[Path, Path]:
+def _artifacts(tmp_path: Path) -> tuple[Path, Path, Path]:
     backend_wheel = tmp_path / "vibeocr_backend-0.15.1-py3-none-any.whl"
     backend_wheel.write_bytes(b"fake-wheel-bytes")
+    contracts_wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    contracts_wheel.write_bytes(b"fake-contracts-wheel")
     uv_binary = tmp_path / "uv.exe"
     uv_binary.write_bytes(b"fake-uv-exe")
-    return backend_wheel, uv_binary
+    return backend_wheel, contracts_wheel, uv_binary
 
 
 def test_finalize_binds_backend_wheel_uv_and_locks(
     tmp_path: Path, product_root: Path, locks: tuple[Path, Path]
 ) -> None:
     component_lock, frontend_lock = locks
-    backend_wheel, uv_binary = _artifacts(tmp_path)
+    backend_wheel, contracts_wheel, uv_binary = _artifacts(tmp_path)
 
     manifest_path = finalize_product_release(
         product_root=product_root,
@@ -75,12 +77,16 @@ def test_finalize_binds_backend_wheel_uv_and_locks(
         component_lock=component_lock,
         frontend_protocol_lock=frontend_lock,
         backend_wheel=backend_wheel,
+        contracts_wheel=contracts_wheel,
         uv_binary=uv_binary,
     )
 
     assert manifest_path.name == "product-release-manifest.json"
     assert (product_root / "backend" / backend_wheel.name).read_bytes() == (
         b"fake-wheel-bytes"
+    )
+    assert (product_root / "backend" / contracts_wheel.name).read_bytes() == (
+        b"fake-contracts-wheel"
     )
     assert (product_root / "bin" / "uv.exe").read_bytes() == b"fake-uv-exe"
     assert (product_root / "component-lock.json").is_file()
@@ -95,6 +101,7 @@ def test_finalize_binds_backend_wheel_uv_and_locks(
     # 文件闭包覆盖新增的 backend/bin 内容。
     relative_files = set(manifest["files"])
     assert f"backend/{backend_wheel.name}" in relative_files
+    assert f"backend/{contracts_wheel.name}" in relative_files
     assert "bin/uv.exe" in relative_files
     assert "_internal/keep.bin" in relative_files
 
@@ -121,7 +128,7 @@ def test_finalize_rejects_incomplete_component_lock(
         ),
         encoding="utf-8",
     )
-    backend_wheel, uv_binary = _artifacts(tmp_path)
+    backend_wheel, contracts_wheel, uv_binary = _artifacts(tmp_path)
 
     with pytest.raises(ValueError, match="component lock is incomplete"):
         finalize_product_release(
@@ -132,6 +139,7 @@ def test_finalize_rejects_incomplete_component_lock(
             component_lock=component_lock,
             frontend_protocol_lock=frontend_lock,
             backend_wheel=backend_wheel,
+            contracts_wheel=contracts_wheel,
             uv_binary=uv_binary,
         )
 
@@ -140,7 +148,7 @@ def test_finalize_rejects_missing_uv_binary(
     tmp_path: Path, product_root: Path, locks: tuple[Path, Path]
 ) -> None:
     component_lock, frontend_lock = locks
-    backend_wheel, _uv_binary = _artifacts(tmp_path)
+    backend_wheel, contracts_wheel, _uv_binary = _artifacts(tmp_path)
     missing_uv = tmp_path / "missing-uv.exe"
 
     with pytest.raises(ValueError, match="uv binary is required"):
@@ -152,7 +160,30 @@ def test_finalize_rejects_missing_uv_binary(
             component_lock=component_lock,
             frontend_protocol_lock=frontend_lock,
             backend_wheel=backend_wheel,
+            contracts_wheel=contracts_wheel,
             uv_binary=missing_uv,
+        )
+
+
+def test_finalize_rejects_missing_contracts_wheel(
+    tmp_path: Path, product_root: Path, locks: tuple[Path, Path]
+) -> None:
+    """contracts wheel 是引擎环境离线安装的必需品：缺失必须 fail closed。"""
+    component_lock, frontend_lock = locks
+    backend_wheel, _contracts_wheel, uv_binary = _artifacts(tmp_path)
+    missing_contracts = tmp_path / "missing-contracts.whl"
+
+    with pytest.raises(ValueError, match="contracts wheel is required"):
+        finalize_product_release(
+            product_root=product_root,
+            frontend="classic",
+            frontend_version="0.11.1",
+            source_commit="e" * 40,
+            component_lock=component_lock,
+            frontend_protocol_lock=frontend_lock,
+            backend_wheel=backend_wheel,
+            contracts_wheel=missing_contracts,
+            uv_binary=uv_binary,
         )
 
 
@@ -161,7 +192,7 @@ def test_finalize_rejects_unexpected_product_entries(
 ) -> None:
     (product_root / "stray.txt").write_text("x", encoding="utf-8")
     component_lock, frontend_lock = locks
-    backend_wheel, uv_binary = _artifacts(tmp_path)
+    backend_wheel, contracts_wheel, uv_binary = _artifacts(tmp_path)
 
     with pytest.raises(ValueError, match="unexpected product root items"):
         finalize_product_release(
@@ -172,5 +203,6 @@ def test_finalize_rejects_unexpected_product_entries(
             component_lock=component_lock,
             frontend_protocol_lock=frontend_lock,
             backend_wheel=backend_wheel,
+            contracts_wheel=contracts_wheel,
             uv_binary=uv_binary,
         )

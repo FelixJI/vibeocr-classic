@@ -12,6 +12,7 @@ import pytest
 from scripts.prune_pyside_artifact import prune_pyside_artifact
 from scripts.verify_velopack_release import verify_velopack_release
 from scripts.verify_pyside_artifact import (
+    _verify_bundled_contracts_wheel,
     _verify_embedded_app_icon,
     _verify_frontend_protocol_lock,
     _verify_product_file_closure,
@@ -731,6 +732,64 @@ def test_release_build_binds_workspace_backend_and_uv() -> None:
     assert "backend/vibeocr_backend-*.whl" in (
         ROOT / "scripts" / "classic_release_entry.py"
     ).read_text(encoding="utf-8") or True
+
+
+def test_release_build_bundles_contracts_wheel_for_offline_engine_env() -> None:
+    """融合后引擎环境安装 contracts 不再触网下载。
+
+    归档的 vibeocr-protocol Release 只允许作为构建期输入（带 SHA-256
+    校验）；打包产品必须随包分发该 wheel，运行时从本地安装。
+    """
+    script = (ROOT / "scripts" / "build-release.ps1").read_text(encoding="utf-8")
+    entry = (ROOT / "scripts" / "classic_release_entry.py").read_text(encoding="utf-8")
+    engine_envs = (
+        ROOT / "apps/vibeocr-pyside/src/vibeocr/classic/engine_envs.py"
+    ).read_text(encoding="utf-8")
+    verifier = (ROOT / "scripts" / "verify_pyside_artifact.py").read_text(
+        encoding="utf-8"
+    )
+
+    # 构建期已按 SHA-256 校验下载的 wheel 随包进入 backend/。
+    assert "--contracts-wheel $contractsWheel" in script
+    # 入口把随包 wheel 指给引擎环境管理器。
+    assert "vibeocr_runtime_contracts-*.whl" in entry
+    assert "VIBEOCR_CONTRACTS_DIST" in entry
+    # 引擎环境安装优先随包 wheel（contracts_distribution），不直接用 URL。
+    assert "VIBEOCR_CONTRACTS_DIST" in engine_envs
+    assert "contracts_distribution()" in engine_envs
+    # 产物校验要求随包 wheel 与 frontend-protocol-lock 的锁定摘要一致。
+    assert "_verify_bundled_contracts_wheel" in verifier
+
+
+def test_product_verifier_binds_contracts_wheel_to_protocol_lock(
+    tmp_path: Path,
+) -> None:
+    payload = b"protocol-contracts-wheel"
+    wheel = tmp_path / "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
+    wheel.write_bytes(payload)
+    lock = {
+        "artifacts": {
+            "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl": {
+                "url": "https://example/contracts.whl",
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            },
+            "vibeocr_runtime_client-2.9.0-py3-none-any.whl": {
+                "url": "https://example/client.whl",
+                "sha256": "0" * 64,
+            },
+        }
+    }
+
+    _verify_bundled_contracts_wheel(wheel, lock)
+
+    wheel.write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="contracts wheel hash mismatch"):
+        _verify_bundled_contracts_wheel(wheel, lock)
+
+    renamed = tmp_path / "vibeocr_runtime_contracts-2.9.1-py3-none-any.whl"
+    renamed.write_bytes(payload)
+    with pytest.raises(RuntimeError, match="differs from locked artifact"):
+        _verify_bundled_contracts_wheel(renamed, lock)
 
 
 def test_protocol_sdk_dependencies_match_minor_compatibility_policy() -> None:

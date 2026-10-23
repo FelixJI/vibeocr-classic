@@ -207,7 +207,8 @@ Copy-Item -LiteralPath (Join-Path $root 'LICENSE') -Destination $product
   --product-root $product --frontend classic --frontend-version $Version `
   --source-commit (git -C $root rev-parse HEAD).Trim() `
   --component-lock $lock --frontend-protocol-lock $frontendProtocolLock `
-  --backend-wheel $backendWheel --uv-binary $uvBinary
+  --backend-wheel $backendWheel --contracts-wheel $contractsWheel `
+  --uv-binary $uvBinary
 if ($LASTEXITCODE -ne 0) { throw 'Classic product binding failed' }
 & $buildPython (Join-Path $root 'scripts/verify_pyside_artifact.py') $product --policy (Join-Path $root 'component-policy.json')
 if ($LASTEXITCODE -ne 0) { throw 'Classic artifact verification failed' }

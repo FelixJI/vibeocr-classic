@@ -486,10 +486,11 @@ def _activate_portable_state() -> None:
 
 
 def _activate_engine_env_tooling(executable: Path) -> None:
-    """指向随包分发的 uv.exe 与后端 wheel（引擎环境管理用）。
+    """指向随包分发的 uv.exe 与引擎环境 wheel（引擎环境管理用）。
 
     目录布局由 finalize_product_release 决定：``bin/uv.exe`` 与
-    ``backend/vibeocr_backend-*.whl``。缺省（开发态）不设置任何变量。
+    ``backend/vibeocr_backend-*.whl``、``backend/vibeocr_runtime_contracts-*.whl``。
+    缺省（开发态）不设置任何变量。
     """
     try:
         exe_dir = executable.resolve().parent
@@ -502,6 +503,9 @@ def _activate_engine_env_tooling(executable: Path) -> None:
     if backend_dir.is_dir():
         for wheel in backend_dir.glob("vibeocr_backend-*.whl"):
             os.environ.setdefault("VIBEOCR_BACKEND_DIST", str(wheel))
+            break
+        for wheel in backend_dir.glob("vibeocr_runtime_contracts-*.whl"):
+            os.environ.setdefault("VIBEOCR_CONTRACTS_DIST", str(wheel))
             break
 
 

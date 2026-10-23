@@ -45,12 +45,39 @@ def _sha256_file(path: Path) -> str:
 
 
 # Protocol SDK wheel（不在公共 PyPI）。引擎环境里的 Paddle worker 需要
-# 导入 contracts；URL 版本与仓库 uv.lock 的来源保持一致。
+# 导入 contracts；打包产品随包分发这只 wheel（``VIBEOCR_CONTRACTS_DIST``，
+# 见 classic_release_entry），以下固定 URL 仅作开发态源码运行的回退，
+# 版本与仓库 uv.lock 的来源保持一致。
 _CONTRACTS_WHEEL_URL = (
     "https://github.com/FelixJI/vibeocr-protocol/releases/download/v2.9.0/"
     "vibeocr_runtime_contracts-2.9.0-py3-none-any.whl"
 )
 _CONTRACTS_REQUIREMENT = f"vibeocr-runtime-contracts @ {_CONTRACTS_WHEEL_URL}"
+
+
+def contracts_distribution() -> Path | str:
+    """引擎环境安装 Protocol contracts 的来源。
+
+    优先 ``VIBEOCR_CONTRACTS_DIST``（打包产品指向随包 wheel，安装全程
+    不触网）；变量已设置但文件缺失时 fail closed。冻结进程（PyInstaller
+    打包形态）即使变量未设置——例如 wheel 被杀软隔离或解压不完整、
+    入口 glob 落空——也一律 fail closed，不把产品布局破损误判为开发态
+    而回退外部下载。只有开发态源码运行（``sys.frozen`` 不存在）才回到
+    与 uv.lock 一致的固定 URL。
+    """
+
+    override = os.environ.get("VIBEOCR_CONTRACTS_DIST")
+    if override:
+        path = Path(override)
+        if path.is_file():
+            return path
+        raise EngineEnvError(f"未找到随包 Protocol contracts wheel：{override}")
+    if getattr(sys, "frozen", False):
+        raise EngineEnvError(
+            "打包产品缺少随包 Protocol contracts wheel"
+            "（VIBEOCR_CONTRACTS_DIST 未设置），请重新安装或修复程序目录。"
+        )
+    return _CONTRACTS_REQUIREMENT
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,13 +341,13 @@ class EngineEnvManager:
     def inspect(self) -> dict[str, EngineEnvState]:
         """返回每个环境的安装状态。
 
-        除目录与标记文件外还核对安装身份（依赖清单哈希与随包后端
-        wheel 哈希）：产品升级后清单或后端变化会让旧环境判为未安装，
-        引导用户重装，避免旧依赖无限期滞留。
+        除目录与标记文件外还按 spec 核对安装身份（依赖清单哈希与随包
+        后端、Protocol contracts wheel 哈希）：产品升级后清单或该 spec
+        消费的随包 wheel 变化会让旧环境判为未安装，引导用户重装，避免
+        旧依赖无限期滞留。
         """
 
         states: dict[str, EngineEnvState] = {}
-        identity = self._current_identity()
         for spec in ENGINE_ENV_SPECS:
             root = self.env_root(spec.id)
             marker = root / _MARKER_NAME
@@ -331,10 +358,9 @@ class EngineEnvManager:
                     recorded = json.loads(marker.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     recorded = {}
-                installed = (
-                    isinstance(recorded, dict)
-                    and recorded.get("identity") == identity
-                )
+                if not isinstance(recorded, dict):
+                    recorded = {}
+                installed = recorded.get("identity") == self._current_identity(spec)
             states[spec.id] = EngineEnvState(
                 spec_id=spec.id,
                 installed=installed,
@@ -343,21 +369,28 @@ class EngineEnvManager:
             )
         return states
 
-    def _current_identity(self) -> dict[str, str]:
-        """当前安装身份：依赖清单与后端发行内容的指纹。"""
+    def _current_identity(self, spec: EngineEnvSpec) -> dict[str, str]:
+        """单个环境的安装身份：依赖清单与随包发行内容的指纹。
+
+        ``contracts_dist`` 只进 Paddle 环境的身份——``ensure`` 只为
+        paddle 安装这只 wheel，MinerU 不消费它，不应因它的变化或
+        从旧版本升级新增该键而被判为未安装（避免无意义的大体积重装）。
+        """
 
         identity: dict[str, str] = {}
-        for spec in ENGINE_ENV_SPECS:
-            lock_file = (
-                runtime_profiles_root() / spec.profile / spec.lock_file_name
-            )
+        for other in ENGINE_ENV_SPECS:
+            lock_file = runtime_profiles_root() / other.profile / other.lock_file_name
             try:
-                identity[spec.profile] = _sha256_file(lock_file)
+                identity[other.profile] = _sha256_file(lock_file)
             except OSError:
-                identity[spec.profile] = ""
+                identity[other.profile] = ""
         dist = os.environ.get("VIBEOCR_BACKEND_DIST")
         if dist and Path(dist).is_file():
             identity["backend_dist"] = _sha256_file(Path(dist))
+        if spec.id.startswith("paddle"):
+            contracts = os.environ.get("VIBEOCR_CONTRACTS_DIST")
+            if contracts and Path(contracts).is_file():
+                identity["contracts_dist"] = _sha256_file(Path(contracts))
         return identity
 
     def ensure(
@@ -391,6 +424,13 @@ class EngineEnvManager:
         lock_file = runtime_profiles_root() / spec.profile / spec.lock_file_name
         if not lock_file.is_file():
             raise EngineEnvError(f"找不到依赖清单：{lock_file}")
+
+        # Paddle 环境先解析 contracts 来源：打包形态随包 wheel 缺失时必须
+        # 在清理旧环境与下载依赖之前 fail closed——否则注定失败的安装会
+        # 先删掉可用的旧环境，再无谓下载约 1 GB 依赖。
+        contracts_source = (
+            str(contracts_distribution()) if spec.id.startswith("paddle") else None
+        )
 
         def _phase(message: str) -> None:
             logger.info("[EngineEnv] %s", message)
@@ -464,7 +504,7 @@ class EngineEnvManager:
                     "--python",
                     str(python),
                     "--no-deps",
-                    _CONTRACTS_REQUIREMENT,
+                    contracts_source,
                 ],
                 on_line=_log,
                 cancel_event=cancel_event,
@@ -476,7 +516,7 @@ class EngineEnvManager:
                 {
                     "spec_id": spec.id,
                     "profile": spec.profile,
-                    "identity": self._current_identity(),
+                    "identity": self._current_identity(spec),
                 },
                 ensure_ascii=False,
             ),

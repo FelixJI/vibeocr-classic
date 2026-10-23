@@ -3,8 +3,9 @@
 后端已内置在本仓库：发布绑定不再从外部 Release 拷贝运行时资产，改为：
 
 - 嵌入两把发布身份锁（由 ``generate_workspace_locks.py`` 生成）；
-- 拷贝随包分发的 ``vibeocr-backend`` wheel（供引擎环境安装使用）与
-  ``uv.exe``（供引擎环境管理使用）到 ``backend/`` 与 ``bin/``；
+- 拷贝随包分发的 ``vibeocr-backend`` wheel 与 Protocol contracts wheel
+  （供引擎环境安装使用）以及 ``uv.exe``（供引擎环境管理使用）到
+  ``backend/`` 与 ``bin/``；
 - 写 ``product-release-manifest.json``（``shared_root: state``）。
 """
 
@@ -48,6 +49,7 @@ def finalize_product_release(
     component_lock: Path,
     frontend_protocol_lock: Path,
     backend_wheel: Path,
+    contracts_wheel: Path,
     uv_binary: Path,
 ) -> Path:
     product_root = product_root.resolve(strict=True)
@@ -93,6 +95,9 @@ def finalize_product_release(
     backend_wheel = backend_wheel.resolve(strict=True)
     if not backend_wheel.is_file() or backend_wheel.suffix != ".whl":
         raise ValueError(f"backend wheel is required: {backend_wheel}")
+    if not contracts_wheel.is_file() or contracts_wheel.suffix != ".whl":
+        raise ValueError(f"contracts wheel is required: {contracts_wheel}")
+    contracts_wheel = contracts_wheel.resolve(strict=True)
     if not uv_binary.is_file():
         raise ValueError(f"uv binary is required: {uv_binary}")
     uv_binary = uv_binary.resolve(strict=True)
@@ -112,6 +117,7 @@ def finalize_product_release(
         raise ValueError("product layout already contains a backend directory")
     backend_output.mkdir()
     shutil.copyfile(backend_wheel, backend_output / backend_wheel.name)
+    shutil.copyfile(contracts_wheel, backend_output / contracts_wheel.name)
 
     bin_output = product_root / "bin"
     if bin_output.exists():
@@ -167,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--component-lock", type=Path, required=True)
     parser.add_argument("--frontend-protocol-lock", type=Path, required=True)
     parser.add_argument("--backend-wheel", type=Path, required=True)
+    parser.add_argument("--contracts-wheel", type=Path, required=True)
     parser.add_argument("--uv-binary", type=Path, required=True)
     args = parser.parse_args(argv)
     print(
@@ -178,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
             component_lock=args.component_lock,
             frontend_protocol_lock=args.frontend_protocol_lock,
             backend_wheel=args.backend_wheel,
+            contracts_wheel=args.contracts_wheel,
             uv_binary=args.uv_binary,
         )
     )
